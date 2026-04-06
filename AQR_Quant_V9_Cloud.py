@@ -223,7 +223,32 @@ def run_v9_pipeline(ticker: str, cik: str, email: str) -> dict:
                             break
             except Exception: pass
         if sbc == 0: return {"Ticker": ticker, "Status": "Drop: SBC數據破缺"}
-
+# =====================================================================
+        # ── Stage 1.5 升級：TTM (過去 12 個月) 最新動態滾動引擎 ──
+        # 作用：用最新的 4 個 10-Q 季報加總，覆寫 10-K 的落後穩態，同時保留 V9 的嚴苛扣除公式
+        # =====================================================================
+        try:
+            qcf = stock.quarterly_cashflow
+            if qcf is not None and not qcf.empty and len(qcf.columns) >= 4:
+                # 1. 滾動加總最新 4 季的 OCF
+                if 'Operating Cash Flow' in qcf.index:
+                    ttm_ocf = float(qcf.loc['Operating Cash Flow'].iloc[:4].fillna(0).sum()) / 1e9
+                    if ttm_ocf != 0: ocf = ttm_ocf  # 覆寫 OCF
+                
+                # 2. 滾動加總最新 4 季的 CapEx
+                if 'Capital Expenditure' in qcf.index:
+                    ttm_capex = float(abs(qcf.loc['Capital Expenditure'].iloc[:4].fillna(0).sum())) / 1e9
+                    if ttm_capex != 0: capex = ttm_capex  # 覆寫 CapEx
+                
+                # 3. 滾動加總最新 4 季的 SBC (維持 V9 第一原理的嚴格扣除)
+                for label in ['Stock Based Compensation', 'Share Based Compensation']:
+                    if label in qcf.index:
+                        ttm_sbc = float(abs(qcf.loc[label].iloc[:4].fillna(0).sum())) / 1e9
+                        if ttm_sbc != 0: 
+                            sbc = ttm_sbc  # 覆寫 SBC
+                            break
+        except Exception:
+            pass  # 若季度數據抓取失敗，則安全退回 SEC 10-K 年度穩態
         # ── Stage 2 絕對安全邊際與雙殺推演 ──────────────────────────────────
         net_debt = debt - cash
         true_ev = max(mcap + net_debt, mcap * 0.10)
