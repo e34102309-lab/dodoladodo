@@ -9,8 +9,12 @@ on:
 jobs:
   run-quant-pipeline:
     runs-on: ubuntu-latest
+    
+    # 總工程師強制覆寫指令：將所有底層動作引擎強制升級至 Node.js 24
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
-    steps: # <--- 注意這裡：steps 必須往內縮排，對齊 runs-on
+    steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
