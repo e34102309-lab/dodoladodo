@@ -10,7 +10,7 @@ jobs:
   run-quant-pipeline:
     runs-on: ubuntu-latest
 
-  steps:
+    steps: # <--- 注意這裡：steps 必須往內縮排，對齊 runs-on
       - name: Checkout Repository
         uses: actions/checkout@v4
 
