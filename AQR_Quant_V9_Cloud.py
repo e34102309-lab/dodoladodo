@@ -253,16 +253,24 @@ def run_v9_pipeline(ticker: str, cik: str, email: str) -> dict:
 
         if drawdown_risk < -70: return {"Ticker": ticker, "Status": f"Drop: 極限回撤({drawdown_risk:.1f}%)"}
 
-        # 動量與遲滯帶
+        # ── 動量與遲滯帶 (加入防爆指數退避機制) ──
         mom_12m = 0.0
-        try:
-            hist = yf.download(ticker, start=datetime.now()-timedelta(days=420), progress=False)
-            close = flatten_close(hist, ticker)
-            if close is not None and len(close) > 200:
-                monthly = close.resample('ME').last()
-                if len(monthly) >= 13: mom_12m = (float(monthly.iloc[-2]) / float(monthly.iloc[-13]) - 1) * 100
-        except: pass
-
+        for attempt in range(3):  # 物理防線：最多容許 3 次連線重試
+            try:
+                # 隨機抖動 (Jitter)：錯開 4 個平行反應槽的請求時間，避免瞬間擊穿 API
+                time.sleep(random.uniform(0.5, 2.0))
+                
+                hist = yf.download(ticker, start=datetime.now()-timedelta(days=420), progress=False)
+                close = flatten_close(hist, ticker)
+                
+                if close is not None and not close.empty and len(close) > 200:
+                    monthly = close.resample('ME').last()
+                    if len(monthly) >= 13: 
+                        mom_12m = (float(monthly.iloc[-2]) / float(monthly.iloc[-13]) - 1) * 100
+                        break  # 數據成功萃取，強制跳出重試迴圈
+            except Exception:
+                # 若被伺服器阻擋，則休眠 2^attempt 秒後再試 (1秒 -> 2秒 -> 4秒)
+                time.sleep(2 ** attempt)
         exit_signals = []
         rf = get_risk_free_rate() * 100
         if fcf_yield < rf and mom_12m < 0: exit_signals.append('🔴 停損: 溢酬消失且動量破滅')
