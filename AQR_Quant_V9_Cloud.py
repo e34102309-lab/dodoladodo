@@ -55,6 +55,33 @@ def flatten_close(hist: pd.DataFrame, ticker: str) -> Optional[pd.Series]:
         return None
 
 # ==============================================================================
+# 全域大氣壓力感測器 (200-Day Trend Filter)
+# ==============================================================================
+def check_global_trend() -> str:
+    trend_msg = ""
+    try:
+        for idx in ['SPY', 'QQQ']:
+            data = yf.download(idx, period='1y', progress=False)
+            if not data.empty and len(data) > 200:
+                close = flatten_close(data, idx)
+                if close is not None:
+                    sma_200 = close.rolling(window=200).mean()
+                    last_close = float(close.iloc[-1])
+                    last_sma = float(sma_200.iloc[-1])
+                    
+                    # 檢驗是否連續 5 個交易日 (一週) 跌破 200 SMA
+                    recent_closes = close.iloc[-5:]
+                    recent_smas = sma_200.iloc[-5:]
+                    below_sma_week = all(float(c) < float(s) for c, s in zip(recent_closes, recent_smas))
+                    
+                    diff_pct = (last_close / last_sma - 1) * 100
+                    status = "🔴 跌破 200SMA (系統進入冰河保護期)" if below_sma_week else "🟢 穩態多頭"
+                    trend_msg += f"[{idx}] 收盤: {last_close:.2f} | 200SMA: {last_sma:.2f} ({diff_pct:+.2f}%) -> {status}\n"
+    except Exception as e:
+        trend_msg += f"趨勢感測器異常: {e}\n"
+    return trend_msg if trend_msg else "大氣壓力感測器離線。\n"
+
+# ==============================================================================
 # 動態 Beta 與 WACC 引擎
 # ==============================================================================
 def calculate_dynamic_beta(ticker: str) -> float:
@@ -96,7 +123,7 @@ def calculate_dynamic_wacc(ticker: str, debt: float, cash: float,
     return float(np.clip(wacc, 0.06, 0.20))
 
 # ==============================================================================
-# SEC 原生爬蟲 V9 (感測器頻寬升級)
+# SEC 原生爬蟲 V9 
 # ==============================================================================
 class RateLimitedSession:
     def __init__(self):
@@ -120,13 +147,7 @@ class SECDataDistiller:
         self.config = {
             'OCF': ['NetCashProvidedByUsedInOperatingActivities'],
             'CapEx': ['PaymentsToAcquirePropertyPlantAndEquipment', 'PropertyPlantAndEquipmentAdditions'],
-            'SBC': [
-                'ShareBasedCompensation', 
-                'StockBasedCompensation',
-                'AllocatedShareBasedCompensationExpense',
-                'ShareBasedCompensationExpense',
-                'AdjustmentForAmortization'
-            ],
+            'SBC': ['ShareBasedCompensation', 'StockBasedCompensation', 'AllocatedShareBasedCompensationExpense', 'ShareBasedCompensationExpense', 'AdjustmentForAmortization'],
             'EBIT': ['OperatingIncomeLoss'],
             'Interest': ['InterestExpense', 'InterestExpenseDebt'],
             'DnA': ['DepreciationDepletionAndAmortization', 'DepreciationAndAmortization'],
@@ -166,7 +187,7 @@ class SECDataDistiller:
         return False
 
 # ==============================================================================
-# 核心管線 V9 (含 Stage 0 與雙層 SBC 備援)
+# 核心管線 V9 
 # ==============================================================================
 def run_v9_pipeline(ticker: str, cik: str, email: str) -> dict:
     time.sleep(random.uniform(0.5, 1.5))
@@ -174,16 +195,17 @@ def run_v9_pipeline(ticker: str, cik: str, email: str) -> dict:
         stock = yf.Ticker(ticker)
         info = stock.info
         
-        # ── Stage 0 粗餾塔 ──────────────────────────────────────────────────
-        sector = info.get('sector', 'Unknown')
-        if sector in ['Financial Services', 'Real Estate', 'Financials']:
-            return {"Ticker": ticker, "Status": "Drop: 產業隔離"}
-            
+        # ── Stage 0 市值與獲利基本過濾 ──────────────────────────────────
         price = info.get('currentPrice', info.get('regularMarketPrice', 1))
         shares = info.get('sharesOutstanding', 1) / 1e9
         mcap = price * shares
         if mcap < 5.0: return {"Ticker": ticker, "Status": "Fail: 市值低於50億"}
         if info.get('trailingEps', -1) <= 0: return {"Ticker": ticker, "Status": "Fail: 過去一年虧損"}
+
+        # 獲取成長旁通所需數據
+        gross_margin = float(info.get('grossMargins', 0.0) or 0.0)
+        rev_growth = float(info.get('revenueGrowth', 0.0) or 0.0)
+        total_revenue = float(info.get('totalRevenue', 0.0) or 0.0) / 1e9
 
         # ── Stage 1 精密 SEC 爬蟲與備援 ────────────────────────────────────
         sec = SECDataDistiller(email)
@@ -209,9 +231,7 @@ def run_v9_pipeline(ticker: str, cik: str, email: str) -> dict:
 
         if capex == 0: capex = abs(info.get('capitalExpenditures', 0)) / 1e9
 
-        # SBC 雙層真實數據備援
-        if sbc == 0: 
-            sbc = abs(info.get('sharesBasedCompensation', 0) or 0) / 1e9
+        if sbc == 0: sbc = abs(info.get('sharesBasedCompensation', 0) or 0) / 1e9
         if sbc == 0:
             try:
                 cf = stock.cashflow
@@ -223,32 +243,26 @@ def run_v9_pipeline(ticker: str, cik: str, email: str) -> dict:
                             break
             except Exception: pass
         if sbc == 0: return {"Ticker": ticker, "Status": "Drop: SBC數據破缺"}
-# =====================================================================
-        # ── Stage 1.5 升級：TTM (過去 12 個月) 最新動態滾動引擎 ──
-        # 作用：用最新的 4 個 10-Q 季報加總，覆寫 10-K 的落後穩態，同時保留 V9 的嚴苛扣除公式
-        # =====================================================================
+
+        # ── Stage 1.5 TTM 滾動引擎 ──
         try:
             qcf = stock.quarterly_cashflow
             if qcf is not None and not qcf.empty and len(qcf.columns) >= 4:
-                # 1. 滾動加總最新 4 季的 OCF
                 if 'Operating Cash Flow' in qcf.index:
                     ttm_ocf = float(qcf.loc['Operating Cash Flow'].iloc[:4].fillna(0).sum()) / 1e9
-                    if ttm_ocf != 0: ocf = ttm_ocf  # 覆寫 OCF
-                
-                # 2. 滾動加總最新 4 季的 CapEx
+                    if ttm_ocf != 0: ocf = ttm_ocf  
                 if 'Capital Expenditure' in qcf.index:
                     ttm_capex = float(abs(qcf.loc['Capital Expenditure'].iloc[:4].fillna(0).sum())) / 1e9
-                    if ttm_capex != 0: capex = ttm_capex  # 覆寫 CapEx
-                
-                # 3. 滾動加總最新 4 季的 SBC (維持 V9 第一原理的嚴格扣除)
+                    if ttm_capex != 0: capex = ttm_capex 
                 for label in ['Stock Based Compensation', 'Share Based Compensation']:
                     if label in qcf.index:
                         ttm_sbc = float(abs(qcf.loc[label].iloc[:4].fillna(0).sum())) / 1e9
                         if ttm_sbc != 0: 
-                            sbc = ttm_sbc  # 覆寫 SBC
+                            sbc = ttm_sbc
                             break
         except Exception:
-            pass  # 若季度數據抓取失敗，則安全退回 SEC 10-K 年度穩態
+            pass
+
         # ── Stage 2 絕對安全邊際與雙殺推演 ──────────────────────────────────
         net_debt = debt - cash
         true_ev = max(mcap + net_debt, mcap * 0.10)
@@ -268,46 +282,67 @@ def run_v9_pipeline(ticker: str, cik: str, email: str) -> dict:
 
         if roic < 10 or icr < 5: return {"Ticker": ticker, "Status": "Fail: ROIC或ICR破缺"}
 
+        # 成長股旁通管線：實質 Rule of 40 檢驗
+        is_growth_monster = False
+        real_rule_of_40 = 0.0
+        if total_revenue > 0:
+            real_fcf_margin = real_fcf / total_revenue
+            real_rule_of_40 = (real_fcf_margin + rev_growth) * 100
+            if gross_margin >= 0.75 and (roic - wacc * 100) > 5.0 and real_rule_of_40 >= 40.0:
+                is_growth_monster = True
+
+        # 動態調整 EV/EBITDA 壓力測試底線 (依賴毛利率加權)
+        dynamic_floor = 8.0
+        if gross_margin > 0.50:
+            dynamic_floor = min(20.0, 8.0 + ((gross_margin - 0.50) / 0.10) * 1.5)
+
         ebitda = ebit + dna + sbc
         if ebitda > 0:
             current_mult = true_ev / ebitda
-            stress_ev = (ebitda * 0.70) * max(8.0, current_mult * 0.60)
+            stress_ev = (ebitda * 0.70) * max(dynamic_floor, current_mult * 0.60)
             drawdown_risk = (((stress_ev - net_debt) - mcap) / mcap) * 100
         else:
             drawdown_risk = -999.0
 
         if drawdown_risk < -70: return {"Ticker": ticker, "Status": f"Drop: 極限回撤({drawdown_risk:.1f}%)"}
 
-        # ── 動量與遲滯帶 (加入防爆指數退避機制) ──
+        # ── 動量計算 ──
         mom_12m = 0.0
-        for attempt in range(3):  # 物理防線：最多容許 3 次連線重試
+        for attempt in range(3):
             try:
-                # 隨機抖動 (Jitter)：錯開 4 個平行反應槽的請求時間，避免瞬間擊穿 API
                 time.sleep(random.uniform(0.5, 2.0))
-                
                 hist = yf.download(ticker, start=datetime.now()-timedelta(days=420), progress=False)
                 close = flatten_close(hist, ticker)
-                
                 if close is not None and not close.empty and len(close) > 200:
                     monthly = close.resample('ME').last()
                     if len(monthly) >= 13: 
                         mom_12m = (float(monthly.iloc[-2]) / float(monthly.iloc[-13]) - 1) * 100
-                        break  # 數據成功萃取，強制跳出重試迴圈
+                        break
             except Exception:
-                # 若被伺服器阻擋，則休眠 2^attempt 秒後再試 (1秒 -> 2秒 -> 4秒)
                 time.sleep(2 ** attempt)
+
+        # ── 系統判定燈號 ──
         exit_signals = []
         rf = get_risk_free_rate() * 100
-        if fcf_yield < rf and mom_12m < 0: exit_signals.append('🔴 停損: 溢酬消失且動量破滅')
-        elif roic < wacc * 100: exit_signals.append('🔴 停損: 價值摧毀(ROIC < WACC)')
-        if sec.check_q_yoy_decline(df_ocf): exit_signals.append('🟡 預警: OCF YoY衰退')
+        
+        if is_growth_monster:
+            if sec.check_q_yoy_decline(df_ocf): 
+                exit_signals.append('🟡 預警: 成長股OCF衰退')
+            else:
+                exit_signals.append('🚀 成長旁通: Rule of 40 通行證 ✅')
+        else:
+            if fcf_yield < rf and mom_12m < 0: exit_signals.append('🔴 停損: 溢酬消失且動量破滅')
+            elif roic < wacc * 100: exit_signals.append('🔴 停損: 價值摧毀(ROIC < WACC)')
+            if sec.check_q_yoy_decline(df_ocf): exit_signals.append('🟡 預警: OCF YoY衰退')
+            
+        if not exit_signals: exit_signals.append('Hold ✅')
 
         return {
             'Ticker': ticker, 'Status': 'Pass', 'Price': round(price, 2),
             'WACC(%)': round(wacc * 100, 2), 'ROIC(%)': round(roic, 2),
             'FCF_Yield(%)': round(fcf_yield, 2), 'Real_FCF(B)': round(real_fcf, 3),
             'Momentum(%)': round(mom_12m, 2), 'Max_Drawdown_Risk(%)': round(drawdown_risk, 1),
-            'Exit_Signal': exit_signals[0] if exit_signals else 'Hold ✅'
+            'Exit_Signal': exit_signals[0]
         }
 
     except Exception as e:
@@ -326,7 +361,7 @@ def calculate_composite_alpha(results: List[dict]) -> pd.DataFrame:
 # ==============================================================================
 # 自動寄信模組
 # ==============================================================================
-def send_email_report(df: pd.DataFrame, receiver_email: str):
+def send_email_report(df: pd.DataFrame, receiver_email: str, trend_report: str):
     sender_email = os.environ.get('EMAIL_SENDER')
     sender_pwd = os.environ.get('EMAIL_PASSWORD')
     
@@ -339,7 +374,9 @@ def send_email_report(df: pd.DataFrame, receiver_email: str):
     msg['From'] = sender_email
     msg['To'] = receiver_email
     
-    content = "總工程師您好：\n\n本日全市場 V9 精餾作業已完成。\n"
+    content = f"總工程師您好：\n\n【全域大氣壓力監測 (200 SMA)】\n{trend_report}\n"
+    content += "-"*50 + "\n\n本日全市場 V9 精餾作業已完成。\n"
+    
     if df.empty:
         content += "警告：今日無任何標的通過物理邊界測試。"
     else:
@@ -372,11 +409,17 @@ if __name__ == "__main__":
     CACHE_FILE = "qualified_universe.csv"
     
     print("\n" + "="*80)
-    print(" 啟動 V9 雲端量產管線 | Stage 0 粗餾 -> 平行反應槽 -> SMTP 輸出")
+    print(" 啟動 V9 雲端量產管線 | 200 SMA 主閥門 -> 成長股旁通 -> SMTP 輸出")
     print("="*80 + "\n")
+
+    # 1. 啟動全域 200SMA 感測器
+    print(" 啟動大氣壓力感測器...")
+    trend_report = check_global_trend()
+    print("-" * 50 + "\n" + trend_report.strip() + "\n" + "-" * 50)
 
     get_risk_free_rate()
 
+    # 2. 載入原料
     try:
         df_cache = pd.read_csv(CACHE_FILE)
         universe = dict(zip(df_cache['Ticker'], df_cache['CIK']))
@@ -390,6 +433,7 @@ if __name__ == "__main__":
     passed = 0
     processed = 0
 
+    # 3. 平行精餾
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
         future_to_ticker = {executor.submit(run_v9_pipeline, t, c, USER_EMAIL): t for t, c in universe.items()}
         for future in concurrent.futures.as_completed(future_to_ticker):
@@ -401,10 +445,14 @@ if __name__ == "__main__":
             if res.get('Status') == 'Pass':
                 passed += 1
                 msg = f"✓ WACC={res.get('WACC(%)')}% FCFY={res.get('FCF_Yield(%)')}% Risk={res.get('Max_Drawdown_Risk(%)')}%"
+                if '🚀' in res.get('Exit_Signal', ''):
+                    msg += " [🚀成長引擎]"
             else:
                 msg = res.get('Status')
             print(f" [{processed:>4}/{total}] {ticker:<6} {msg}")
 
     print(f"\n 精餾完畢：{passed} / {total} 檔通關")
+    
+    # 4. 輸出與發報
     final_df = calculate_composite_alpha(results)
-    send_email_report(final_df, USER_EMAIL)
+    send_email_report(final_df, USER_EMAIL, trend_report)
