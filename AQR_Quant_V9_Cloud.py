@@ -211,11 +211,6 @@ def run_v9_pipeline(ticker: str, cik: str, email: str) -> dict:
         rev_growth = float(info.get('revenueGrowth', 0.0) or 0.0)
         total_revenue = float(info.get('totalRevenue', 0.0) or 0.0) / 1e9
 
-        # 獲取成長旁通所需數據
-        gross_margin = float(info.get('grossMargins', 0.0) or 0.0)
-        rev_growth = float(info.get('revenueGrowth', 0.0) or 0.0)
-        total_revenue = float(info.get('totalRevenue', 0.0) or 0.0) / 1e9
-
         # ── Stage 1 精密 SEC 爬蟲與備援 ────────────────────────────────────
         sec = SECDataDistiller(email)
         df_ocf = sec.fetch_concept(cik, 'OCF')
