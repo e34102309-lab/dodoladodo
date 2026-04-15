@@ -195,12 +195,21 @@ def run_v9_pipeline(ticker: str, cik: str, email: str) -> dict:
         stock = yf.Ticker(ticker)
         info = stock.info
         
-        # ── Stage 0 市值與獲利基本過濾 ──────────────────────────────────
+        # ── Stage 0 從 DB 繼承信任 (僅保留防呆底線) ─────────────────────────────
         price = info.get('currentPrice', info.get('regularMarketPrice', 1))
         shares = info.get('sharesOutstanding', 1) / 1e9
         mcap = price * shares
-        if mcap < 5.0: return {"Ticker": ticker, "Status": "Fail: 市值低於50億"}
-        if info.get('trailingEps', -1) <= 0: return {"Ticker": ticker, "Status": "Fail: 過去一年虧損"}
+        
+        # 配合 DB Builder 的 1.5B 門檻，雲端防線退至 1.0B 作為防呆緩衝
+        if mcap < 1.0: 
+            return {"Ticker": ticker, "Status": "Fail: 市值異常崩跌 (<1.0B)"}
+        
+        # 徹底移除 trailingEps 限制，讓 SaaS 成長股順利進入 Rule of 40 旁通管線
+        
+        # 獲取成長旁通所需數據
+        gross_margin = float(info.get('grossMargins', 0.0) or 0.0)
+        rev_growth = float(info.get('revenueGrowth', 0.0) or 0.0)
+        total_revenue = float(info.get('totalRevenue', 0.0) or 0.0) / 1e9
 
         # 獲取成長旁通所需數據
         gross_margin = float(info.get('grossMargins', 0.0) or 0.0)
