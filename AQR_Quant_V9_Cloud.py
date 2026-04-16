@@ -93,6 +93,8 @@ def calculate_dynamic_beta(ticker: str) -> float:
         if var_market == 0: return 1.0
         return float(np.clip(returns.cov().loc[ticker, 'SPY'] / var_market, 0.5, 2.5))
     except Exception as e:
+        # V9.3 修正：補回靜默失敗的 Log 追蹤
+        logger.debug(f"[{ticker}] Beta 計算異常，使用預設值 1.0: {e}")
         return 1.0
 
 def calculate_dynamic_wacc(ticker: str, debt: float, cash: float, 
@@ -112,7 +114,7 @@ def calculate_dynamic_wacc(ticker: str, debt: float, cash: float,
     return float(np.clip(wacc, 0.06, 0.20))
 
 # ==============================================================================
-# SEC 原生爬蟲 (擴充財報探針)
+# SEC 原生爬蟲
 # ==============================================================================
 class RateLimitedSession:
     def __init__(self, calls=9, period=1.0):
@@ -164,7 +166,6 @@ class SECDataDistiller:
             'Equity': ['StockholdersEquity'],
             'RND': ['ResearchAndDevelopmentExpense'],
             'DefRev': ['DeferredRevenue', 'ContractWithCustomerLiability'],
-            # V9.2 新增探針：總資產、流動負債、融資應收款
             'Assets': ['Assets'],
             'CurrLiab': ['LiabilitiesCurrent'],
             'FinRec': ['FinancingReceivableNet', 'NotesAndLoansReceivableNet', 'LoansAndLeasesReceivableNet']
@@ -207,13 +208,12 @@ class SECDataDistiller:
         return False if match.empty else (float(latest['val']) < float(match['val'].iloc[-1]) * 0.85)
 
 # ==============================================================================
-# 核心管線 V9.2 (企業級透視版：對沖金融槓桿 + 突破負淨值幻覺)
+# 核心管線 V9.3
 # ==============================================================================
 def run_v9_pipeline(ticker: str, cik: str, email: str) -> dict:
     try:
         stock = yf.Ticker(ticker)
         
-        # ── Stage 0: 嚴謹市值攔截 ──────────────────────────────────────────
         try:
             price = float(stock.fast_info.get('lastPrice', 1.0))
         except Exception:
@@ -237,7 +237,6 @@ def run_v9_pipeline(ticker: str, cik: str, email: str) -> dict:
                     total_revenue = float(fins.loc['Total Revenue'].iloc[0]) / 1e9
             except Exception: pass
 
-        # ── Stage 1: SEC 數據深度萃取 ──────────────────────────────────────
         sec = SECDataDistiller(email)
         df_ocf = sec.fetch_concept(cik, 'OCF')
         df_capex = sec.fetch_concept(cik, 'CapEx')
@@ -250,8 +249,6 @@ def run_v9_pipeline(ticker: str, cik: str, email: str) -> dict:
         df_eq = sec.fetch_concept(cik, 'Equity')
         df_rnd = sec.fetch_concept(cik, 'RND')
         df_defrev = sec.fetch_concept(cik, 'DefRev')
-        
-        # V9.2 新增底層結構探針
         df_assets = sec.fetch_concept(cik, 'Assets')
         df_curr_liab = sec.fetch_concept(cik, 'CurrLiab')
         df_fin_rec = sec.fetch_concept(cik, 'FinRec')
@@ -266,7 +263,6 @@ def run_v9_pipeline(ticker: str, cik: str, email: str) -> dict:
         equity = sec.get_latest_annual(df_eq)
         rnd = abs(sec.get_latest_annual(df_rnd))
         defrev_change = sec.get_yoy_change(df_defrev)
-        
         assets = sec.get_latest_annual(df_assets)
         curr_liab = sec.get_latest_annual(df_curr_liab)
         fin_rec = sec.get_latest_annual(df_fin_rec)
@@ -277,15 +273,11 @@ def run_v9_pipeline(ticker: str, cik: str, email: str) -> dict:
         raw_int = sec.get_latest_annual(df_int)
         interest = max(abs(raw_int), 0.05) if raw_int != 0 else 0.05
 
-        # ── Stage 2: 企業級物理限制器 (會計幻覺徹底中和) ─────────────────────
-        
-        # 1. 融資應收款對沖 (消除 DFS 等內部銀行的假性高槓桿)
         adjusted_debt = max(0.0, debt - fin_rec)
         excess_cash = max(0.0, cash - (total_revenue * 0.02))
         net_debt = max(adjusted_debt - excess_cash, 0.0)
         true_ev = max(mcap + net_debt, mcap * 0.10)
         
-        # D&A 直接取代維持性資本支出
         maint_capex = dna if dna > 0 else capex
         real_fcf = ocf - maint_capex - sbc
         
@@ -293,7 +285,6 @@ def run_v9_pipeline(ticker: str, cik: str, email: str) -> dict:
             reason = "SBC吞噬" if sbc > ocf * 0.4 else "重資本耗損"
             return {"Ticker": ticker, "Status": f"Fail: 實質FCF為負 ({reason})"}
         
-        # FCF Yield 嚴格建立在去槓桿後的真實企業價值上
         fcf_yield = min((real_fcf / true_ev) * 100, 50.0) if true_ev > 0 else 0.0
         
         tax_rate = float(np.clip(info.get('effectiveTaxRate') or 0.21, 0.1, 0.35))
@@ -302,12 +293,9 @@ def run_v9_pipeline(ticker: str, cik: str, email: str) -> dict:
         adjusted_ebit = ebit 
         capitalized_rnd = rnd * 2.5
         
-        # 2. 動態切換 IC 算法 (徹底擊破庫藏股造成的負淨值 ROIC 幻覺)
         if equity > 0:
-            # 穩態企業：使用融資端算法
             ic = max(adjusted_debt + equity + capitalized_rnd - excess_cash, true_ev * 0.10)
         else:
-            # 庫藏股狂熱企業：強制切換至營運端算法 (總資產扣除無息流動負債)
             ic = max(assets - curr_liab - excess_cash, true_ev * 0.10)
             
         roic = min((adjusted_ebit / max(ic, 0.1)) * 100, 100.0)
@@ -321,7 +309,6 @@ def run_v9_pipeline(ticker: str, cik: str, email: str) -> dict:
             real_r40 = ((real_fcf / total_revenue) + billings_growth) * 100
             if gross_margin >= 0.75 and (roic - wacc*100) > 5.0 and real_r40 >= 40.0: is_growth_monster = True
 
-        # 動態 EV 守恆與破產壓力測試 (採用對沖後的淨債務)
         ebitda = adjusted_ebit + dna + sbc
         if ebitda > 0:
             current_mult = true_ev / ebitda
@@ -342,14 +329,25 @@ def run_v9_pipeline(ticker: str, cik: str, email: str) -> dict:
                 mom_12m = min((float(m.iloc[-2]) / float(m.iloc[-13]) - 1) * 100, 200.0)
         except Exception: pass
 
+        # V9.3 修正：字串拼接邏輯，完美保留所有決策軌跡
         exit_signal = "Hold ✅"
         if is_growth_monster:
             exit_signal = "🚀 成長旁通: Rule of 40 通行證 ✅"
-            if sec.check_q_yoy_decline(df_ocf): exit_signal = "🟡 預警: 成長股OCF衰退"
+            if sec.check_q_yoy_decline(df_ocf): 
+                exit_signal += " | 🟡 預警: 成長股OCF衰退"
         else:
-            if fcf_yield < (get_risk_free_rate()*100) and mom_12m < 0: exit_signal = "🔴 停損: 溢酬消失"
-            elif roic < wacc * 100: exit_signal = "🔴 停損: 價值摧毀"
-            if sec.check_q_yoy_decline(df_ocf): exit_signal = "🟡 預警: OCF YoY衰退"
+            # 先判定最嚴格的停損條件
+            if fcf_yield < (get_risk_free_rate()*100) and mom_12m < 0: 
+                exit_signal = "🔴 停損: 溢酬消失"
+            elif roic < wacc * 100: 
+                exit_signal = "🔴 停損: 價值摧毀"
+            
+            # 再判定附加預警條件，確保不會洗掉停損訊號
+            if sec.check_q_yoy_decline(df_ocf): 
+                if exit_signal == "Hold ✅":
+                    exit_signal = "🟡 預警: OCF YoY衰退"
+                else:
+                    exit_signal += " | 🟡 OCF YoY衰退"
 
         return {
             'Ticker': ticker, 'Status': 'Pass', 'Price': round(price, 2),
@@ -376,9 +374,9 @@ def send_email_report(df: pd.DataFrame, receiver_email: str, trend_report: str):
         logger.warning("未設定 EMAIL_SENDER 或 EMAIL_PASSWORD，略過發信。")
         return
     msg = EmailMessage()
-    msg['Subject'] = f"[V9.2 透視版] Alpha 報表 - {datetime.now().strftime('%H:%M:%S')}"
+    msg['Subject'] = f"[V9.3 邏輯補丁版] Alpha 報表 - {datetime.now().strftime('%H:%M:%S')}"
     msg['From'], msg['To'] = sender_email, receiver_email
-    content = f"總工程師您好：\n\n【全域監測】\n{trend_report}\n" + "-"*50 + "\n已實裝負淨值演算法切換與金融應收款對沖機制。\n\n"
+    content = f"總工程師您好：\n\n【全域監測】\n{trend_report}\n" + "-"*50 + "\n已實裝訊號拼接軌跡與日誌追蹤修復。\n\n"
     if df.empty: content += "今日無通關標的。"
     else:
         content += f"共計 {len(df)} 檔通關。\n\n【TOP 5】\n"
@@ -386,7 +384,7 @@ def send_email_report(df: pd.DataFrame, receiver_email: str, trend_report: str):
     msg.set_content(content)
     if not df.empty:
         msg.add_attachment(df.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig'), 
-                           maintype='text', subtype='csv', filename='V9_2_Alpha_Final.csv')
+                           maintype='text', subtype='csv', filename='V9_3_Alpha_Final.csv')
     try:
         with smtplib.SMTP('smtp.gmail.com', 587) as server:
             server.starttls()
@@ -400,7 +398,7 @@ if __name__ == "__main__":
     USER_EMAIL = os.environ.get('USER_EMAIL', 'a7924177@gmail.com')
     CACHE_FILE = "qualified_universe.csv"
     
-    print("\n>>> 點火啟動：V9.2 企業級透視版本 <<<\n")
+    print("\n>>> 點火啟動：V9.3 邏輯補丁修復版本 <<<\n")
     trend = check_global_trend()
     
     try:
