@@ -57,9 +57,6 @@ def flatten_close(hist: pd.DataFrame, ticker: str) -> Optional[pd.Series]:
         logger.debug(f"[{ticker}] 收盤價展平失敗: {e}")
         return None
 
-# ==============================================================================
-# 全域大氣壓力感測器 (200-Day Trend Filter)
-# ==============================================================================
 def check_global_trend() -> str:
     trend_msg = ""
     try:
@@ -82,9 +79,6 @@ def check_global_trend() -> str:
         trend_msg += f"趨勢感測器異常: {e}\n"
     return trend_msg if trend_msg else "大氣壓力感測器離線。\n"
 
-# ==============================================================================
-# 動態 WACC 引擎
-# ==============================================================================
 def calculate_dynamic_beta(ticker: str) -> float:
     try:
         end = datetime.now()
@@ -99,7 +93,6 @@ def calculate_dynamic_beta(ticker: str) -> float:
         if var_market == 0: return 1.0
         return float(np.clip(returns.cov().loc[ticker, 'SPY'] / var_market, 0.5, 2.5))
     except Exception as e:
-        logger.debug(f"[{ticker}] Beta 計算失敗，使用預設值 1.0 ({e})")
         return 1.0
 
 def calculate_dynamic_wacc(ticker: str, debt: float, cash: float, 
@@ -119,12 +112,12 @@ def calculate_dynamic_wacc(ticker: str, debt: float, cash: float,
     return float(np.clip(wacc, 0.06, 0.20))
 
 # ==============================================================================
-# SEC 原生爬蟲 (執行緒安全速率限流版)
+# SEC 原生爬蟲 (擴充財報探針)
 # ==============================================================================
 class RateLimitedSession:
     def __init__(self, calls=9, period=1.0):
         self.session = requests.Session()
-        self.calls = calls # SEC limits to 10 req/s, using 9 for safety margin
+        self.calls = calls 
         self.period = period
         self.lock = threading.Lock()
         self.timestamps = []
@@ -146,12 +139,10 @@ class RateLimitedSession:
                 resp = self.session.get(url, headers=headers, timeout=15)
                 if resp.status_code == 200: return resp
                 elif resp.status_code in (429, 503):
-                    logger.warning(f"SEC 頻率限制觸發 ({resp.status_code})，準備退避...")
                     time.sleep((2 ** attempt) * 2)
                 else: 
                     return resp
-            except requests.RequestException as e:
-                logger.warning(f"SEC 請求連線錯誤: {e}")
+            except requests.RequestException:
                 time.sleep(3)
         return None
 
@@ -159,7 +150,6 @@ _GLOBAL_SEC_SESSION = RateLimitedSession()
 
 class SECDataDistiller:
     def __init__(self, email: str):
-        # 嚴格遵循 SEC 規範，防止機構 IP 遭到封鎖
         self.headers = {'User-Agent': f'QuantResearchProject {email}'}
         self.session = _GLOBAL_SEC_SESSION
         self.config = {
@@ -173,7 +163,11 @@ class SECDataDistiller:
             'Cash': ['CashAndCashEquivalentsAtCarryingValue'],
             'Equity': ['StockholdersEquity'],
             'RND': ['ResearchAndDevelopmentExpense'],
-            'DefRev': ['DeferredRevenue', 'ContractWithCustomerLiability']
+            'DefRev': ['DeferredRevenue', 'ContractWithCustomerLiability'],
+            # V9.2 新增探針：總資產、流動負債、融資應收款
+            'Assets': ['Assets'],
+            'CurrLiab': ['LiabilitiesCurrent'],
+            'FinRec': ['FinancingReceivableNet', 'NotesAndLoansReceivableNet', 'LoansAndLeasesReceivableNet']
         }
 
     def fetch_concept(self, cik: str, concept: str) -> pd.DataFrame:
@@ -187,8 +181,8 @@ class SECDataDistiller:
                         df = pd.DataFrame(data)
                         df['end'] = pd.to_datetime(df['end'])
                         return df.sort_values('end').drop_duplicates(subset=['end', 'form'], keep='last')
-                except Exception as e:
-                    logger.debug(f"JSON 解析錯誤 ({tag}): {e}")
+                except Exception:
+                    pass
         return pd.DataFrame()
 
     def get_latest_annual(self, df: pd.DataFrame) -> float:
@@ -213,7 +207,7 @@ class SECDataDistiller:
         return False if match.empty else (float(latest['val']) < float(match['val'].iloc[-1]) * 0.85)
 
 # ==============================================================================
-# 核心管線 V9.1 (會計幻覺淨化版)
+# 核心管線 V9.2 (企業級透視版：對沖金融槓桿 + 突破負淨值幻覺)
 # ==============================================================================
 def run_v9_pipeline(ticker: str, cik: str, email: str) -> dict:
     try:
@@ -227,13 +221,8 @@ def run_v9_pipeline(ticker: str, cik: str, email: str) -> dict:
             price = info.get('currentPrice', info.get('regularMarketPrice', 1.0))
             
         info = stock.info
-        
-        # 捨棄 fast_info 浮動市值，強制使用流通股數精算
         shares_out = info.get('sharesOutstanding') or info.get('impliedSharesOutstanding', 0)
-        if shares_out > 0:
-            mcap = (price * shares_out) / 1e9
-        else:
-            mcap = float(stock.fast_info.get('marketCap', 0.0)) / 1e9
+        mcap = (price * shares_out) / 1e9 if shares_out > 0 else float(stock.fast_info.get('marketCap', 0.0)) / 1e9
 
         if mcap < 1.0: return {"Ticker": ticker, "Status": "Fail: 市值異常或破缺"}
         
@@ -248,7 +237,7 @@ def run_v9_pipeline(ticker: str, cik: str, email: str) -> dict:
                     total_revenue = float(fins.loc['Total Revenue'].iloc[0]) / 1e9
             except Exception: pass
 
-        # ── Stage 1: SEC 數據抓取與還原 ──────────────────────────────────
+        # ── Stage 1: SEC 數據深度萃取 ──────────────────────────────────────
         sec = SECDataDistiller(email)
         df_ocf = sec.fetch_concept(cik, 'OCF')
         df_capex = sec.fetch_concept(cik, 'CapEx')
@@ -261,6 +250,11 @@ def run_v9_pipeline(ticker: str, cik: str, email: str) -> dict:
         df_eq = sec.fetch_concept(cik, 'Equity')
         df_rnd = sec.fetch_concept(cik, 'RND')
         df_defrev = sec.fetch_concept(cik, 'DefRev')
+        
+        # V9.2 新增底層結構探針
+        df_assets = sec.fetch_concept(cik, 'Assets')
+        df_curr_liab = sec.fetch_concept(cik, 'CurrLiab')
+        df_fin_rec = sec.fetch_concept(cik, 'FinRec')
 
         ocf = sec.get_latest_annual(df_ocf)
         capex = abs(sec.get_latest_annual(df_capex))
@@ -272,6 +266,10 @@ def run_v9_pipeline(ticker: str, cik: str, email: str) -> dict:
         equity = sec.get_latest_annual(df_eq)
         rnd = abs(sec.get_latest_annual(df_rnd))
         defrev_change = sec.get_yoy_change(df_defrev)
+        
+        assets = sec.get_latest_annual(df_assets)
+        curr_liab = sec.get_latest_annual(df_curr_liab)
+        fin_rec = sec.get_latest_annual(df_fin_rec)
 
         if capex == 0: capex = abs(info.get('capitalExpenditures') or 0) / 1e9
         if sbc == 0: sbc = abs(info.get('shareBasedCompensation') or 0) / 1e9
@@ -279,12 +277,15 @@ def run_v9_pipeline(ticker: str, cik: str, email: str) -> dict:
         raw_int = sec.get_latest_annual(df_int)
         interest = max(abs(raw_int), 0.05) if raw_int != 0 else 0.05
 
-        # ── Stage 2: 物理限制器 (會計幻覺剔除) ──────────────────────────
+        # ── Stage 2: 企業級物理限制器 (會計幻覺徹底中和) ─────────────────────
+        
+        # 1. 融資應收款對沖 (消除 DFS 等內部銀行的假性高槓桿)
+        adjusted_debt = max(0.0, debt - fin_rec)
         excess_cash = max(0.0, cash - (total_revenue * 0.02))
-        net_debt = max(debt - excess_cash, 0.0)
+        net_debt = max(adjusted_debt - excess_cash, 0.0)
         true_ev = max(mcap + net_debt, mcap * 0.10)
         
-        # 強制替代基準：D&A 直接取代維持性資本支出
+        # D&A 直接取代維持性資本支出
         maint_capex = dna if dna > 0 else capex
         real_fcf = ocf - maint_capex - sbc
         
@@ -292,18 +293,23 @@ def run_v9_pipeline(ticker: str, cik: str, email: str) -> dict:
             reason = "SBC吞噬" if sbc > ocf * 0.4 else "重資本耗損"
             return {"Ticker": ticker, "Status": f"Fail: 實質FCF為負 ({reason})"}
         
-        # 🛡️ 限制器一：FCF Yield 封頂 50%
+        # FCF Yield 嚴格建立在去槓桿後的真實企業價值上
         fcf_yield = min((real_fcf / true_ev) * 100, 50.0) if true_ev > 0 else 0.0
         
         tax_rate = float(np.clip(info.get('effectiveTaxRate') or 0.21, 0.1, 0.35))
-        wacc = calculate_dynamic_wacc(ticker, debt, cash, mcap, equity, tax_rate)
+        wacc = calculate_dynamic_wacc(ticker, adjusted_debt, cash, mcap, equity, tax_rate)
         
-        # 淨化 EBIT 邏輯 (剔除過度樂觀的 R&D 全額加回)
         adjusted_ebit = ebit 
         capitalized_rnd = rnd * 2.5
-        ic = max(debt + max(equity, 0.0) + capitalized_rnd - excess_cash, true_ev * 0.10)
         
-        # 🛡️ 限制器二：ROIC 封頂 100%
+        # 2. 動態切換 IC 算法 (徹底擊破庫藏股造成的負淨值 ROIC 幻覺)
+        if equity > 0:
+            # 穩態企業：使用融資端算法
+            ic = max(adjusted_debt + equity + capitalized_rnd - excess_cash, true_ev * 0.10)
+        else:
+            # 庫藏股狂熱企業：強制切換至營運端算法 (總資產扣除無息流動負債)
+            ic = max(assets - curr_liab - excess_cash, true_ev * 0.10)
+            
         roic = min((adjusted_ebit / max(ic, 0.1)) * 100, 100.0)
         icr = adjusted_ebit / interest
 
@@ -315,7 +321,7 @@ def run_v9_pipeline(ticker: str, cik: str, email: str) -> dict:
             real_r40 = ((real_fcf / total_revenue) + billings_growth) * 100
             if gross_margin >= 0.75 and (roic - wacc*100) > 5.0 and real_r40 >= 40.0: is_growth_monster = True
 
-        # 🛡️ 限制器三：回撤率必須 <= 0%
+        # 動態 EV 守恆與破產壓力測試 (採用對沖後的淨債務)
         ebitda = adjusted_ebit + dna + sbc
         if ebitda > 0:
             current_mult = true_ev / ebitda
@@ -327,7 +333,6 @@ def run_v9_pipeline(ticker: str, cik: str, email: str) -> dict:
 
         if drawdown_risk < -70: return {"Ticker": ticker, "Status": f"Drop: 極限回撤({drawdown_risk:.1f}%)"}
 
-        # 🛡️ 限制器四：動能封頂 200%
         mom_12m = 0.0
         try:
             hist = yf.download(ticker, start=datetime.now()-timedelta(days=420), progress=False)
@@ -335,8 +340,7 @@ def run_v9_pipeline(ticker: str, cik: str, email: str) -> dict:
             if close is not None and len(close) > 200:
                 m = close.resample('ME').last()
                 mom_12m = min((float(m.iloc[-2]) / float(m.iloc[-13]) - 1) * 100, 200.0)
-        except Exception as e: 
-            logger.debug(f"[{ticker}] 動能計算跳過: {e}")
+        except Exception: pass
 
         exit_signal = "Hold ✅"
         if is_growth_monster:
@@ -358,9 +362,6 @@ def run_v9_pipeline(ticker: str, cik: str, email: str) -> dict:
         logger.error(f"[{ticker}] 處理時發生未預期錯誤: {e}")
         return {"Ticker": ticker, "Status": "Error"}
 
-# ==============================================================================
-# Alpha 排序與報告
-# ==============================================================================
 def calculate_composite_alpha(results: List[dict]) -> pd.DataFrame:
     df = pd.DataFrame([r for r in results if r.get('Status') == 'Pass'])
     if len(df) < 2: return df
@@ -375,9 +376,9 @@ def send_email_report(df: pd.DataFrame, receiver_email: str, trend_report: str):
         logger.warning("未設定 EMAIL_SENDER 或 EMAIL_PASSWORD，略過發信。")
         return
     msg = EmailMessage()
-    msg['Subject'] = f"[V9.1 淨化版] Alpha 報表 - {datetime.now().strftime('%H:%M:%S')}"
+    msg['Subject'] = f"[V9.2 透視版] Alpha 報表 - {datetime.now().strftime('%H:%M:%S')}"
     msg['From'], msg['To'] = sender_email, receiver_email
-    content = f"總工程師您好：\n\n【全域監測】\n{trend_report}\n" + "-"*50 + "\n已實裝四維物理限制器與 D&A 強制替代。\n\n"
+    content = f"總工程師您好：\n\n【全域監測】\n{trend_report}\n" + "-"*50 + "\n已實裝負淨值演算法切換與金融應收款對沖機制。\n\n"
     if df.empty: content += "今日無通關標的。"
     else:
         content += f"共計 {len(df)} 檔通關。\n\n【TOP 5】\n"
@@ -385,7 +386,7 @@ def send_email_report(df: pd.DataFrame, receiver_email: str, trend_report: str):
     msg.set_content(content)
     if not df.empty:
         msg.add_attachment(df.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig'), 
-                           maintype='text', subtype='csv', filename='V9_1_Alpha_Final.csv')
+                           maintype='text', subtype='csv', filename='V9_2_Alpha_Final.csv')
     try:
         with smtplib.SMTP('smtp.gmail.com', 587) as server:
             server.starttls()
@@ -396,11 +397,10 @@ def send_email_report(df: pd.DataFrame, receiver_email: str, trend_report: str):
         logger.error(f"郵件發送失敗: {e}")
 
 if __name__ == "__main__":
-    # 強制綁定指定信箱
     USER_EMAIL = os.environ.get('USER_EMAIL', 'a7924177@gmail.com')
     CACHE_FILE = "qualified_universe.csv"
     
-    print("\n>>> 點火啟動：V9.1 會計幻覺淨化版本 <<<\n")
+    print("\n>>> 點火啟動：V9.2 企業級透視版本 <<<\n")
     trend = check_global_trend()
     
     try:
