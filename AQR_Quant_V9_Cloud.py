@@ -123,7 +123,7 @@ def calculate_dynamic_wacc(ticker: str, debt: float, cash: float,
     return float(np.clip(wacc, 0.06, 0.20))
 
 # ==============================================================================
-# SEC 原生爬蟲 V9 
+# SEC 原生爬蟲 V9 (已植入 R&D 與 DefRev 物理管線)
 # ==============================================================================
 class RateLimitedSession:
     def __init__(self):
@@ -153,7 +153,10 @@ class SECDataDistiller:
             'DnA': ['DepreciationDepletionAndAmortization', 'DepreciationAndAmortization'],
             'Debt': ['LongTermDebt', 'LongTermDebtAndCapitalLeaseObligations', 'DebtCurrent'],
             'Cash': ['CashAndCashEquivalentsAtCarryingValue'],
-            'Equity': ['StockholdersEquity']
+            'Equity': ['StockholdersEquity'],
+            # [物理擴充]：新增研發費用與遞延收入標籤
+            'RND': ['ResearchAndDevelopmentExpense', 'ResearchAndDevelopmentExpenseSoftwareExcludingAcquiredInProcessCost'],
+            'DefRev': ['DeferredRevenue', 'ContractWithCustomerLiability']
         }
 
     def fetch_concept(self, cik: str, concept: str) -> pd.DataFrame:
@@ -172,6 +175,13 @@ class SECDataDistiller:
         if df.empty: return 0.0
         annual = df[df['form'] == '10-K']
         return float(annual['val'].iloc[-1]) / 1e9 if not annual.empty else 0.0
+
+    # [物理擴充]：計算年對年變動率 (用於遞延收入位能)
+    def get_yoy_change(self, df: pd.DataFrame) -> float:
+        if df.empty: return 0.0
+        annual = df[df['form'] == '10-K']
+        if len(annual) < 2: return 0.0
+        return (float(annual['val'].iloc[-1]) - float(annual['val'].iloc[-2])) / 1e9
 
     def check_q_yoy_decline(self, df: pd.DataFrame) -> bool:
         if df.empty: return False
@@ -200,13 +210,10 @@ def run_v9_pipeline(ticker: str, cik: str, email: str) -> dict:
         shares = info.get('sharesOutstanding', 1) / 1e9
         mcap = price * shares
         
-        # 配合 DB Builder 的 1.5B 門檻，雲端防線退至 1.0B 作為防呆緩衝
         if mcap < 1.0: 
             return {"Ticker": ticker, "Status": "Fail: 市值異常崩跌 (<1.0B)"}
         
-        # 徹底移除 trailingEps 限制，讓 SaaS 成長股順利進入 Rule of 40 旁通管線
-        
-        # 獲取成長旁通所需數據
+        # 獲取成長旁通所需數據 (已刪除重複代碼)
         gross_margin = float(info.get('grossMargins', 0.0) or 0.0)
         rev_growth = float(info.get('revenueGrowth', 0.0) or 0.0)
         total_revenue = float(info.get('totalRevenue', 0.0) or 0.0) / 1e9
@@ -222,6 +229,9 @@ def run_v9_pipeline(ticker: str, cik: str, email: str) -> dict:
         df_debt = sec.fetch_concept(cik, 'Debt')
         df_cash = sec.fetch_concept(cik, 'Cash')
         df_eq = sec.fetch_concept(cik, 'Equity')
+        # [物理擴充] 抓取 R&D 與 DefRev
+        df_rnd = sec.fetch_concept(cik, 'RND')
+        df_defrev = sec.fetch_concept(cik, 'DefRev')
 
         ocf = sec.get_latest_annual(df_ocf)
         capex = abs(sec.get_latest_annual(df_capex))
@@ -232,6 +242,9 @@ def run_v9_pipeline(ticker: str, cik: str, email: str) -> dict:
         debt = sec.get_latest_annual(df_debt)
         cash = sec.get_latest_annual(df_cash)
         equity = sec.get_latest_annual(df_eq)
+        # [物理擴充] 轉化 R&D 與 DefRev 數值
+        rnd = abs(sec.get_latest_annual(df_rnd))
+        defrev_change = sec.get_yoy_change(df_defrev)
 
         if capex == 0: capex = abs(info.get('capitalExpenditures', 0)) / 1e9
 
@@ -267,31 +280,48 @@ def run_v9_pipeline(ticker: str, cik: str, email: str) -> dict:
         except Exception:
             pass
 
-        # ── Stage 2 絕對安全邊際與雙殺推演 ──────────────────────────────────
-        net_debt = debt - cash
+        # ── Stage 2 絕對安全邊際與雙殺推演 (四大物理修正實裝) ─────────────────────────
+        
+        # [盲點修復一：營運現金鎖死] 保留營收 2% 作為維持系統運轉的不可動用現金
+        excess_cash = max(0.0, cash - (total_revenue * 0.02))
+        net_debt = debt - excess_cash
+        
+        # EV 守恆：企業真實價值至少為市值的 10%
         true_ev = max(mcap + net_debt, mcap * 0.10)
-        maint_capex = min(dna, capex) if dna > 0 else capex
+        
+        # [盲點修復二：通膨折舊耗損] D&A 歷史成本會低估耗損，CapEx 則可能包含擴張。採動態抗通膨參數
+        maint_capex = max(dna * 1.15, capex * 0.70) if dna > 0 else capex
         real_fcf = ocf - maint_capex - sbc
         
-        if real_fcf <= 0: return {"Ticker": ticker, "Status": "Fail: 實質FCF為負"}
+        if real_fcf <= 0: return {"Ticker": ticker, "Status": "Fail: 實質FCF為負 (SBC吞噬)"}
         
+        # 殖利率強制使用真實企業價值 (EV) 作為分母
         fcf_yield = (real_fcf / true_ev) * 100
         tax_rate = float(np.clip(info.get('effectiveTaxRate', 0.21) or 0.21, 0.1, 0.35))
         wacc = calculate_dynamic_wacc(ticker, debt, cash, mcap, equity, tax_rate)
         
-        ic = max(debt + equity - cash, mcap * 0.10) if equity >= 0 else max(net_debt, mcap * 0.10)
+        # [盲點修復三：R&D 資本化與 ROIC 奇點消除]
+        adjusted_ebit = ebit + rnd # 將 R&D 加回營業利益，視為資本投入
+        adjusted_equity = max(equity, 0.0) # 剝奪庫藏股導致的負數權益特權
+        capitalized_rnd = rnd * 2.5 # 假設 R&D 形成約 2.5 年壽命的無形資產庫
+        
+        ic = max(debt + adjusted_equity + capitalized_rnd - excess_cash, true_ev * 0.10)
         ic = max(ic, 0.05)
-        roic = (ebit / ic) * 100
-        icr = ebit / interest
+        # ROIC 物理封頂 150%，消滅分母過小導致的無限大幻覺
+        roic = min((adjusted_ebit / ic) * 100, 150.0) 
+        icr = adjusted_ebit / interest
 
         if roic < 10 or icr < 5: return {"Ticker": ticker, "Status": "Fail: ROIC或ICR破缺"}
 
-        # 成長股旁通管線：實質 Rule of 40 檢驗
+        # [盲點修復四：Rule of 40 遞延收入位能]
         is_growth_monster = False
         real_rule_of_40 = 0.0
         if total_revenue > 0:
             real_fcf_margin = real_fcf / total_revenue
-            real_rule_of_40 = (real_fcf_margin + rev_growth) * 100
+            # 真實成長 = 帳面營收成長 + (遞延預收帳款變動率)
+            billings_growth = rev_growth + (defrev_change / total_revenue if total_revenue > 0 else 0)
+            real_rule_of_40 = (real_fcf_margin + billings_growth) * 100
+            
             if gross_margin >= 0.75 and (roic - wacc * 100) > 5.0 and real_rule_of_40 >= 40.0:
                 is_growth_monster = True
 
@@ -300,13 +330,17 @@ def run_v9_pipeline(ticker: str, cik: str, email: str) -> dict:
         if gross_margin > 0.50:
             dynamic_floor = min(20.0, 8.0 + ((gross_margin - 0.50) / 0.10) * 1.5)
 
-        ebitda = ebit + dna + sbc
+        # [極限回撤保護：市值下限為零]
+        ebitda = adjusted_ebit + dna + sbc
         if ebitda > 0:
             current_mult = true_ev / ebitda
             stress_ev = (ebitda * 0.70) * max(dynamic_floor, current_mult * 0.60)
-            drawdown_risk = (((stress_ev - net_debt) - mcap) / mcap) * 100
+            # 股權價值在現貨市場的熱力學下限就是 0
+            stress_mcap = max(0.0, stress_ev - net_debt)
+            drawdown_risk = ((stress_mcap - mcap) / mcap) * 100
         else:
-            drawdown_risk = -999.0
+            # 獲利為負時，極限跌幅就是本金全損 (-100%)
+            drawdown_risk = -100.0
 
         if drawdown_risk < -70: return {"Ticker": ticker, "Status": f"Drop: 極限回撤({drawdown_risk:.1f}%)"}
 
@@ -350,7 +384,7 @@ def run_v9_pipeline(ticker: str, cik: str, email: str) -> dict:
         }
 
     except Exception as e:
-        return {"Ticker": ticker, "Status": "Error: 管線例外中斷"}
+        return {"Ticker": ticker, "Status": f"Error: 管線例外中斷 ({str(e)[:10]})"}
 
 def calculate_composite_alpha(results: List[dict]) -> pd.DataFrame:
     df = pd.DataFrame([r for r in results if r.get('Status') == 'Pass'])
@@ -380,6 +414,7 @@ def send_email_report(df: pd.DataFrame, receiver_email: str, trend_report: str):
     
     content = f"總工程師您好：\n\n【全域大氣壓力監測 (200 SMA)】\n{trend_report}\n"
     content += "-"*50 + "\n\n本日全市場 V9 精餾作業已完成。\n"
+    content += "(註: 本次已載入 SBC剝離、R&D資本化、ROIC防奇點與EV熱力學極限防護)\n\n"
     
     if df.empty:
         content += "警告：今日無任何標的通過物理邊界測試。"
