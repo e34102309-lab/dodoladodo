@@ -85,16 +85,6 @@ def check_global_trend() -> str:
 def safe_yf_info(ticker: str) -> dict:
     time.sleep(random.uniform(0.1, 0.4)) # 執行緒抖動，防止瞬間高併發
     stock = yf.Ticker(ticker)
-    def run_v10_pipeline(ticker: str, cik: str, email: str) -> dict:
-    try:
-        # ── Stage 0.1: 實體錯位防線 (Entity Mismatch Filter) ───────────────
-        # 嚴格攔截特別股 (如 WRB-PE, ALL-PB) 與多重股權 (如 WSO-B)
-        if '-' in ticker or '.' in ticker:
-            return {"Ticker": ticker, "Status": "Fail: 排除特別股與多重股權"}
-        # ─────────────────────────────────────────────────────────────
-        
-        stock = yf.Ticker(ticker)
-        # ... (以下保留原本 V10 的 Stage 0 邏輯) ...
     for _ in range(3):
         try:
             info = stock.info
@@ -181,7 +171,6 @@ class SECDataDistiller:
             'CapEx': ['PaymentsToAcquirePropertyPlantAndEquipment', 'PropertyPlantAndEquipmentAdditions'],
             'SBC': ['ShareBasedCompensation', 'StockBasedCompensation', 'AllocatedShareBasedCompensationExpense', 'ShareBasedCompensationExpense', 'AdjustmentForAmortization'],
             'EBIT': ['OperatingIncomeLoss', 'IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest'],
-            # 擴展利息標籤，防止 ICR 失真
             'Interest': ['InterestExpense', 'InterestExpenseDebt', 'InterestExpenseNet', 'InterestAndDebtExpense', 'InvestmentIncomeInterest'],
             'DnA': ['DepreciationDepletionAndAmortization', 'DepreciationAndAmortization'],
             'Debt': ['LongTermDebt', 'LongTermDebtAndCapitalLeaseObligations', 'DebtCurrent'],
@@ -202,7 +191,6 @@ class SECDataDistiller:
                     if data:
                         df = pd.DataFrame(data)
                         df['end'] = pd.to_datetime(df['end'])
-                        # 確保資料的時效性 (剔除太舊的死皮數據)
                         df = df.sort_values('end').drop_duplicates(subset=['end', 'form'], keep='last')
                         return df
                 except Exception: pass
@@ -230,10 +218,15 @@ class SECDataDistiller:
         return False if match.empty else (float(latest['val']) < float(match['val'].iloc[-1]) * 0.85)
 
 # ==============================================================================
-# 核心管線 V10.0 (Bedrock Edition)
+# 核心管線 V10.1 (Bedrock Edition 修復版)
 # ==============================================================================
 def run_v10_pipeline(ticker: str, cik: str, email: str) -> dict:
     try:
+        # ── Stage 0.1: 實體錯位防線 (Entity Mismatch Filter) ───────────────
+        if '-' in ticker or '.' in ticker:
+            return {"Ticker": ticker, "Status": "Fail: 排除特別股與多重股權"}
+        # ─────────────────────────────────────────────────────────────
+        
         stock = yf.Ticker(ticker)
         
         # ── Stage 0: 價格與市值絕對防線 ──────────────────────────────────────────
@@ -245,7 +238,6 @@ def run_v10_pipeline(ticker: str, cik: str, email: str) -> dict:
         
         if price == 0.0: price = float(info.get('currentPrice', info.get('regularMarketPrice', 0.0)))
         
-        # 終極備援：如果連 info 都抓不到，直接調用歷史 K 線
         if price == 0.0:
             try:
                 hist = stock.history(period='1d', progress=False)
@@ -316,12 +308,11 @@ def run_v10_pipeline(ticker: str, cik: str, email: str) -> dict:
 
         # ── Stage 2: 物理限制器與核心運算 (Mode B 強制實裝) ────────────────────
         
-        adjusted_debt = max(0.0, debt - fin_rec) # 剔除 DFS 等內部銀行應收款
+        adjusted_debt = max(0.0, debt - fin_rec)
         excess_cash = max(0.0, cash - (total_revenue * 0.02))
         net_debt = max(adjusted_debt - excess_cash, 0.0)
         true_ev = max(mcap + net_debt, mcap * 0.10)
         
-        # 指標一：穩態實質 FCF Yield (強制以 D&A 替代)
         maint_capex = dna if dna > 0 else capex
         real_fcf = ocf - maint_capex - sbc
         
@@ -337,11 +328,9 @@ def run_v10_pipeline(ticker: str, cik: str, email: str) -> dict:
         adjusted_ebit = ebit 
         capitalized_rnd = rnd * 2.5
         
-        # 修正 ROIC 天花板異常：將營收底線納入 IC 保底，要求至少 15% 營收佔比的營運資金
         ic_floor = max(true_ev * 0.10, total_revenue * 0.15)
         ic = max(adjusted_debt + max(equity, 0.0) + capitalized_rnd - excess_cash, ic_floor)
             
-        # 指標二：利息保障倍數 (ICR)
         roic = min((adjusted_ebit / max(ic, 0.1)) * 100, 100.0)
         icr = adjusted_ebit / interest
 
@@ -353,7 +342,6 @@ def run_v10_pipeline(ticker: str, cik: str, email: str) -> dict:
             real_r40 = ((real_fcf / total_revenue) + billings_growth) * 100
             if gross_margin >= 0.75 and (roic - wacc*100) > 5.0 and real_r40 >= 40.0: is_growth_monster = True
 
-        # 指標三：動態 EV 守恆測試 (估值雙殺極限回撤)
         ebitda = adjusted_ebit + dna + sbc
         if ebitda > 0:
             current_mult = true_ev / ebitda
@@ -365,9 +353,8 @@ def run_v10_pipeline(ticker: str, cik: str, email: str) -> dict:
 
         if drawdown_risk < -70: return {"Ticker": ticker, "Status": f"Drop: 極限回撤({drawdown_risk:.1f}%)"}
 
-       mom_12m = 0.0
+        mom_12m = 0.0
         try:
-            # 修正 yfinance 參數錯誤，回歸最精準的 timedelta 日期推算
             hist = yf.download(ticker, start=datetime.now()-timedelta(days=420), progress=False)
             close = flatten_close(hist, ticker)
             if close is not None and len(close) > 200:
@@ -375,6 +362,7 @@ def run_v10_pipeline(ticker: str, cik: str, email: str) -> dict:
                 mom_12m = min((float(m.iloc[-2]) / float(m.iloc[-13]) - 1) * 100, 200.0)
         except Exception as e:
             logger.debug(f"[{ticker}] 動能計算異常: {e}")
+
         # ── Stage 3: 決策訊號拼接 ──────────────────────────────────────────────
         exit_signal = "Hold ✅"
         if is_growth_monster:
@@ -422,9 +410,9 @@ def send_email_report(df: pd.DataFrame, receiver_email: str, trend_report: str):
         logger.warning("未設定 EMAIL_SENDER 或 EMAIL_PASSWORD，略過發信。")
         return
     msg = EmailMessage()
-    msg['Subject'] = f"[V10.0 磐石版] Alpha 報表 - {datetime.now().strftime('%H:%M:%S')}"
+    msg['Subject'] = f"[V10.1 最終修復版] Alpha 報表 - {datetime.now().strftime('%H:%M:%S')}"
     msg['From'], msg['To'] = sender_email, receiver_email
-    content = f"總工程師您好：\n\n【全域監測】\n{trend_report}\n" + "-"*50 + "\n系統已升級至 V10.0 磐石架構，破除網路 I/O 封鎖與 100% 視覺失真。\n\n"
+    content = f"總工程師您好：\n\n【全域監測】\n{trend_report}\n" + "-"*50 + "\n系統已升級至 V10.1，修復動能失效與實體錯位 Bug。\n\n"
     if df.empty: content += "今日無通關標的。"
     else:
         content += f"共計 {len(df)} 檔通關。\n\n【TOP 5】\n"
@@ -432,7 +420,7 @@ def send_email_report(df: pd.DataFrame, receiver_email: str, trend_report: str):
     msg.set_content(content)
     if not df.empty:
         msg.add_attachment(df.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig'), 
-                           maintype='text', subtype='csv', filename='V10_Alpha_Final.csv')
+                           maintype='text', subtype='csv', filename='V10_1_Alpha_Final.csv')
     try:
         with smtplib.SMTP('smtp.gmail.com', 587) as server:
             server.starttls()
@@ -446,7 +434,7 @@ if __name__ == "__main__":
     USER_EMAIL = os.environ.get('USER_EMAIL', 'a7924177@gmail.com')
     CACHE_FILE = "qualified_universe.csv"
     
-    print("\n>>> 點火啟動：V10.0 磐石版 (Bedrock Edition) <<<\n")
+    print("\n>>> 點火啟動：V10.1 最終修復版 <<<\n")
     trend = check_global_trend()
     
     try:
