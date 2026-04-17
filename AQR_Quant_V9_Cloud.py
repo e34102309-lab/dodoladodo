@@ -85,6 +85,16 @@ def check_global_trend() -> str:
 def safe_yf_info(ticker: str) -> dict:
     time.sleep(random.uniform(0.1, 0.4)) # 執行緒抖動，防止瞬間高併發
     stock = yf.Ticker(ticker)
+    def run_v10_pipeline(ticker: str, cik: str, email: str) -> dict:
+    try:
+        # ── Stage 0.1: 實體錯位防線 (Entity Mismatch Filter) ───────────────
+        # 嚴格攔截特別股 (如 WRB-PE, ALL-PB) 與多重股權 (如 WSO-B)
+        if '-' in ticker or '.' in ticker:
+            return {"Ticker": ticker, "Status": "Fail: 排除特別股與多重股權"}
+        # ─────────────────────────────────────────────────────────────
+        
+        stock = yf.Ticker(ticker)
+        # ... (以下保留原本 V10 的 Stage 0 邏輯) ...
     for _ in range(3):
         try:
             info = stock.info
@@ -355,14 +365,16 @@ def run_v10_pipeline(ticker: str, cik: str, email: str) -> dict:
 
         if drawdown_risk < -70: return {"Ticker": ticker, "Status": f"Drop: 極限回撤({drawdown_risk:.1f}%)"}
 
-        mom_12m = 0.0
+       mom_12m = 0.0
         try:
-            hist = stock.history(period='400d', progress=False)
-            if not hist.empty and len(hist) > 200:
-                m = hist['Close'].resample('ME').last()
+            # 修正 yfinance 參數錯誤，回歸最精準的 timedelta 日期推算
+            hist = yf.download(ticker, start=datetime.now()-timedelta(days=420), progress=False)
+            close = flatten_close(hist, ticker)
+            if close is not None and len(close) > 200:
+                m = close.resample('ME').last()
                 mom_12m = min((float(m.iloc[-2]) / float(m.iloc[-13]) - 1) * 100, 200.0)
-        except Exception: pass
-
+        except Exception as e:
+            logger.debug(f"[{ticker}] 動能計算異常: {e}")
         # ── Stage 3: 決策訊號拼接 ──────────────────────────────────────────────
         exit_signal = "Hold ✅"
         if is_growth_monster:
