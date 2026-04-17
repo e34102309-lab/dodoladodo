@@ -93,7 +93,6 @@ def calculate_dynamic_beta(ticker: str) -> float:
         if var_market == 0: return 1.0
         return float(np.clip(returns.cov().loc[ticker, 'SPY'] / var_market, 0.5, 2.5))
     except Exception as e:
-        # V9.3 修正：補回靜默失敗的 Log 追蹤
         logger.debug(f"[{ticker}] Beta 計算異常，使用預設值 1.0: {e}")
         return 1.0
 
@@ -208,23 +207,30 @@ class SECDataDistiller:
         return False if match.empty else (float(latest['val']) < float(match['val'].iloc[-1]) * 0.85)
 
 # ==============================================================================
-# 核心管線 V9.3
+# 核心管線 V9.4 (終極修復版)
 # ==============================================================================
 def run_v9_pipeline(ticker: str, cik: str, email: str) -> dict:
     try:
         stock = yf.Ticker(ticker)
         
+        # ── Stage 0: 嚴謹市值與價格攔截 (修復 fast_info 物件語法陷阱) ──────────────
         try:
-            price = float(stock.fast_info.get('lastPrice', 1.0))
+            # yfinance 新版 fast_info 是屬性物件，必須用 getattr 抓取
+            price = float(getattr(stock.fast_info, 'last_price', None) or stock.info.get('currentPrice', 1.0))
+            mcap_fast = float(getattr(stock.fast_info, 'market_cap', 0.0)) / 1e9
         except Exception:
             info = stock.info
-            price = info.get('currentPrice', info.get('regularMarketPrice', 1.0))
+            price = float(info.get('currentPrice', info.get('regularMarketPrice', 1.0)))
+            mcap_fast = 0.0
             
         info = stock.info
         shares_out = info.get('sharesOutstanding') or info.get('impliedSharesOutstanding', 0)
-        mcap = (price * shares_out) / 1e9 if shares_out > 0 else float(stock.fast_info.get('marketCap', 0.0)) / 1e9
+        
+        # 雙重護城河：流通股數精算優先，若無則啟用 fast_info 備援
+        mcap = (price * shares_out) / 1e9 if shares_out > 0 else mcap_fast
 
         if mcap < 1.0: return {"Ticker": ticker, "Status": "Fail: 市值異常或破缺"}
+        # ─────────────────────────────────────────────────────────────
         
         gross_margin = float(info.get('grossMargins') or 0.0)
         rev_growth = float(info.get('revenueGrowth') or 0.0)
@@ -267,11 +273,11 @@ def run_v9_pipeline(ticker: str, cik: str, email: str) -> dict:
         curr_liab = sec.get_latest_annual(df_curr_liab)
         fin_rec = sec.get_latest_annual(df_fin_rec)
 
-        # --- 備援機制：yfinance 數據填補 ---
+        # --- 備援機制：yfinance 數據強力填補 (防護 SEC 標籤漏接) ---
         if capex == 0: capex = abs(info.get('capitalExpenditures') or 0) / 1e9
         if sbc == 0: sbc = abs(info.get('shareBasedCompensation') or 0) / 1e9
         
-        # V9.3 補丁：總資產與流動負債的強力備援 (防止負淨值算法崩潰)
+        # 1. 總資產與流動負債的備援 (防止負淨值算法崩潰)
         if assets == 0 or curr_liab == 0:
             try:
                 bs = stock.balance_sheet
@@ -282,9 +288,18 @@ def run_v9_pipeline(ticker: str, cik: str, email: str) -> dict:
                         curr_liab = float(bs.loc['Current Liabilities'].iloc[0]) / 1e9
             except Exception as e:
                 logger.debug(f"[{ticker}] 資產負債表備援失敗: {e}")
-        # -----------------------------------
+
+        # 2. 利息支出的備援 (防止 ICR 評估失真)
         raw_int = sec.get_latest_annual(df_int)
+        if raw_int == 0:
+            try:
+                fins = stock.financials
+                if not fins.empty and 'Interest Expense' in fins.index:
+                    raw_int = float(fins.loc['Interest Expense'].iloc[0]) / 1e9
+            except Exception: pass
+            
         interest = max(abs(raw_int), 0.05) if raw_int != 0 else 0.05
+        # --------------------------------------------------------
 
         adjusted_debt = max(0.0, debt - fin_rec)
         excess_cash = max(0.0, cash - (total_revenue * 0.02))
@@ -342,20 +357,17 @@ def run_v9_pipeline(ticker: str, cik: str, email: str) -> dict:
                 mom_12m = min((float(m.iloc[-2]) / float(m.iloc[-13]) - 1) * 100, 200.0)
         except Exception: pass
 
-        # V9.3 修正：字串拼接邏輯，完美保留所有決策軌跡
         exit_signal = "Hold ✅"
         if is_growth_monster:
             exit_signal = "🚀 成長旁通: Rule of 40 通行證 ✅"
             if sec.check_q_yoy_decline(df_ocf): 
                 exit_signal += " | 🟡 預警: 成長股OCF衰退"
         else:
-            # 先判定最嚴格的停損條件
             if fcf_yield < (get_risk_free_rate()*100) and mom_12m < 0: 
                 exit_signal = "🔴 停損: 溢酬消失"
             elif roic < wacc * 100: 
                 exit_signal = "🔴 停損: 價值摧毀"
             
-            # 再判定附加預警條件，確保不會洗掉停損訊號
             if sec.check_q_yoy_decline(df_ocf): 
                 if exit_signal == "Hold ✅":
                     exit_signal = "🟡 預警: OCF YoY衰退"
@@ -387,9 +399,9 @@ def send_email_report(df: pd.DataFrame, receiver_email: str, trend_report: str):
         logger.warning("未設定 EMAIL_SENDER 或 EMAIL_PASSWORD，略過發信。")
         return
     msg = EmailMessage()
-    msg['Subject'] = f"[V9.3 邏輯補丁版] Alpha 報表 - {datetime.now().strftime('%H:%M:%S')}"
+    msg['Subject'] = f"[V9.4 終極版] Alpha 報表 - {datetime.now().strftime('%H:%M:%S')}"
     msg['From'], msg['To'] = sender_email, receiver_email
-    content = f"總工程師您好：\n\n【全域監測】\n{trend_report}\n" + "-"*50 + "\n已實裝訊號拼接軌跡與日誌追蹤修復。\n\n"
+    content = f"總工程師您好：\n\n【全域監測】\n{trend_report}\n" + "-"*50 + "\n已實裝負淨值防呆與 API 全域備援機制。\n\n"
     if df.empty: content += "今日無通關標的。"
     else:
         content += f"共計 {len(df)} 檔通關。\n\n【TOP 5】\n"
@@ -397,7 +409,7 @@ def send_email_report(df: pd.DataFrame, receiver_email: str, trend_report: str):
     msg.set_content(content)
     if not df.empty:
         msg.add_attachment(df.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig'), 
-                           maintype='text', subtype='csv', filename='V9_3_Alpha_Final.csv')
+                           maintype='text', subtype='csv', filename='V9_4_Alpha_Final.csv')
     try:
         with smtplib.SMTP('smtp.gmail.com', 587) as server:
             server.starttls()
@@ -411,7 +423,7 @@ if __name__ == "__main__":
     USER_EMAIL = os.environ.get('USER_EMAIL', 'a7924177@gmail.com')
     CACHE_FILE = "qualified_universe.csv"
     
-    print("\n>>> 點火啟動：V9.3 邏輯補丁修復版本 <<<\n")
+    print("\n>>> 點火啟動：V9.4 終極版 (完全體) <<<\n")
     trend = check_global_trend()
     
     try:
