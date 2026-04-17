@@ -267,9 +267,22 @@ def run_v9_pipeline(ticker: str, cik: str, email: str) -> dict:
         curr_liab = sec.get_latest_annual(df_curr_liab)
         fin_rec = sec.get_latest_annual(df_fin_rec)
 
+        # --- 備援機制：yfinance 數據填補 ---
         if capex == 0: capex = abs(info.get('capitalExpenditures') or 0) / 1e9
         if sbc == 0: sbc = abs(info.get('shareBasedCompensation') or 0) / 1e9
         
+        # V9.3 補丁：總資產與流動負債的強力備援 (防止負淨值算法崩潰)
+        if assets == 0 or curr_liab == 0:
+            try:
+                bs = stock.balance_sheet
+                if not bs.empty:
+                    if assets == 0 and 'Total Assets' in bs.index:
+                        assets = float(bs.loc['Total Assets'].iloc[0]) / 1e9
+                    if curr_liab == 0 and 'Current Liabilities' in bs.index:
+                        curr_liab = float(bs.loc['Current Liabilities'].iloc[0]) / 1e9
+            except Exception as e:
+                logger.debug(f"[{ticker}] 資產負債表備援失敗: {e}")
+        # -----------------------------------
         raw_int = sec.get_latest_annual(df_int)
         interest = max(abs(raw_int), 0.05) if raw_int != 0 else 0.05
 
