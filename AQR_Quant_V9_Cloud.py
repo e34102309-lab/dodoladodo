@@ -1,15 +1,14 @@
 """
 =============================================================================
-V10.3 QUALITY PERSISTENCE EDITION - 在 V10.2 基礎上加入品質持續性
+V10.3 QUALITY PERSISTENCE EDITION (終極整合版)
 =============================================================================
-V10.2 已修正：硬截頂、Robust Z、CIK 去重、流動性過濾、週期頂警告
-
-V10.3 新增：
-9. 3 年 ROIC 平均 + 最低值（過濾單年僥倖標的）
-10. Buyback Yield + Total Shareholder Yield（股東回報質量）
-11. 估值絕對防線：FCF Yield > Rf + 200bp（避免溢酬太薄）
-12. 毛利率波動度（過濾極端週期股漏網）
-13. Alpha 公式加入 Z_Persistence 新維度
+融合 V10.2 基礎、V10.3 品質持續性，以及 6 大底層金融防禦修正：
+1. 企業價值 (EV) 質量守恆：加回少數股東權益
+2. 營運資金脈衝平滑：3 年 OCF 平均 FCF 演算
+3. 研發資本化下修：防堵 IC 膨脹 (2.5x -> 1.0x)
+4. 股東回報動態懲罰：防禦高位接盤 (溢價庫藏股扣分機制)
+5. 壓力測試升級：EBITDA -50% 寒冬測試
+6. 清算級乘數下限：嚴苛的毛利/乘數聯動防線
 =============================================================================
 """
 import random
@@ -41,18 +40,18 @@ logger = logging.getLogger(__name__)
 _RF_CACHE: Optional[float] = None
 MARKET_RISK_PREMIUM = 0.046
 
-# === V10.2 門檻 ===
-ROIC_THRESHOLD = 12.0          # 從 10 提高到 12
+# === 核心門檻 ===
+ROIC_THRESHOLD = 12.0          
 ICR_THRESHOLD = 5.0
-EBIT_MARGIN_THRESHOLD = 0.05   # 新增：EBIT margin 至少 5%
-MIN_LIQUIDITY_USD = 5_000_000  # 新增：日均成交額至少 $5M
-WINSORIZE_PCT = 0.025          # 雙尾各 winsorize 2.5%
+EBIT_MARGIN_THRESHOLD = 0.05   
+MIN_LIQUIDITY_USD = 5_000_000  
+WINSORIZE_PCT = 0.025          
 
 # === V10.3 新增門檻 ===
-ROIC_3Y_AVG_MIN = 12.0         # 3 年平均 ROIC
-ROIC_3Y_MIN_FLOOR = 8.0        # 3 年最低 ROIC（過濾單年僥倖）
-FCF_YIELD_PREMIUM_BP = 200     # FCF Yield 須超過 Rf 200bp
-GROSS_MARGIN_VOL_MAX = 0.10    # 3 年毛利波動度上限 10pp（過濾極端週期）
+ROIC_3Y_AVG_MIN = 12.0         
+ROIC_3Y_MIN_FLOOR = 8.0        
+FCF_YIELD_PREMIUM_BP = 200     
+GROSS_MARGIN_VOL_MAX = 0.10    
 
 def get_risk_free_rate() -> float:
     global _RF_CACHE
@@ -68,17 +67,12 @@ def get_risk_free_rate() -> float:
     return _RF_CACHE
 
 def robust_zscore(series: pd.Series) -> pd.Series:
-    """
-    抗極端值的 Robust Z-score: (x - median) / (1.4826 * MAD)
-    1.4826 是讓 MAD 在常態分布下與 std 一致的轉換常數
-    """
     s = pd.to_numeric(series, errors='coerce').fillna(0.0)
     if len(s) < 2:
         return pd.Series(np.zeros(len(s)), index=s.index)
     med = s.median()
     mad = (s - med).abs().median()
     if mad < 1e-9:
-        # 退回標準 Z (但用 winsorize 後的 std)
         s_w = s.clip(lower=s.quantile(WINSORIZE_PCT), upper=s.quantile(1-WINSORIZE_PCT))
         std = s_w.std(ddof=1)
         if std < 1e-9: return pd.Series(np.zeros(len(s)), index=s.index)
@@ -118,9 +112,6 @@ def check_global_trend() -> str:
         trend_msg += f"趨勢感測器異常: {e}\n"
     return trend_msg if trend_msg else "大氣壓力感測器離線。\n"
 
-# ==============================================================================
-# YFinance 終極安全包裝器
-# ==============================================================================
 def safe_yf_info(ticker: str) -> dict:
     time.sleep(random.uniform(0.1, 0.4))
     stock = yf.Ticker(ticker)
@@ -164,16 +155,11 @@ def calculate_dynamic_wacc(ticker: str, debt: float, cash: float,
     wacc = w_e * ke + w_d * kd * (1.0 - tax_rate)
     return float(np.clip(wacc, 0.06, 0.20))
 
-# ==============================================================================
-# 流動性檢查 (V10.2 新增)
-# ==============================================================================
 def check_liquidity(ticker: str) -> Tuple[bool, float]:
-    """檢查 30 日平均成交額，過濾低流動性股票"""
     try:
         hist = yf.download(ticker, period='2mo', progress=False, auto_adjust=False)
         if hist.empty or len(hist) < 20: return False, 0.0
         close = flatten_close(hist, ticker)
-        # 處理 Volume 多重索引
         if isinstance(hist.columns, pd.MultiIndex):
             vol_cols = [c for c in hist.columns if c[0] == 'Volume']
             volume = hist[vol_cols[0]] if vol_cols else None
@@ -185,9 +171,6 @@ def check_liquidity(ticker: str) -> Tuple[bool, float]:
     except Exception:
         return False, 0.0
 
-# ==============================================================================
-# SEC 原生爬蟲
-# ==============================================================================
 class RateLimitedSession:
     def __init__(self, calls=9, period=1.0):
         self.session = requests.Session()
@@ -240,11 +223,10 @@ class SECDataDistiller:
             'DefRev': ['DeferredRevenue', 'ContractWithCustomerLiability'],
             'FinRec': ['FinancingReceivableNet', 'NotesAndLoansReceivableNet', 'LoansAndLeasesReceivableNet'],
             'Revenue': ['Revenues', 'RevenueFromContractWithCustomerExcludingAssessedTax', 'SalesRevenueNet'],
-            # === V10.3 新增：股東回報追蹤 ===
             'Buyback': ['PaymentsForRepurchaseOfCommonStock', 'PaymentsForRepurchaseOfEquity'],
             'Dividend': ['PaymentsOfDividendsCommonStock', 'PaymentsOfDividends'],
             'StockIssuance': ['ProceedsFromIssuanceOfCommonStock', 'StockIssuedDuringPeriodValueNewIssues'],
-            'GrossProfit': ['GrossProfit'],  # 新增：毛利波動度檢查
+            'GrossProfit': ['GrossProfit'], 
         }
 
     def fetch_concept(self, cik: str, concept: str) -> pd.DataFrame:
@@ -274,21 +256,18 @@ class SECDataDistiller:
         return (float(annual['val'].iloc[-1]) - float(annual['val'].iloc[-2])) / 1e9
 
     def get_revenue_3yr(self, df: pd.DataFrame) -> Tuple[float, float]:
-        """回傳 (3年前營收, 最新營收)，用於計算 3 年 CAGR"""
         if df.empty: return 0.0, 0.0
         annual = df[df['form'] == '10-K']
         if len(annual) < 4: return 0.0, 0.0
         return float(annual['val'].iloc[-4]) / 1e9, float(annual['val'].iloc[-1]) / 1e9
 
     def get_annual_history(self, df: pd.DataFrame, n_years: int = 3) -> List[float]:
-        """V10.3 新增：取最近 n 年 10-K 數據（單位 B），由舊到新排序"""
         if df.empty: return []
         annual = df[df['form'] == '10-K']
         if len(annual) < n_years: return []
         return [float(v) / 1e9 for v in annual['val'].iloc[-n_years:].tolist()]
 
     def get_n_year_sum(self, df: pd.DataFrame, n: int = 3) -> float:
-        """V10.3 新增：n 年累計值（B）"""
         hist = self.get_annual_history(df, n)
         return sum(hist) if hist else 0.0
 
@@ -303,7 +282,7 @@ class SECDataDistiller:
         return False if match.empty else (float(latest['val']) < float(match['val'].iloc[-1]) * 0.85)
 
 # ==============================================================================
-# 核心管線 V10.3 (品質持續性版)
+# 核心管線 V10.3 終極整合版
 # ==============================================================================
 def run_v10_3_pipeline(ticker: str, cik: str, email: str) -> dict:
     try:
@@ -313,7 +292,7 @@ def run_v10_3_pipeline(ticker: str, cik: str, email: str) -> dict:
         
         stock = yf.Ticker(ticker)
         
-        # ── Stage 0.2: 流動性絕對防線 (V10.2 新增) ────────────────────────
+        # ── Stage 0.2: 流動性絕對防線 ────────────────────────
         liquid, daily_dollar_vol = check_liquidity(ticker)
         if not liquid:
             return {"Ticker": ticker, "Status": f"Fail: 流動性不足 (${daily_dollar_vol/1e6:.1f}M)"}
@@ -365,7 +344,6 @@ def run_v10_3_pipeline(ticker: str, cik: str, email: str) -> dict:
         df_defrev = sec.fetch_concept(cik, 'DefRev')
         df_fin_rec = sec.fetch_concept(cik, 'FinRec')
         df_rev = sec.fetch_concept(cik, 'Revenue')
-        # === V10.3 新增資料抓取 ===
         df_buyback = sec.fetch_concept(cik, 'Buyback')
         df_div = sec.fetch_concept(cik, 'Dividend')
         df_issuance = sec.fetch_concept(cik, 'StockIssuance')
@@ -384,26 +362,27 @@ def run_v10_3_pipeline(ticker: str, cik: str, email: str) -> dict:
         fin_rec = sec.get_latest_annual(df_fin_rec)
         rev_3yr_ago, rev_latest = sec.get_revenue_3yr(df_rev)
 
-        # === V10.3 新增：3 年歷史回溯 ===
-        ebit_history = sec.get_annual_history(df_ebit, 3)      # [3年前, 2年前, 最新]
+        ebit_history = sec.get_annual_history(df_ebit, 3)      
         equity_history = sec.get_annual_history(df_eq, 3)
         debt_history = sec.get_annual_history(df_debt, 3)
         rev_history = sec.get_annual_history(df_rev, 3)
         gross_history = sec.get_annual_history(df_gross, 3)
+        ocf_history = sec.get_annual_history(df_ocf, 3)  # [整合] 加入 OCF 歷史用於平滑
         
-        # 3 年股東回報累計
         buyback_3y = sec.get_n_year_sum(df_buyback, 3)
         dividend_3y = sec.get_n_year_sum(df_div, 3)
         issuance_3y = sec.get_n_year_sum(df_issuance, 3)
 
-        # 3 年 CAGR (V10.2 新增，用於週期頂判斷)
         rev_cagr_3y = 0.0
         if rev_3yr_ago > 0 and rev_latest > 0:
             rev_cagr_3y = ((rev_latest / rev_3yr_ago) ** (1/3) - 1) * 100
 
-        # ── Stage 1.5: YF 數據填補 ───────────────────────────────────────
+        # ── Stage 1.5: YF 數據填補與少數股權修正 ──────────────────────────
         if capex == 0: capex = abs(info.get('capitalExpenditures') or 0) / 1e9
         if sbc == 0: sbc = abs(info.get('shareBasedCompensation') or 0) / 1e9
+        
+        # [修正 1] 嘗試抓取少數股東權益，防堵 EV 漏洞
+        minority_interest = float(info.get('minorityInterest', 0.0)) / 1e9
         
         raw_int = sec.get_latest_annual(df_int)
         if raw_int == 0:
@@ -418,37 +397,40 @@ def run_v10_3_pipeline(ticker: str, cik: str, email: str) -> dict:
         adjusted_debt = max(0.0, debt - fin_rec)
         excess_cash = max(0.0, cash - (total_revenue * 0.02))
         net_debt = max(adjusted_debt - excess_cash, 0.0)
-        true_ev = max(mcap + net_debt, mcap * 0.10)
+        
+        # [修正 1 (續)] 真實 EV 必須包含少數股東權益
+        true_ev = max(mcap + net_debt + minority_interest, mcap * 0.10)
         
         maint_capex = dna if dna > 0 else capex
-        real_fcf = ocf - maint_capex - sbc
+        
+        # [修正 2] 平滑營運資金 (Working Capital) 造成的 OCF 脈衝
+        smoothed_ocf = float(np.mean(ocf_history)) if len(ocf_history) >= 2 else ocf
+        real_fcf = smoothed_ocf - maint_capex - sbc
         
         if real_fcf <= 0:
-            reason = "SBC吞噬" if sbc > ocf * 0.4 else "重資本耗損"
+            reason = "SBC吞噬" if sbc > smoothed_ocf * 0.4 else "重資本耗損"
             return {"Ticker": ticker, "Status": f"Fail: 實質FCF為負 ({reason})"}
         
-        fcf_yield = (real_fcf / true_ev) * 100 if true_ev > 0 else 0.0  # V10.2: 移除 50% 截頂
+        fcf_yield = (real_fcf / true_ev) * 100 if true_ev > 0 else 0.0 
         
         tax_rate = float(np.clip(info.get('effectiveTaxRate') or 0.21, 0.1, 0.35))
         wacc = calculate_dynamic_wacc(ticker, adjusted_debt, cash, mcap, equity, tax_rate)
         
         adjusted_ebit = ebit 
-        capitalized_rnd = rnd * 2.5
+        # [修正 3] 取消 2.5倍 的粗暴研發資本化，改為 1.0 倍，防堵 IC 膨脹扭曲
+        capitalized_rnd = rnd * 1.0
         ic_floor = max(true_ev * 0.10, total_revenue * 0.15)
         ic = max(adjusted_debt + max(equity, 0.0) + capitalized_rnd - excess_cash, ic_floor)
             
-        roic = (adjusted_ebit / max(ic, 0.1)) * 100  # V10.2: 移除 100% 截頂，winsorize 後處理
+        roic = (adjusted_ebit / max(ic, 0.1)) * 100 
         icr = adjusted_ebit / interest
-
-        # EBIT margin 過濾 (V10.2 新增)
         ebit_margin = (adjusted_ebit / total_revenue) if total_revenue > 0 else 0.0
         
         if roic < ROIC_THRESHOLD: return {"Ticker": ticker, "Status": f"Fail: ROIC < {ROIC_THRESHOLD}"}
         if icr < ICR_THRESHOLD: return {"Ticker": ticker, "Status": "Fail: ICR < 5"}
         if ebit_margin < EBIT_MARGIN_THRESHOLD: return {"Ticker": ticker, "Status": f"Fail: EBIT margin < {EBIT_MARGIN_THRESHOLD*100:.0f}%"}
 
-        # ── Stage 2.4: V10.3 新增 - 品質持續性檢查 ─────────────────────
-        # 計算 3 年 ROIC（用簡化 IC = 債 + 股權）
+        # ── Stage 2.4: 穩態 ROIC 檢查 ──────────────────────────────────
         roic_history = []
         for i in range(min(3, len(ebit_history))):
             if i < len(equity_history) and i < len(debt_history):
@@ -458,14 +440,13 @@ def run_v10_3_pipeline(ticker: str, cik: str, email: str) -> dict:
         roic_3y_avg = float(np.mean(roic_history)) if roic_history else roic
         roic_3y_min = float(min(roic_history)) if roic_history else roic
         
-        # 過濾「單年僥倖」的標的（CALM 雞蛋週期頂就會在這死掉）
         if len(roic_history) >= 3:
             if roic_3y_avg < ROIC_3Y_AVG_MIN:
                 return {"Ticker": ticker, "Status": f"Fail: 3年平均ROIC<{ROIC_3Y_AVG_MIN} ({roic_3y_avg:.1f})"}
             if roic_3y_min < ROIC_3Y_MIN_FLOOR:
                 return {"Ticker": ticker, "Status": f"Fail: 3年最低ROIC<{ROIC_3Y_MIN_FLOOR} ({roic_3y_min:.1f})"}
 
-        # ── Stage 2.45: V10.3 新增 - 毛利率波動度 ─────────────────────
+        # ── Stage 2.45: 毛利率波動度 ───────────────────────────────────
         gross_margin_vol = 0.0
         if len(gross_history) >= 3 and len(rev_history) >= 3:
             gm_series = [g/r for g, r in zip(gross_history, rev_history) if r > 0]
@@ -474,22 +455,31 @@ def run_v10_3_pipeline(ticker: str, cik: str, email: str) -> dict:
                 if gross_margin_vol > GROSS_MARGIN_VOL_MAX:
                     return {"Ticker": ticker, "Status": f"Fail: 毛利波動>{GROSS_MARGIN_VOL_MAX*100:.0f}pp ({gross_margin_vol*100:.1f}pp)"}
 
-        # ── Stage 2.46: V10.3 新增 - 估值絕對防線 ─────────────────────
+        # ── Stage 2.46: 估值絕對防線 ───────────────────────────────────
         rf_pct = get_risk_free_rate() * 100
         min_fcf_yield = rf_pct + (FCF_YIELD_PREMIUM_BP / 100)
-        valuation_warning = fcf_yield < min_fcf_yield  # 標記但不 Fail（成長股例外）
+        valuation_warning = fcf_yield < min_fcf_yield 
 
-        # ── Stage 2.47: V10.3 新增 - 股東回報計算 ─────────────────────
-        # Buyback Yield = 3 年淨回購 / 當前市值
+        # ── Stage 2.47: 股東回報動態懲罰機制 ────────────────
         net_buyback_3y = max(0.0, buyback_3y - issuance_3y)
-        buyback_yield = (net_buyback_3y / 3 / mcap) * 100 if mcap > 0 else 0.0  # 年化
-        dividend_yield_calc = (dividend_3y / 3 / mcap) * 100 if mcap > 0 else 0.0  # 年化
-        total_shareholder_yield = buyback_yield + dividend_yield_calc
+        buyback_yield = (net_buyback_3y / 3 / mcap) * 100 if mcap > 0 else 0.0 
+        dividend_yield_calc = (dividend_3y / 3 / mcap) * 100 if mcap > 0 else 0.0 
+        
+        # [修正 4] 防禦高位接盤。當估值過高 (FCFY太低) 或 ROIC < WACC，買回是毀滅價值
+        if buyback_yield > 0:
+            if valuation_warning or roic < (wacc * 100):
+                # 強制轉換為懲罰性負分，避免爛公司靠發債買庫藏股刷 Alpha
+                adjusted_buyback_yield = -buyback_yield
+            else:
+                adjusted_buyback_yield = buyback_yield
+        else:
+            adjusted_buyback_yield = 0.0
 
-        # ── Stage 2.5: 週期頂警告 (V10.2 核心新增) ─────────────────────
-        # 高 FCF Yield + 負成長 / 衰退中的 3年 CAGR = 危險的週期頂
+        total_shareholder_yield = adjusted_buyback_yield + dividend_yield_calc
+
+        # ── Stage 2.5: 週期頂警告 ──────────────────────────────────────
         cycle_top_warning = False
-        if fcf_yield > 12.0:  # 超過 12% 的 FCF Yield 在當前環境很罕見
+        if fcf_yield > 12.0: 
             if rev_growth < 0 or rev_cagr_3y < 2.0:
                 cycle_top_warning = True
         
@@ -501,19 +491,27 @@ def run_v10_3_pipeline(ticker: str, cik: str, email: str) -> dict:
             if gross_margin >= 0.75 and (roic - wacc*100) > 5.0 and real_r40 >= 40.0: 
                 is_growth_monster = True
 
-        # ── Stage 2.7: 回撤模型 ─────────────────────────────────────────
+        # ── Stage 2.7: 非線性雙殺回撤模型 ───────────────────
         ebitda = adjusted_ebit + dna + sbc
         if ebitda > 0:
             current_mult = true_ev / ebitda
-            floor = min(20.0, 8.0 + ((gross_margin - 0.50) / 0.10) * 1.5) if gross_margin > 0.5 else 8.0
-            stress_mult = min(current_mult, max(floor, current_mult * 0.60))
-            drawdown = ((max(0.0, (ebitda * 0.70) * stress_mult - net_debt) - mcap) / mcap) * 100
+            # [修正 5] EBITDA 遭遇寒冬是直接腰斬 (-50%)
+            ebitda_stress = ebitda * 0.50
+            # [修正 6] 恐慌期的清算級乘數。毛利定生死，重資產給 5x，不給 8x 這種樂觀底線
+            floor_mult = min(12.0, 5.0 + ((gross_margin - 0.30) / 0.10) * 1.5) if gross_margin > 0.3 else 5.0
+            stress_mult = min(current_mult, max(floor_mult, current_mult * 0.50))
+            
+            stress_ev = ebitda_stress * stress_mult
+            # 債務剛性：市值蒸發，但債務不會減少
+            stress_mcap = max(0.0, stress_ev - net_debt)
+            drawdown = ((stress_mcap - mcap) / mcap) * 100
             drawdown_risk = min(0.0, drawdown)
-        else: drawdown_risk = -100.0
+        else: 
+            drawdown_risk = -100.0
 
         if drawdown_risk < -70: return {"Ticker": ticker, "Status": f"Drop: 極限回撤({drawdown_risk:.1f}%)"}
 
-        # ── Stage 2.8: 動能 (V10.2: 失敗直接 Fail) ─────────────────────
+        # ── Stage 2.8: 動能 ────────────────────────────────────────────
         mom_12m = None
         try:
             hist = yf.download(ticker, start=datetime.now()-timedelta(days=420), progress=False, auto_adjust=True)
@@ -521,17 +519,15 @@ def run_v10_3_pipeline(ticker: str, cik: str, email: str) -> dict:
             if close is not None and len(close) > 200:
                 m = close.resample('ME').last()
                 if len(m) >= 13:
-                    mom_12m = (float(m.iloc[-2]) / float(m.iloc[-13]) - 1) * 100  # V10.2: 移除 200% 截頂
-        except Exception as e:
-            logger.debug(f"[{ticker}] 動能計算異常: {e}")
+                    mom_12m = (float(m.iloc[-2]) / float(m.iloc[-13]) - 1) * 100 
+        except Exception: pass
         
-        if mom_12m is None:
-            return {"Ticker": ticker, "Status": "Fail: 動能資料不足"}  # V10.2: 不再給 0 混入排名
+        if mom_12m is None: return {"Ticker": ticker, "Status": "Fail: 動能資料不足"} 
 
         # ── Stage 3: 決策訊號拼接 ──────────────────────────────────────
         exit_signal = "Hold ✅"
         if is_growth_monster:
-            exit_signal = "🚀 成長旁通: Rule of 40 通行證 ✅"
+            exit_signal = "🚀 Rule of 40 通行證 ✅"
             if sec.check_q_yoy_decline(df_ocf): 
                 exit_signal += " | 🟡 預警: 成長股OCF衰退"
         else:
@@ -545,35 +541,31 @@ def run_v10_3_pipeline(ticker: str, cik: str, email: str) -> dict:
                     exit_signal = "🟡 預警: OCF YoY衰退"
                 else:
                     exit_signal += " | 🟡 OCF YoY衰退"
-        
-        # V10.2 新增：週期頂警告附加
+            
+            # [修正 4 整合] 高位接盤警告標記
+            if adjusted_buyback_yield < 0:
+                exit_signal = "⚠️ 高位接盤警告" if exit_signal == "Hold ✅" else exit_signal + " | ⚠️ 溢價庫藏股"
+                
         if cycle_top_warning:
-            if exit_signal == "Hold ✅":
-                exit_signal = "🟠 週期頂警告: 高FCF+低成長"
-            else:
-                exit_signal += " | 🟠 週期頂"
+            exit_signal = "🟠 週期頂警告" if exit_signal == "Hold ✅" else exit_signal + " | 🟠 週期頂"
         
-        # V10.3 新增：估值溢酬警告（非成長股才看）
         if valuation_warning and not is_growth_monster:
-            if exit_signal == "Hold ✅":
-                exit_signal = f"🟡 溢酬偏薄 (FCFY {fcf_yield:.1f}% < {min_fcf_yield:.1f}%)"
-            elif "溢酬偏薄" not in exit_signal:
-                exit_signal += " | 🟡 溢酬薄"
+            exit_signal = f"🟡 溢酬偏薄" if exit_signal == "Hold ✅" else exit_signal + " | 🟡 溢酬薄"
 
         return {
             'Ticker': ticker, 'Status': 'Pass', 'Price': round(price, 2),
             'CIK': str(cik),
             'WACC(%)': round(wacc * 100, 2), 
             'ROIC(%)': round(roic, 2),
-            'ROIC_3Y_Avg(%)': round(roic_3y_avg, 2),     # V10.3 新增
-            'ROIC_3Y_Min(%)': round(roic_3y_min, 2),     # V10.3 新增
+            'ROIC_3Y_Avg(%)': round(roic_3y_avg, 2),     
+            'ROIC_3Y_Min(%)': round(roic_3y_min, 2),     
             'EBIT_Margin(%)': round(ebit_margin * 100, 2),
-            'GM_Vol(pp)': round(gross_margin_vol * 100, 2),  # V10.3 新增
+            'GM_Vol(pp)': round(gross_margin_vol * 100, 2), 
             'FCF_Yield(%)': round(fcf_yield, 2), 
             'Real_FCF(B)': round(real_fcf, 3),
-            'Buyback_Yield(%)': round(buyback_yield, 2),     # V10.3 新增
-            'Dividend_Yield(%)': round(dividend_yield_calc, 2),  # V10.3 新增
-            'Total_SH_Yield(%)': round(total_shareholder_yield, 2),  # V10.3 新增
+            'Buyback_Yield(%)': round(buyback_yield, 2), 
+            'Dividend_Yield(%)': round(dividend_yield_calc, 2), 
+            'Total_SH_Yield(%)': round(total_shareholder_yield, 2), 
             'Rev_CAGR_3Y(%)': round(rev_cagr_3y, 2),
             'Momentum(%)': round(mom_12m, 2), 
             'Max_Drawdown_Risk(%)': round(drawdown_risk, 1),
@@ -586,16 +578,14 @@ def run_v10_3_pipeline(ticker: str, cik: str, email: str) -> dict:
         return {"Ticker": ticker, "Status": "Error"}
 
 # ==============================================================================
-# Alpha 排序 (V10.2: Robust Z + Winsorize + CIK 去重)
+# Alpha 排序 
 # ==============================================================================
 def winsorize_series(series: pd.Series, pct: float = WINSORIZE_PCT) -> pd.Series:
-    """雙尾 winsorize，避免極端值污染分布"""
     s = pd.to_numeric(series, errors='coerce').fillna(0.0)
     lower, upper = s.quantile(pct), s.quantile(1 - pct)
     return s.clip(lower=lower, upper=upper)
 
 def deduplicate_by_cik(df: pd.DataFrame) -> pd.DataFrame:
-    """同 CIK 去重，保留流動性最高的那檔（避免 RUSHA/RUSHB、FOX/FOXA 雙計）"""
     if 'CIK' not in df.columns or 'Liquidity($M)' not in df.columns:
         return df
     df = df.sort_values('Liquidity($M)', ascending=False)
@@ -605,45 +595,36 @@ def calculate_composite_alpha(results: List[dict]) -> pd.DataFrame:
     df = pd.DataFrame([r for r in results if r.get('Status') == 'Pass'])
     if len(df) < 2: return df
     
-    # V10.2 Step 1: CIK 去重
     df = deduplicate_by_cik(df)
     
-    # V10.2 Step 2: Winsorize 極端值（取代硬截頂）
     df['_ROIC_w'] = winsorize_series(df['ROIC(%)'])
     df['_FCF_w'] = winsorize_series(df['FCF_Yield(%)'])
     df['_MOM_w'] = winsorize_series(df['Momentum(%)'])
     df['_DD_w'] = winsorize_series(df['Max_Drawdown_Risk(%)'])
-    # V10.3 新增 winsorize
     df['_ROIC_3Y_w'] = winsorize_series(df['ROIC_3Y_Avg(%)']) if 'ROIC_3Y_Avg(%)' in df.columns else df['_ROIC_w']
     df['_TSY_w'] = winsorize_series(df['Total_SH_Yield(%)']) if 'Total_SH_Yield(%)' in df.columns else pd.Series(0, index=df.index)
     
-    # V10.2 Step 3: Robust Z-score
     df['Z_Quality'] = robust_zscore(df['_ROIC_w'])
     df['Z_Value'] = robust_zscore(df['_FCF_w'])
     df['Z_Momentum'] = robust_zscore(df['_MOM_w'])
     df['Z_Safety'] = robust_zscore(df['_DD_w'])
-    # V10.3 新增兩個維度
-    df['Z_Persistence'] = robust_zscore(df['_ROIC_3Y_w'])    # 品質持續性
-    df['Z_Shareholder'] = robust_zscore(df['_TSY_w'])        # 股東回報
+    df['Z_Persistence'] = robust_zscore(df['_ROIC_3Y_w'])    
+    df['Z_Shareholder'] = robust_zscore(df['_TSY_w'])        
     
-    # V10.2 Step 4: 週期頂警告對 Alpha 的扣分
     df['_cycle_penalty'] = df['Exit_Signal'].apply(lambda x: -0.5 if '週期頂' in str(x) else 0.0)
-    # V10.3 新增：溢酬偏薄扣分
     df['_thin_premium_penalty'] = df['Exit_Signal'].apply(lambda x: -0.3 if '溢酬偏薄' in str(x) or '溢酬薄' in str(x) else 0.0)
     
-    # V10.3 升級 Alpha 公式（六維度）
     df['Alpha_Score'] = (
-        df['Z_Quality']      * 0.25 +    # 當前品質
-        df['Z_Persistence']  * 0.20 +    # 品質持續性 (新)
-        df['Z_Value']        * 0.20 +    # 估值
-        df['Z_Momentum']     * 0.15 +    # 動能
-        df['Z_Shareholder']  * 0.10 +    # 股東回報 (新)
-        df['Z_Safety']       * 0.10 +    # 下檔保護
+        df['Z_Quality']      * 0.25 +    
+        df['Z_Persistence']  * 0.20 +    
+        df['Z_Value']        * 0.20 +    
+        df['Z_Momentum']     * 0.15 +    
+        df['Z_Shareholder']  * 0.10 +    
+        df['Z_Safety']       * 0.10 +    
         df['_cycle_penalty'] +
         df['_thin_premium_penalty']
     ).round(3)
     
-    # 清掉中間變數
     df = df.drop(columns=[c for c in df.columns if c.startswith('_')])
     return df.sort_values('Alpha_Score', ascending=False).reset_index(drop=True)
 
@@ -656,10 +637,10 @@ def send_email_report(df: pd.DataFrame, receiver_email: str, trend_report: str):
         logger.warning("未設定 EMAIL_SENDER 或 EMAIL_PASSWORD，略過發信。")
         return
     msg = EmailMessage()
-    msg['Subject'] = f"[V10.3 品質持續性版] Alpha 報表 - {datetime.now().strftime('%H:%M:%S')}"
+    msg['Subject'] = f"[V10.3 終極整合版] Alpha 報表 - {datetime.now().strftime('%H:%M:%S')}"
     msg['From'], msg['To'] = sender_email, receiver_email
     content = f"總工程師您好：\n\n【全域監測】\n{trend_report}\n" + "-"*50
-    content += "\nV10.3 修正項目：3年ROIC持續性、股東總回報、毛利波動度、估值溢酬防線。\n\n"
+    content += "\n[核心更新] 已納入少數股東權益校正、OCF 3年平滑、研發防膨脹、溢價庫藏股懲罰、與非線性極限壓力測試。\n\n"
     if df.empty: content += "今日無通關標的。"
     else:
         content += f"共計 {len(df)} 檔通關。\n\n【TOP 10】\n"
@@ -684,7 +665,7 @@ if __name__ == "__main__":
     USER_EMAIL = os.environ.get('USER_EMAIL', 'a7924177@gmail.com')
     CACHE_FILE = "qualified_universe.csv"
     
-    print("\n>>> 點火啟動：V10.3 品質持續性版 <<<\n")
+    print("\n>>> 點火啟動：V10.3 終極整合版 (含 6 大核心防禦機制) <<<\n")
     trend = check_global_trend()
     
     try:
