@@ -1,30 +1,11 @@
 """
 =============================================================================
-V11.0 QUALITY PERSISTENCE EDITION (核心持股管線 - 強化與雲端備援版)
+V11.1 QUALITY PERSISTENCE EDITION (核心持股管線 - 批量快取防封鎖版)
 =============================================================================
-v11.0 vs v10.3 改動摘要：
-
-[BUG 修正]
-1. ★ 主 ROIC 與歷史 ROIC 公式統一 — 解除「3Y 穩態檢驗」失真
-2. ★ R&D 資本化從 1.0x 改為「不資本化」(純 GAAP)，公式更乾淨且與歷史一致
-3. ★ fetch_concept 用 (fy, fp, form) 去重，防修訂版 10-K 污染 YoY
-4. ★ 核心資料 (OCF/EBIT/Revenue) 缺失防呆
-5. ★ check_q_yoy_decline 改用 fy 比對、避免誤匹配自己
-6. ★ maint_capex = min(dna, capex)，避免成長股低估維持性 CapEx
-
-[雲端部署強化 - 終極防彈版]
-7. ★ 拔除致命依賴：完全捨棄對 yf.info 中毛利、營收、市值的依賴，全由 SEC 財報推算。
-8. ★ K 線備援機制：當 Yahoo 徹底封鎖 info 時，優雅降級使用 K 線圖抓取收盤價。
-9. ★ 移除對 yfinance 內部隱藏模組 (datatypes) 的調用，防範套件升級崩潰。
-
-[新增紅線]
-10. EV/Sales 極端紅線 (≤ 30x) — 防泡沫頂
-11. 距 52 週高點防線 (≥ -30%) — 防動能反轉
-12. cycle_top_warning 強化：加入 EBIT margin 5 年高位檢查
-
-[效率]
-13. Stage 重排：流動性 + 動能放在 SEC 重抓之前
-14. 多執行緒 4 → 3 worker，降低 SEC rate limit 風險
+v11.1 改動摘要：
+1. ★ 導入全域批量下載 (_BULK_MARKET_DATA)，啟動時一次性下載 600+ 檔標的歷史 K 線。
+2. ★ 所有價格、動能、Beta、流動性指標改為「記憶體內切片運算」，徹底繞過 YF IP 封鎖。
+3. ★ 優化 safe_yf_info，若遭封鎖直接從本地快取秒回傳價格，不再浪費時間重試。
 =============================================================================
 """
 import random
@@ -44,8 +25,9 @@ import traceback
 import yfinance as yf
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+
 # ==============================================================================
-# 全局 Session 單例 (防止連線洪水)
+# 全局 Session 與 批量資料快取
 # ==============================================================================
 def create_global_session():
     session = requests.Session()
@@ -66,14 +48,12 @@ def force_refresh_yf_session():
     if hasattr(yf.utils, 'empty_cache'):
         yf.utils.empty_cache()
     YF_SESSION = create_global_session()
-    
-    # Safely assign session based on yfinance version
     if hasattr(yf, 'base') and hasattr(yf.base, '_requests'):
         yf.base._requests = YF_SESSION
-        
     return YF_SESSION
 
 force_refresh_yf_session()
+
 # ==============================================================================
 # 設定日誌
 # ==============================================================================
@@ -86,7 +66,6 @@ logger = logging.getLogger(__name__)
 # 強力突破 Yahoo 401 封鎖 (Session 偽裝機制)
 # ==============================================================================
 def create_stealth_session():
-    """建立一個帶有完整瀏覽器偽裝與重試機制的 session"""
     session = requests.Session()
     retry = Retry(total=3, backoff_factor=1.0, status_forcelist=[401, 403, 429, 500, 502, 503, 504])
     adapter = HTTPAdapter(max_retries=retry)
@@ -101,14 +80,11 @@ def create_stealth_session():
     return session
 
 def force_refresh_yf_crumb():
-    """強制清理 yfinance 內部的 crumb 暫存，迫使它重新協商"""
     try:
         if hasattr(yf.utils, 'empty_cache'):
             yf.utils.empty_cache()
-            
         if hasattr(yf, 'base') and hasattr(yf.base, '_requests'):
             yf.base._requests = create_stealth_session()
-            
         from yfinance.utils import crumb_manager
         crumb_manager._crumb = None
         crumb_manager._cookie = None
@@ -123,6 +99,7 @@ force_refresh_yf_crumb()
 # ==============================================================================
 # 全域快取與巨集參數
 # ==============================================================================
+_BULK_MARKET_DATA: Optional[pd.DataFrame] = None
 _RF_CACHE: Optional[float] = None
 MARKET_RISK_PREMIUM = 0.046
 
@@ -136,12 +113,38 @@ WINSORIZE_PCT           = 0.025
 # === V10.3 沿用門檻 ===
 ROIC_3Y_AVG_MIN         = 12.0
 ROIC_3Y_MIN_FLOOR       = 8.0
-FCF_YIELD_PREMIUM_BP    = 200      # FCF yield 必須高於無風險利率 +200bp
+FCF_YIELD_PREMIUM_BP    = 200
 GROSS_MARGIN_VOL_MAX    = 0.10
 
 # === V11.0 新增門檻 ===
-EV_SALES_MAX            = 30.0     # EV/Sales 極端紅線
-PCT_FROM_52W_HIGH_MIN   = -0.30    # 距 52 週高點不得低於 -30%
+EV_SALES_MAX            = 30.0
+PCT_FROM_52W_HIGH_MIN   = -0.30
+
+# ==============================================================================
+# 批量快取系統 (取代單檔抓取)
+# ==============================================================================
+def pre_fetch_all_market_data(tickers: List[str]):
+    """一次性批量下載所有候選股的 3 年 K 線資料，完美避開 Yahoo 封鎖"""
+    global _BULK_MARKET_DATA
+    logger.info(f"開始一次性批量下載 {len(tickers)} 檔市場報價資料 (期間: 3y)...這對 Yahoo 只算 1 次請求！")
+    session = create_stealth_session()
+    # 下載近 3 年資料以滿足 Beta 計算與動能計算
+    _BULK_MARKET_DATA = yf.download(tickers, period='3y', progress=False, auto_adjust=True, session=session)
+    logger.info("批量下載完成！")
+
+def get_cached_series(ticker: str, col: str) -> Optional[pd.Series]:
+    """從全域快取中切片提取特定股票的特定欄位 (Close, Volume)"""
+    global _BULK_MARKET_DATA
+    if _BULK_MARKET_DATA is None or _BULK_MARKET_DATA.empty:
+        return None
+    try:
+        if isinstance(_BULK_MARKET_DATA.columns, pd.MultiIndex):
+            if (col, ticker) in _BULK_MARKET_DATA.columns:
+                s = _BULK_MARKET_DATA[(col, ticker)].dropna()
+                if not s.empty: return s
+    except Exception:
+        pass
+    return None
 
 # ==============================================================================
 # 工具函式
@@ -151,10 +154,9 @@ def get_risk_free_rate() -> float:
     if _RF_CACHE is not None:
         return _RF_CACHE
     try:
-        session = create_stealth_session()
-        hist = yf.Ticker('^TNX', session=session).history(period='5d')
-        if not hist.empty:
-            _RF_CACHE = float(hist['Close'].iloc[-1]) / 100
+        close = get_cached_series('^TNX', 'Close')
+        if close is not None and not close.empty:
+            _RF_CACHE = float(close.iloc[-1]) / 100
             return _RF_CACHE
     except Exception as e:
         logger.warning(f"無風險利率獲取失敗，使用預設值: {e}")
@@ -175,34 +177,10 @@ def robust_zscore(series: pd.Series) -> pd.Series:
         return pd.Series((s_w - s_w.mean()) / std, index=s.index)
     return pd.Series((s - med) / (1.4826 * mad), index=s.index).clip(-3.5, 3.5)
 
-def flatten_close(hist: pd.DataFrame, ticker: str) -> Optional[pd.Series]:
-    if hist.empty:
-        return None
-    try:
-        if isinstance(hist.columns, pd.MultiIndex):
-            if ('Close', ticker) in hist.columns:
-                return hist[('Close', ticker)]
-            cols = [c for c in hist.columns if c[0] == 'Close']
-            return hist[cols[0]] if cols else None
-        return hist['Close'] if 'Close' in hist.columns else None
-    except Exception:
-        return None
-
-def flatten_col(hist: pd.DataFrame, ticker: str, name: str) -> Optional[pd.Series]:
-    if hist.empty:
-        return None
-    try:
-        if isinstance(hist.columns, pd.MultiIndex):
-            if (name, ticker) in hist.columns:
-                return hist[(name, ticker)]
-            cols = [c for c in hist.columns if c[0] == name]
-            return hist[cols[0]] if cols else None
-        return hist[name] if name in hist.columns else None
-    except Exception:
-        return None
-
-def check_global_trend(spy_close: Optional[pd.Series] = None,
-                        qqq_close: Optional[pd.Series] = None) -> str:
+def check_global_trend() -> str:
+    spy_close = get_cached_series('SPY', 'Close')
+    qqq_close = get_cached_series('QQQ', 'Close')
+    
     trend_msg = ""
     for name, close in [('SPY', spy_close), ('QQQ', qqq_close)]:
         if close is None or len(close) < 200:
@@ -214,11 +192,9 @@ def check_global_trend(spy_close: Optional[pd.Series] = None,
             last_sma = float(sma_200.iloc[-1])
             recent_closes = close.iloc[-5:]
             recent_smas = sma_200.iloc[-5:]
-            below_sma_week = all(float(c) < float(s)
-                                  for c, s in zip(recent_closes, recent_smas))
+            below_sma_week = all(float(c) < float(s) for c, s in zip(recent_closes, recent_smas))
             diff_pct = (last_close / last_sma - 1) * 100
-            status = ("🔴 跌破 200SMA (進入冰河保護期)"
-                      if below_sma_week else "🟢 穩態多頭")
+            status = ("🔴 跌破 200SMA (進入冰河保護期)" if below_sma_week else "🟢 穩態多頭")
             trend_msg += (f"[{name}] 收盤: {last_close:.2f} | 200SMA: {last_sma:.2f} "
                           f"({diff_pct:+.2f}%) -> {status}\n")
         except Exception as e:
@@ -226,57 +202,47 @@ def check_global_trend(spy_close: Optional[pd.Series] = None,
     return trend_msg if trend_msg else "大氣壓力感測器離線。\n"
 
 # ==============================================================================
-# YF 備援機制 (真・降級防禦)
+# 價格與備援機制 (純快取驅動)
 # ==============================================================================
 def get_fallback_price(ticker: str) -> float:
-    """當 info 徹底失效時，用歷史 K 線圖抓取最新收盤價 (防禦力極高)"""
-    try:
-        session = create_stealth_session()
-        hist = yf.download(ticker, period='5d', progress=False, auto_adjust=True, session=session)
-        close_series = flatten_close(hist, ticker)
-        if close_series is not None and not close_series.empty:
-            return float(close_series.iloc[-1])
-    except Exception:
-        pass
+    close = get_cached_series(ticker, 'Close')
+    if close is not None and not close.empty:
+        return float(close.iloc[-1])
     return 0.0
 
 def safe_yf_info(ticker: str) -> dict:
-    """
-    真・備援版：嘗試抓取 info，若被封殺，不報錯，直接回傳帶有基本價格的備援字典。
-    """
-    for attempt in range(2): # 雲端不浪費算力，只試 2 次
-        time.sleep(random.uniform(0.5, 1.0))
-        try:
-            session = create_stealth_session()
-            stock = yf.Ticker(ticker, session=session)
-            info = stock.info
-            if info and 'symbol' in info and (info.get('marketCap') or info.get('currentPrice') or info.get('regularMarketPrice')):
-                return info
-        except Exception:
-            pass
-            
-    # 如果 2 次都抓不到 info，啟動 K 線備援機制
-    logger.debug(f"[{ticker}] YF info 遭封鎖，啟動 K 線價格備援...")
+    """嘗試抓取 info，若失敗直接從全域快取回傳價格，不再浪費時間"""
     fallback_price = get_fallback_price(ticker)
     
-    # 回傳假字典確保後續程式不會因為 dictionary get 報錯
+    try:
+        session = create_stealth_session()
+        info = yf.Ticker(ticker, session=session).info
+        if info and 'symbol' in info and (info.get('marketCap') or info.get('currentPrice')):
+            return info
+    except Exception:
+        pass
+        
     if fallback_price > 0:
         return {'currentPrice': fallback_price, 'regularMarketPrice': fallback_price}
-    
     return {}
 
 def calculate_dynamic_beta(ticker: str, spy_returns: Optional[pd.Series] = None) -> float:
     try:
-        end = datetime.now()
-        start = end - timedelta(days=365 * 3)
-        session = create_stealth_session()
+        tk_close = get_cached_series(ticker, 'Close')
+        if tk_close is None or len(tk_close) < 50:
+            return 1.0
+        
+        # 將日線轉換為週線計算 Beta
+        tk_weekly = tk_close.resample('W').last().dropna()
+        tk_ret = tk_weekly.pct_change().dropna()
+        
+        if spy_returns is None:
+            spy_close = get_cached_series('SPY', 'Close')
+            if spy_close is not None:
+                spy_weekly = spy_close.resample('W').last().dropna()
+                spy_returns = spy_weekly.pct_change().dropna()
+                
         if spy_returns is not None:
-            tk_data = yf.download(ticker, start=start, end=end, interval='1wk',
-                                   progress=False, auto_adjust=True, session=session)
-            tk_close = flatten_close(tk_data, ticker)
-            if tk_close is None or len(tk_close) < 50:
-                return 1.0
-            tk_ret = tk_close.pct_change().dropna()
             joined = pd.concat([tk_ret, spy_returns], axis=1, join='inner').dropna()
             joined.columns = ['tk', 'spy']
             if len(joined) < 50:
@@ -286,23 +252,9 @@ def calculate_dynamic_beta(ticker: str, spy_returns: Optional[pd.Series] = None)
                 return 1.0
             cov = joined.cov().loc['tk', 'spy']
             return float(np.clip(cov / var_market, 0.5, 2.5))
-        else:
-            data = yf.download([ticker, 'SPY'], start=start, end=end,
-                                interval='1wk', progress=False, auto_adjust=True, session=session)
-            if data.empty:
-                return 1.0
-            close_df = data['Close']
-            if ticker not in close_df.columns or 'SPY' not in close_df.columns:
-                return 1.0
-            returns = close_df.pct_change().dropna()
-            if len(returns) < 50:
-                return 1.0
-            var_market = returns['SPY'].var()
-            if var_market == 0:
-                return 1.0
-            return float(np.clip(returns.cov().loc[ticker, 'SPY'] / var_market, 0.5, 2.5))
     except Exception:
-        return 1.0
+        pass
+    return 1.0
 
 def calculate_dynamic_wacc(ticker: str, debt: float, cash: float,
                             market_cap: float, book_equity: float, tax_rate: float,
@@ -323,12 +275,9 @@ def calculate_dynamic_wacc(ticker: str, debt: float, cash: float,
 
 def fetch_price_metrics(ticker: str) -> Optional[Dict]:
     try:
-        session = create_stealth_session()
-        hist = yf.download(ticker, period='14mo', progress=False, auto_adjust=True, session=session)
-        if hist.empty or len(hist) < 200:
-            return None
-        close = flatten_close(hist, ticker)
-        volume = flatten_col(hist, ticker, 'Volume')
+        close = get_cached_series(ticker, 'Close')
+        volume = get_cached_series(ticker, 'Volume')
+        
         if close is None or volume is None or len(close) < 200:
             return None
 
@@ -548,23 +497,15 @@ def calc_roic_unified(ebit: float, equity: float, debt: float,
     ic = max(debt + max(equity, 0.0) - excess_cash, ic_floor)
     return (ebit / max(ic, 0.1)) * 100
 
-def check_liquidity_legacy(ticker: str) -> Tuple[bool, float]:
-    pm = fetch_price_metrics(ticker)
-    if pm is None:
-        return False, 0.0
-    return pm['dollar_volume'] >= MIN_LIQUIDITY_USD, pm['dollar_volume']
-
 # ==============================================================================
-# 核心管線 V11.0 (終極 SEC 本位版)
+# 核心管線 V11.1
 # ==============================================================================
 def run_v11_pipeline(ticker: str, cik: str, email: str,
                       spy_returns: Optional[pd.Series] = None) -> dict:
     try:
-        # ── Stage 0.1: 即排型過濾 ──────────────────────────────
         if '-' in ticker or '.' in ticker:
             return {"Ticker": ticker, "Status": "Fail: 排除特別股/多重股權"}
 
-        # ── Stage 0.2: 整合價格指標 ─────────────────────────────────
         pm = fetch_price_metrics(ticker)
         if pm is None:
             return {"Ticker": ticker, "Status": "Fail: 無價格資料"}
@@ -583,14 +524,12 @@ def run_v11_pipeline(ticker: str, cik: str, email: str,
             return {"Ticker": ticker,
                     "Status": f"Fail: 距高點過遠 ({pct_from_high*100:+.1f}%)"}
 
-        # ── Stage 0.3: YF 備援機制 (不再因 info 崩潰) ─────────────────────
         info = safe_yf_info(ticker)
         price = float(info.get('currentPrice') or info.get('regularMarketPrice') or last_close)
 
         if price == 0.0:
             return {"Ticker": ticker, "Status": "Fail: 價格獲取失敗"}
 
-        # ── Stage 1: SEC XBRL 數據萃取 ────────────────────────────────
         sec = SECDataDistiller(email)
         df_ocf       = sec.fetch_concept(cik, 'OCF')
         df_capex     = sec.fetch_concept(cik, 'CapEx')
@@ -642,7 +581,6 @@ def run_v11_pipeline(ticker: str, cik: str, email: str,
         if rev_3yr_ago > 0 and rev_latest > 0:
             rev_cagr_3y = ((rev_latest / rev_3yr_ago) ** (1/3) - 1) * 100
 
-        # ── Stage 1.5: 核心估值與基本面推算 (SEC 本位) ────────────────────
         shares_now, _ = sec.get_latest_shares(df_shares)
         if shares_now == 0:
             shares_now = info.get('sharesOutstanding') or info.get('impliedSharesOutstanding', 0) if info else 0.0
@@ -683,17 +621,8 @@ def run_v11_pipeline(ticker: str, cik: str, email: str,
         minority_interest = float(info.get('minorityInterest') or 0.0) / 1e9
 
         raw_int = sec.get_latest_annual(df_int)
-        if raw_int == 0:
-            try:
-                session = create_stealth_session()
-                fins = yf.Ticker(ticker, session=session).financials
-                if not fins.empty and 'Interest Expense' in fins.index:
-                    raw_int = float(fins.loc['Interest Expense'].iloc[0]) / 1e9
-            except Exception:
-                pass
         interest = max(abs(raw_int), 0.05) if raw_int != 0 else 0.05
 
-        # ── Stage 2: 物理限制器與核心運算 ────────────────────────────
         adjusted_debt = max(0.0, debt - fin_rec)
         excess_cash = max(0.0, cash - (total_revenue * 0.02))
         net_debt = max(adjusted_debt - excess_cash, 0.0)
@@ -732,7 +661,6 @@ def run_v11_pipeline(ticker: str, cik: str, email: str,
             return {"Ticker": ticker,
                     "Status": f"Fail: EBIT margin<{EBIT_MARGIN_THRESHOLD*100:.0f}% ({ebit_margin*100:.1f}%)"}
 
-        # ── Stage 2.4: 穩態 ROIC 檢查 ─────────────────────
         roic_history = []
         for i in range(min(3, len(ebit_history), len(equity_history),
                            len(debt_history), len(rev_history))):
@@ -753,7 +681,6 @@ def run_v11_pipeline(ticker: str, cik: str, email: str,
                 return {"Ticker": ticker,
                         "Status": f"Fail: 3年最低ROIC<{ROIC_3Y_MIN_FLOOR} ({roic_3y_min:.1f})"}
 
-        # ── Stage 2.45: 毛利率波動度 ──────────────────────────────────
         gross_margin_vol = 0.0
         if len(gross_history) >= 3 and len(rev_history) >= 3:
             gm_series = [g/r for g, r in zip(gross_history[-3:], rev_history[-3:]) if r > 0]
@@ -763,12 +690,10 @@ def run_v11_pipeline(ticker: str, cik: str, email: str,
                     return {"Ticker": ticker,
                             "Status": f"Fail: 毛利波動>{GROSS_MARGIN_VOL_MAX*100:.0f}pp ({gross_margin_vol*100:.1f}pp)"}
 
-        # ── Stage 2.46: 估值警告 ──────────────────────────────────────
         rf_pct = get_risk_free_rate() * 100
         min_fcf_yield = rf_pct + (FCF_YIELD_PREMIUM_BP / 100)
         valuation_warning = fcf_yield < min_fcf_yield
 
-        # ── Stage 2.47: 股東回報動態懲罰 ─────────────────────────────
         net_buyback_3y = max(0.0, buyback_3y - issuance_3y)
         buyback_yield = (net_buyback_3y / 3 / mcap) * 100 if mcap > 0 else 0.0
         dividend_yield_calc = (dividend_3y / 3 / mcap) * 100 if mcap > 0 else 0.0
@@ -783,7 +708,6 @@ def run_v11_pipeline(ticker: str, cik: str, email: str,
 
         total_shareholder_yield = adjusted_buyback_yield + dividend_yield_calc
 
-        # ── Stage 2.5: 週期頂警告 ────────────────────────
         cycle_top_warning = False
         cond_a = (fcf_yield > 12.0 and (rev_growth < 0 or rev_cagr_3y < 2.0))
         cond_b = False
@@ -795,7 +719,6 @@ def run_v11_pipeline(ticker: str, cik: str, email: str,
                     cond_b = True
         cycle_top_warning = cond_a or cond_b
 
-        # ── Stage 2.6: 成長監測 ──────────────────────────────────────
         is_growth_monster = False
         if total_revenue > 0:
             billings_growth = rev_growth + (defrev_change / total_revenue)
@@ -803,7 +726,6 @@ def run_v11_pipeline(ticker: str, cik: str, email: str,
             if gross_margin >= 0.70 and (roic - wacc * 100) > 5.0 and real_r40 >= 40.0:
                 is_growth_monster = True
 
-        # ── Stage 2.7: 非線性雙殺回撤模型 ────────────────────────────
         ebitda = ebit + dna + sbc
         if ebitda > 0:
             current_mult = true_ev / ebitda
@@ -821,7 +743,6 @@ def run_v11_pipeline(ticker: str, cik: str, email: str,
         if drawdown_risk < -70:
             return {"Ticker": ticker, "Status": f"Drop: 極限回撤({drawdown_risk:.1f}%)"}
 
-        # ── Stage 3: 決策訊號拼接 ────────────────────────────────────
         exit_signal = "Hold ✅"
         if is_growth_monster:
             exit_signal = "🚀 Rule of 40 通行證 ✅"
@@ -942,11 +863,11 @@ def send_email_report(df: pd.DataFrame, receiver_email: str, trend_report: str):
         logger.warning("未設定 EMAIL_SENDER 或 EMAIL_PASSWORD，略過發信。")
         return
     msg = EmailMessage()
-    msg['Subject'] = f"[V11.0 核心持股] Alpha 報表 - {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+    msg['Subject'] = f"[V11.1 核心持股] Alpha 報表 - {datetime.now().strftime('%Y-%m-%d %H:%M')}"
     msg['From'] = sender_email
     msg['To'] = receiver_email
     content = f"總工程師您好：\n\n【全域監測】\n{trend_report}\n" + "-" * 60
-    content += "\n[v11 終極防彈版] 已拔除 yf.info 致命依賴，估值推算 100% 轉向 SEC EDGAR 官方數據。\n\n"
+    content += "\n[v11.1 終極批量快取版] 已徹底繞開 Yahoo IP 封鎖限制，改由單次批量下載後切片分析。\n\n"
     if df.empty:
         content += "今日無通關標的。"
     else:
@@ -960,7 +881,7 @@ def send_email_report(df: pd.DataFrame, receiver_email: str, trend_report: str):
         msg.add_attachment(
             df.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig'),
             maintype='text', subtype='csv',
-            filename=f'V11_Alpha_{datetime.now().strftime("%Y%m%d")}.csv'
+            filename=f'V11.1_Alpha_{datetime.now().strftime("%Y%m%d")}.csv'
         )
     try:
         with smtplib.SMTP('smtp.gmail.com', 587) as server:
@@ -978,7 +899,7 @@ if __name__ == "__main__":
     USER_EMAIL = os.environ.get('USER_EMAIL', 'a7924177@gmail.com')
     CACHE_FILE = "qualified_universe.csv"
 
-    print("\n>>> 點火啟動：V11.0 核心持股管線 (終極防彈 SEC 本位版) <<<\n")
+    print("\n>>> 點火啟動：V11.1 核心持股管線 (終極批量快取版) <<<\n")
 
     try:
         if not os.path.exists(CACHE_FILE):
@@ -990,27 +911,19 @@ if __name__ == "__main__":
         universe = dict(zip(df_c['Ticker'], df_c['CIK']))
         logger.info(f"讀取 {len(universe)} 檔候選股")
 
-        logger.info("抓取 SPY/QQQ 基準資料...")
-        try:
-            session = create_stealth_session()
-            spy_data = yf.download('SPY', period='3y', interval='1wk',
-                                    progress=False, auto_adjust=True, session=session)
-            spy_close_weekly = flatten_close(spy_data, 'SPY')
-            spy_returns = spy_close_weekly.pct_change().dropna() if spy_close_weekly is not None else None
-        except Exception:
-            spy_returns = None
+        # ── 一次性批量下載所有資料 (取代原本在迴圈中的單筆請求) ──
+        all_tickers = list(universe.keys()) + ['SPY', 'QQQ', '^TNX']
+        pre_fetch_all_market_data(all_tickers)
 
-        try:
-            session = create_stealth_session()
-            spy_daily = yf.download('SPY', period='1y', progress=False, auto_adjust=True, session=session)
-            qqq_daily = yf.download('QQQ', period='1y', progress=False, auto_adjust=True, session=session)
-            spy_close = flatten_close(spy_daily, 'SPY')
-            qqq_close = flatten_close(qqq_daily, 'QQQ')
-        except Exception:
-            spy_close = None
-            qqq_close = None
+        # 預先計算 SPY 的週報酬率，供迴圈內的 Beta 函數取用
+        spy_close = get_cached_series('SPY', 'Close')
+        spy_returns = None
+        if spy_close is not None and not spy_close.empty:
+            spy_weekly = spy_close.resample('W').last().dropna()
+            spy_returns = spy_weekly.pct_change().dropna()
 
-        trend = check_global_trend(spy_close, qqq_close)
+        # 檢查大盤趨勢 (已自動從快取中抓取)
+        trend = check_global_trend()
         print(trend)
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
@@ -1029,6 +942,7 @@ if __name__ == "__main__":
                 else:
                     key = status
                 fail_stats[key] = fail_stats.get(key, 0) + 1
+        
         if fail_stats:
             logger.info("失敗原因分布：")
             for k, v in sorted(fail_stats.items(), key=lambda x: -x[1]):
