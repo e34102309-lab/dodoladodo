@@ -1,37 +1,60 @@
-name: V9 Alpha Hunt Daily Distillation
+name: Dual Quant Pipeline (V10.3 & Growth)
 
 on:
   schedule:
-    # 每天 UTC 時間 22:00 執行 (台灣時間早上 06:00)
-    - cron: '0 22 * * 1-5'
-  workflow_dispatch: # 允許在 GitHub 網頁上手動點擊執行
+    # 每天美東時間盤後執行 (請依你的需求調整 cron)
+    - cron: '0 22 * * 1-5' 
+  workflow_dispatch: # 允許手動點擊按鈕執行
 
 jobs:
-  run-quant-pipeline:
+  # ==========================================
+  # 虛擬機 A：執行 V10.3 價值品質管線
+  # ==========================================
+  run-value-pipeline:
     runs-on: ubuntu-latest
-    
-    # 總工程師強制覆寫指令：將所有底層動作引擎強制升級至 Node.js 24
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-
     steps:
-      - name: Checkout Repository
+      - name: Checkout Code
         uses: actions/checkout@v4
-
-      - name: Set up Python
+        
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
-
+          
       - name: Install Dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install pandas numpy scipy yfinance requests
-
-      - name: Ignite V9 Distillation Tower
+        run: pip install pandas numpy scipy yfinance requests
+        
+      - name: Run V10.3 Value Pipeline
         env:
+          USER_EMAIL: ${{ secrets.USER_EMAIL }}
           EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+        # 這裡執行你原本的 V10.3 程式碼
+        run: python run_v10_3_pipeline.py 
+
+  # ==========================================
+  # 虛擬機 B：執行成長衛星管線 (與 A 同時啟動)
+  # ==========================================
+  run-growth-pipeline:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          
+      - name: Install Dependencies
+        run: pip install pandas numpy scipy yfinance requests lxml html5lib
+        
+      - name: Generate Growth Universe & Run Pipeline
+        env:
           USER_EMAIL: ${{ secrets.USER_EMAIL }}
+          EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
+          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+        # 成長管線的步驟：先抓取最新名單，再跑篩選
         run: |
-          python AQR_Quant_V9_Cloud.py
+          python generate_growth_universe.py
+          python run_growth_satellite_pipeline.py
