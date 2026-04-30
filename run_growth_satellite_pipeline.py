@@ -35,17 +35,17 @@ logger = logging.getLogger(__name__)
 
 # === 成長衛星專屬門檻 ===
 MIN_LIQUIDITY_USD       = 10_000_000   # 日均成交額底線 $10M
-REV_GROWTH_MIN          = 20.0         # 營收增速底線 20%
-GROSS_MARGIN_MIN        = 0.45         # 毛利率底線 45% (定價權)
-RULE_OF_40_MIN          = 40.0         # 真實 Rule of 40 底線
-MOMENTUM_MIN            = 30.0         # 絕對動能底線 30%
+REV_GROWTH_MIN          = 15.0         # 營收增速底線 20%
+GROSS_MARGIN_MIN        = 0.40         # 毛利率底線 45% (定價權)
+RULE_OF_40_MIN          = 30.0         # 真實 Rule of 40 底線
+MOMENTUM_MIN            = 15.0         # 絕對動能底線 30%
 RELATIVE_MOMENTUM_MIN   = 0.0          # 相對 SPY 動能底線
 FCF_BURN_FLOOR          = -40.0        # 燒錢深度紅線
 CASH_RUNWAY_MIN_YRS     = 2.0          # 燒錢公司現金跑道底線
 DILUTION_MAX_YOY        = 0.07         # 流通股年增上限
 
 # === v3 新增紅線 ===
-PCT_FROM_52W_HIGH_MIN   = -0.25        # 距 52 週高點不得低於 -25% (動能反轉防線)
+PCT_FROM_52W_HIGH_MIN   = -0.35        # 距 52 週高點不得低於 -25% (動能反轉防線)
 GROSS_MARGIN_TREND_MIN  = -0.02        # 毛利率 YoY 衰退不得超過 2pp
 EV_SALES_MAX            = 30.0         # EV/Sales 極端紅線 (防泡沫)
 
@@ -582,7 +582,34 @@ if __name__ == "__main__":
         
         with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
             res = list(executor.map(lambda p: run_growth_satellite_pipeline(p[0], str(p[1]), USER_EMAIL, spy_close), growth_universe.items()))
+       # (前面的程式碼不變...)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+            res = list(executor.map(lambda p: run_growth_satellite_pipeline(p[0], str(p[1]), USER_EMAIL, spy_close), growth_universe.items()))
             
+        # ==========================================
+        # 🔥 新增：把這段死因統計加進去 🔥
+        # ==========================================
+        fail_stats = {}
+        for r in res:
+            status = r.get('Status', 'Unknown')
+            if status != 'Pass':
+                if ':' in status:
+                    # 只抓取大分類，去掉括號裡的具體數字
+                    reason = status.split(':')[1].strip().split('(')[0].strip()
+                    key = f"Fail: {reason}"
+                else:
+                    key = status
+                fail_stats[key] = fail_stats.get(key, 0) + 1
+        
+        if fail_stats:
+            logger.info("💀 淘汰原因分布 (證明程式有認真在跑)：")
+            for k, v in sorted(fail_stats.items(), key=lambda x: -x[1]):
+                logger.info(f"  {k}: {v} 檔")
+        # ==========================================
+            
+        final_df = calculate_growth_alpha(res)
+        send_email_report(final_df, USER_EMAIL)
+        # (後面的程式碼不變...)     
         final_df = calculate_growth_alpha(res)
         send_email_report(final_df, USER_EMAIL)
         
