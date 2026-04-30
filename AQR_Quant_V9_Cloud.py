@@ -63,9 +63,14 @@ YF_SESSION = create_global_session()
 
 def force_refresh_yf_session():
     global YF_SESSION
-    yf.utils.empty_cache()
+    if hasattr(yf.utils, 'empty_cache'):
+        yf.utils.empty_cache()
     YF_SESSION = create_global_session()
-    yf.base._requests = YF_SESSION
+    
+    # Safely assign session based on yfinance version
+    if hasattr(yf, 'base') and hasattr(yf.base, '_requests'):
+        yf.base._requests = YF_SESSION
+        
     return YF_SESSION
 
 force_refresh_yf_session()
@@ -98,14 +103,19 @@ def create_stealth_session():
 def force_refresh_yf_crumb():
     """強制清理 yfinance 內部的 crumb 暫存，迫使它重新協商"""
     try:
-        yf.utils.empty_cache()
-        yf.base._requests = create_stealth_session()
+        if hasattr(yf.utils, 'empty_cache'):
+            yf.utils.empty_cache()
+            
+        if hasattr(yf, 'base') and hasattr(yf.base, '_requests'):
+            yf.base._requests = create_stealth_session()
+            
         from yfinance.utils import crumb_manager
         crumb_manager._crumb = None
         crumb_manager._cookie = None
         crumb_manager.get_crumb() 
         return True
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Crumb refresh failed: {e}")
         return False
 
 force_refresh_yf_crumb()
