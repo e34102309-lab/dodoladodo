@@ -31,7 +31,6 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 import time
 import random
-from yfinance import datatypes
 
 # ==============================================================================
 # 強力突破 Yahoo 401 封鎖 (Crumb 強制刷新機制)
