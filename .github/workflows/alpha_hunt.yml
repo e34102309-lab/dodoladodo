@@ -2,7 +2,7 @@ name: Dual Quant Pipeline (V10.3 & Growth)
 
 on:
   schedule:
-    # 每天美東時間盤後執行 (請依你的需求調整 cron)
+    # 每天美東時間盤後執行 (如果你打算手動上傳名單後再按按鈕，這個 schedule 也可以留著當備用)
     - cron: '0 22 * * 1-5' 
   workflow_dispatch: # 允許手動點擊按鈕執行
 
@@ -29,8 +29,14 @@ jobs:
           USER_EMAIL: ${{ secrets.USER_EMAIL }}
           EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
-        # 這裡執行你原本的 V10.3 程式碼
         run: python run_v10_3_pipeline.py 
+
+      - name: Upload Value Pipeline Results
+        uses: actions/upload-artifact@v4
+        with:
+          name: V10_3_Value_Results
+          path: V10_3_Alpha_Final.csv
+          if-no-files-found: ignore
 
   # ==========================================
   # 虛擬機 B：執行成長衛星管線 (與 A 同時啟動)
@@ -46,15 +52,21 @@ jobs:
         with:
           python-version: '3.10'
           
+      # 註：已經拔除 lxml 和 html5lib，因為不需要在雲端爬維基百科了
       - name: Install Dependencies
-        run: pip install pandas numpy scipy yfinance requests lxml html5lib
+        run: pip install pandas numpy scipy yfinance requests
         
-      - name: Generate Growth Universe & Run Pipeline
+      - name: Run Growth Satellite Pipeline
         env:
           USER_EMAIL: ${{ secrets.USER_EMAIL }}
           EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
-        # 成長管線的步驟：先抓取最新名單，再跑篩選
-        run: |
-          python generate_growth_universe.py
-          python run_growth_satellite_pipeline.py
+        # 直接執行篩選管線，它會讀取你已經上傳在 Repo 裡的 growth_universe.csv
+        run: python run_growth_satellite_pipeline.py
+
+      - name: Upload Growth Pipeline Results
+        uses: actions/upload-artifact@v4
+        with:
+          name: Growth_Satellite_Results
+          path: Growth_Satellite_Alpha.csv
+          if-no-files-found: ignore
