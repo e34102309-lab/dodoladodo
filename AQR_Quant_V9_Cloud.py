@@ -34,14 +34,25 @@ import smtplib
 from email.message import EmailMessage
 import pandas as pd
 import numpy as np
-import yfinance as yf
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 import logging
 import concurrent.futures
 import threading
 import traceback
+import yfinance as yf
 
+# =======================================================
+# 加入此段 Hack 規避 GitHub Actions 上的 Yahoo 401 錯誤
+# =======================================================
+import requests
+session = requests.Session()
+session.headers.update({
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+})
+import yfinance.base
+yfinance.base._requests = session
+# =======================================================
 # ==============================================================================
 # 設定日誌
 # ==============================================================================
