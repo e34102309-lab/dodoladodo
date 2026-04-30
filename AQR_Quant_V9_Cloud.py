@@ -27,34 +27,6 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 # ==============================================================================
-# 全局 Session 與 批量資料快取
-# ==============================================================================
-def create_global_session():
-    session = requests.Session()
-    retry = Retry(total=5, backoff_factor=1.0, status_forcelist=[401, 403, 429, 500, 502, 503, 504])
-    adapter = HTTPAdapter(max_retries=retry, pool_connections=100, pool_maxsize=100)
-    session.mount('http://', adapter)
-    session.mount('https://', adapter)
-    session.headers.update({
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-    })
-    return session
-
-YF_SESSION = create_global_session()
-
-def force_refresh_yf_session():
-    global YF_SESSION
-    if hasattr(yf.utils, 'empty_cache'):
-        yf.utils.empty_cache()
-    YF_SESSION = create_global_session()
-    if hasattr(yf, 'base') and hasattr(yf.base, '_requests'):
-        yf.base._requests = YF_SESSION
-    return YF_SESSION
-
-force_refresh_yf_session()
-
-# ==============================================================================
 # 設定日誌
 # ==============================================================================
 logging.basicConfig(level=logging.INFO,
