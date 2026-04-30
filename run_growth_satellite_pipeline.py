@@ -28,37 +28,6 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 # ==============================================================================
-# 全局 Session 與 批量資料快取
-# ==============================================================================
-def create_global_session():
-    session = requests.Session()
-    retry = Retry(total=5, backoff_factor=1.0, status_forcelist=[401, 403, 429, 500, 502, 503, 504])
-    adapter = HTTPAdapter(max_retries=retry, pool_connections=100, pool_maxsize=100)
-    session.mount('http://', adapter)
-    session.mount('https://', adapter)
-    session.headers.update({
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-    })
-    return session
-
-YF_SESSION = create_global_session()
-
-def force_refresh_yf_session():
-    global YF_SESSION
-    if hasattr(yf.utils, 'empty_cache'):
-        yf.utils.empty_cache()
-    YF_SESSION = create_global_session()
-    
-    # Safely assign session based on yfinance version
-    if hasattr(yf, 'base') and hasattr(yf.base, '_requests'):
-        yf.base._requests = YF_SESSION
-        
-    return YF_SESSION
-
-force_refresh_yf_session()
-
-# ==============================================================================
 # 設定日誌 & 巨集參數
 # ==============================================================================
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s', datefmt='%H:%M:%S')
@@ -88,11 +57,11 @@ WINSORIZE_PCT           = 0.025
 _BULK_MARKET_DATA: Optional[pd.DataFrame] = None
 
 def pre_fetch_all_market_data(tickers: List[str]):
-    """一次性批量下載所有候選股的 2 年 K 線資料，完美避開 Yahoo 封鎖"""
+    """一次性批量下載所有候選股的 K 線資料，完美避開 Yahoo 封鎖"""
     global _BULK_MARKET_DATA
-    logger.info(f"開始一次性批量下載 {len(tickers)} 檔報價資料 (期間: 2y)...對 Yahoo 只算 1 次請求！")
-    session = create_stealth_session()
-    _BULK_MARKET_DATA = yf.download(tickers, period='2y', progress=False, auto_adjust=True, session=session)
+    logger.info(f"開始一次性批量下載 {len(tickers)} 檔報價資料...對 Yahoo 只算 1 次請求！")
+    # 直接讓 yfinance 底層自己的 curl_cffi 去接管
+    _BULK_MARKET_DATA = yf.download(tickers, period='3y', progress=False, auto_adjust=True)
     logger.info("批量下載完成！")
 
 def get_cached_series(ticker: str, col: str) -> Optional[pd.Series]:
@@ -170,12 +139,12 @@ def get_fallback_price(ticker: str) -> float:
     return 0.0
 
 def safe_yf_info(ticker: str) -> dict:
-    """嘗試抓取 info，若失敗直接從全域快取回傳價格，不再浪費時間"""
+    """嘗試抓取 info，若失敗直接從全域快取回傳價格"""
     fallback_price = get_fallback_price(ticker)
     
     try:
-        session = create_stealth_session()
-        stock = yf.Ticker(ticker, session=session)
+        # 移除自定義 session，讓 YF 處理
+        stock = yf.Ticker(ticker)
         info = stock.info
         if info and 'symbol' in info and (info.get('currentPrice') or info.get('regularMarketPrice')):
             return info
