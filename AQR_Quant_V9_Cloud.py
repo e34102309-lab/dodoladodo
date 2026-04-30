@@ -124,12 +124,11 @@ PCT_FROM_52W_HIGH_MIN   = -0.30
 # 批量快取系統 (取代單檔抓取)
 # ==============================================================================
 def pre_fetch_all_market_data(tickers: List[str]):
-    """一次性批量下載所有候選股的 3 年 K 線資料，完美避開 Yahoo 封鎖"""
+    """一次性批量下載所有候選股的 K 線資料，完美避開 Yahoo 封鎖"""
     global _BULK_MARKET_DATA
-    logger.info(f"開始一次性批量下載 {len(tickers)} 檔市場報價資料 (期間: 3y)...這對 Yahoo 只算 1 次請求！")
-    session = create_stealth_session()
-    # 下載近 3 年資料以滿足 Beta 計算與動能計算
-    _BULK_MARKET_DATA = yf.download(tickers, period='3y', progress=False, auto_adjust=True, session=session)
+    logger.info(f"開始一次性批量下載 {len(tickers)} 檔報價資料...對 Yahoo 只算 1 次請求！")
+    # 直接讓 yfinance 底層自己的 curl_cffi 去接管
+    _BULK_MARKET_DATA = yf.download(tickers, period='3y', progress=False, auto_adjust=True)
     logger.info("批量下載完成！")
 
 def get_cached_series(ticker: str, col: str) -> Optional[pd.Series]:
@@ -211,13 +210,14 @@ def get_fallback_price(ticker: str) -> float:
     return 0.0
 
 def safe_yf_info(ticker: str) -> dict:
-    """嘗試抓取 info，若失敗直接從全域快取回傳價格，不再浪費時間"""
+    """嘗試抓取 info，若失敗直接從全域快取回傳價格"""
     fallback_price = get_fallback_price(ticker)
     
     try:
-        session = create_stealth_session()
-        info = yf.Ticker(ticker, session=session).info
-        if info and 'symbol' in info and (info.get('marketCap') or info.get('currentPrice')):
+        # 移除自定義 session，讓 YF 處理
+        stock = yf.Ticker(ticker)
+        info = stock.info
+        if info and 'symbol' in info and (info.get('currentPrice') or info.get('regularMarketPrice')):
             return info
     except Exception:
         pass
