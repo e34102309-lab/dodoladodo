@@ -1,12 +1,11 @@
 """
 =============================================================================
-GROWTH SATELLITE PIPELINE v3.1 (成長衛星管線 - 雲端防彈版)
+GROWTH SATELLITE PIPELINE v3.2 (成長衛星管線 - 批量快取防封鎖版)
 =============================================================================
 改動摘要：
-1. [防禦] 移除 yfinance 內部 datatypes 依賴，防止套件更新崩潰。
-2. [防禦] safe_yf_info 改為「優雅降級」模式：若 info 被封鎖，自動切換至 K 線圖抓取價格。
-3. [精準] 數據主權回歸：市值、營收、毛利、增速、EV/Sales 全部強制改由 SEC 原始數據計算，
-         Yahoo 僅作為「即時價格」的報價機，確保數據具備審計級精度。
+1. [架構] 導入 _BULK_MARKET_DATA 批量快取機制，啟動時一次性下載所有候選股 K 線，徹底繞過 YF IP 封鎖。
+2. [防禦] safe_yf_info 改為「一鍵優雅降級」模式：若 info 被封鎖，立刻切換至本地快取抓取價格。
+3. [精準] 數據主權回歸：市值、營收、毛利、增速、EV/Sales 全部強制改由 SEC 原始數據計算，確保數據具備審計級精度。
 4. [保留] 完整繼承 v3 所有因子：營收加速度、真實 Rule of 40、R&D ROI、52W 高點防線。
 =============================================================================
 """
@@ -27,8 +26,9 @@ import traceback
 import yfinance as yf
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+
 # ==============================================================================
-# 全局 Session 單例 (防止連線洪水)
+# 全局 Session 與 批量資料快取
 # ==============================================================================
 def create_global_session():
     session = requests.Session()
@@ -57,6 +57,7 @@ def force_refresh_yf_session():
     return YF_SESSION
 
 force_refresh_yf_session()
+
 # ==============================================================================
 # 設定日誌 & 巨集參數
 # ==============================================================================
@@ -82,10 +83,36 @@ EV_SALES_MAX            = 30.0         # EV/Sales 極端紅線 (防泡沫)
 WINSORIZE_PCT           = 0.025
 
 # ==============================================================================
+# 批量快取系統 (取代單檔抓取)
+# ==============================================================================
+_BULK_MARKET_DATA: Optional[pd.DataFrame] = None
+
+def pre_fetch_all_market_data(tickers: List[str]):
+    """一次性批量下載所有候選股的 2 年 K 線資料，完美避開 Yahoo 封鎖"""
+    global _BULK_MARKET_DATA
+    logger.info(f"開始一次性批量下載 {len(tickers)} 檔報價資料 (期間: 2y)...對 Yahoo 只算 1 次請求！")
+    session = create_stealth_session()
+    _BULK_MARKET_DATA = yf.download(tickers, period='2y', progress=False, auto_adjust=True, session=session)
+    logger.info("批量下載完成！")
+
+def get_cached_series(ticker: str, col: str) -> Optional[pd.Series]:
+    """從全域快取中切片提取特定股票的特定欄位 (Close, Volume)"""
+    global _BULK_MARKET_DATA
+    if _BULK_MARKET_DATA is None or _BULK_MARKET_DATA.empty:
+        return None
+    try:
+        if isinstance(_BULK_MARKET_DATA.columns, pd.MultiIndex):
+            if (col, ticker) in _BULK_MARKET_DATA.columns:
+                s = _BULK_MARKET_DATA[(col, ticker)].dropna()
+                if not s.empty: return s
+    except Exception:
+        pass
+    return None
+
+# ==============================================================================
 # 強力突破 Yahoo 401 封鎖 (Session 偽裝與刷新)
 # ==============================================================================
 def create_stealth_session():
-    """建立一個帶有完整瀏覽器偽裝與重試機制的 session"""
     session = requests.Session()
     retry = Retry(total=3, backoff_factor=1.0, status_forcelist=[401, 403, 429, 500, 502, 503, 504])
     adapter = HTTPAdapter(max_retries=retry)
@@ -100,14 +127,11 @@ def create_stealth_session():
     return session
 
 def force_refresh_yf_crumb():
-    """強制清理 yfinance 內部的 crumb 暫存，迫使它重新協商"""
     try:
         if hasattr(yf.utils, 'empty_cache'):
             yf.utils.empty_cache()
-            
         if hasattr(yf, 'base') and hasattr(yf.base, '_requests'):
             yf.base._requests = create_stealth_session()
-            
         from yfinance.utils import crumb_manager
         crumb_manager._crumb = None
         crumb_manager._cookie = None
@@ -136,65 +160,67 @@ def robust_zscore(series: pd.Series) -> pd.Series:
         return pd.Series((s_w - s_w.mean()) / std, index=s.index)
     return pd.Series((s - med) / (1.4826 * mad), index=s.index).clip(-3.5, 3.5)
 
-def flatten_close(hist: pd.DataFrame, ticker: str) -> Optional[pd.Series]:
-    if hist.empty:
-        return None
-    try:
-        if isinstance(hist.columns, pd.MultiIndex):
-            if ('Close', ticker) in hist.columns:
-                return hist[('Close', ticker)]
-            cols = [c for c in hist.columns if c[0] == 'Close']
-            return hist[cols[0]] if cols else None
-        return hist['Close'] if 'Close' in hist.columns else None
-    except Exception:
-        return None
-
-def flatten_col(hist: pd.DataFrame, ticker: str, name: str) -> Optional[pd.Series]:
-    if hist.empty:
-        return None
-    try:
-        if isinstance(hist.columns, pd.MultiIndex):
-            if (name, ticker) in hist.columns:
-                return hist[(name, ticker)]
-            cols = [c for c in hist.columns if c[0] == name]
-            return hist[cols[0]] if cols else None
-        return hist[name] if name in hist.columns else None
-    except Exception:
-        return None
-
 # ==============================================================================
-# YF 備援機制 (核心降級防禦)
+# YF 備援機制 (純快取驅動)
 # ==============================================================================
 def get_fallback_price(ticker: str) -> float:
-    """當 info 徹底失效時，用歷史 K 線圖抓取最新收盤價 (防禦力極高)"""
-    try:
-        session = create_stealth_session()
-        hist = yf.download(ticker, period='5d', progress=False, auto_adjust=True, session=session)
-        close_series = flatten_close(hist, ticker)
-        if close_series is not None and not close_series.empty:
-            return float(close_series.iloc[-1])
-    except Exception:
-        pass
+    close = get_cached_series(ticker, 'Close')
+    if close is not None and not close.empty:
+        return float(close.iloc[-1])
     return 0.0
 
 def safe_yf_info(ticker: str) -> dict:
-    """嘗試抓取 info，若失敗則啟動價格備援"""
-    for attempt in range(2):
-        time.sleep(random.uniform(0.5, 1.0))
-        try:
-            session = create_stealth_session()
-            stock = yf.Ticker(ticker, session=session)
-            info = stock.info
-            if info and 'symbol' in info and (info.get('currentPrice') or info.get('regularMarketPrice')):
-                return info
-        except Exception:
-            pass
-            
-    logger.debug(f"[{ticker}] YF info 遭封鎖，啟動 K 線價格備援...")
+    """嘗試抓取 info，若失敗直接從全域快取回傳價格，不再浪費時間"""
     fallback_price = get_fallback_price(ticker)
+    
+    try:
+        session = create_stealth_session()
+        stock = yf.Ticker(ticker, session=session)
+        info = stock.info
+        if info and 'symbol' in info and (info.get('currentPrice') or info.get('regularMarketPrice')):
+            return info
+    except Exception:
+        pass
+        
     if fallback_price > 0:
         return {'currentPrice': fallback_price, 'regularMarketPrice': fallback_price}
     return {}
+
+def fetch_price_metrics(ticker: str, spy_close: Optional[pd.Series] = None) -> Optional[Dict]:
+    try:
+        close = get_cached_series(ticker, 'Close')
+        volume = get_cached_series(ticker, 'Volume')
+        
+        if close is None or volume is None or len(close) < 200:
+            return None
+
+        dollar_volume = float((close * volume).tail(30).mean())
+        m = close.resample('ME').last().dropna()
+        mom_12m = None
+        if len(m) >= 13:
+            mom_12m = (float(m.iloc[-2]) / float(m.iloc[-13]) - 1) * 100
+
+        rel_mom = None
+        if mom_12m is not None and spy_close is not None and len(spy_close) >= 13:
+            spy_m = spy_close.resample('ME').last().dropna()
+            if len(spy_m) >= 13:
+                spy_mom = (float(spy_m.iloc[-2]) / float(spy_m.iloc[-13]) - 1) * 100
+                rel_mom = mom_12m - spy_mom
+
+        last_252 = close.tail(252)
+        high_52w = float(last_252.max())
+        last_close = float(close.iloc[-1])
+        pct_from_52w_high = (last_close / high_52w - 1) if high_52w > 0 else -1.0
+
+        return {
+            'dollar_volume': dollar_volume,
+            'momentum': mom_12m,
+            'rel_momentum': rel_mom,
+            'pct_from_52w_high': pct_from_52w_high,
+            'last_close': last_close,
+        }
+    except Exception:
+        return None
 
 # ==============================================================================
 # SEC 原生爬蟲
@@ -330,56 +356,6 @@ class SECDataDistiller:
         if df_old.empty:
             return float(df['val'].iloc[-1]) / 1e9, 0.0
         return float(df['val'].iloc[-1]) / 1e9, float(df_old['val'].iloc[-1]) / 1e9
-
-# ==============================================================================
-# 價格與大盤抓取
-# ==============================================================================
-def fetch_price_metrics(ticker: str, spy_close: Optional[pd.Series] = None) -> Optional[Dict]:
-    try:
-        session = create_stealth_session()
-        hist = yf.download(ticker, period='14mo', progress=False, auto_adjust=True, session=session)
-        if hist.empty or len(hist) < 200:
-            return None
-        close = flatten_close(hist, ticker)
-        volume = flatten_col(hist, ticker, 'Volume')
-        if close is None or volume is None or len(close) < 200:
-            return None
-
-        dollar_volume = float((close * volume).tail(30).mean())
-        m = close.resample('ME').last().dropna()
-        mom_12m = None
-        if len(m) >= 13:
-            mom_12m = (float(m.iloc[-2]) / float(m.iloc[-13]) - 1) * 100
-
-        rel_mom = None
-        if mom_12m is not None and spy_close is not None and len(spy_close) >= 13:
-            spy_m = spy_close.resample('ME').last().dropna()
-            if len(spy_m) >= 13:
-                spy_mom = (float(spy_m.iloc[-2]) / float(spy_m.iloc[-13]) - 1) * 100
-                rel_mom = mom_12m - spy_mom
-
-        last_252 = close.tail(252)
-        high_52w = float(last_252.max())
-        last_close = float(close.iloc[-1])
-        pct_from_52w_high = (last_close / high_52w - 1) if high_52w > 0 else -1.0
-
-        return {
-            'dollar_volume': dollar_volume,
-            'momentum': mom_12m,
-            'rel_momentum': rel_mom,
-            'pct_from_52w_high': pct_from_52w_high,
-            'last_close': last_close,
-        }
-    except Exception:
-        return None
-
-def fetch_spy_close() -> Optional[pd.Series]:
-    try:
-        session = create_stealth_session()
-        hist = yf.download('SPY', period='14mo', progress=False, auto_adjust=True, session=session)
-        return flatten_close(hist, 'SPY')
-    except Exception:
-        return None
 
 # ==============================================================================
 # 核心管線：成長引擎檢驗 (SEC 本位優化版)
@@ -589,13 +565,13 @@ def send_email_report(df: pd.DataFrame, receiver_email: str):
     sender_email, sender_pwd = os.environ.get('EMAIL_SENDER'), os.environ.get('EMAIL_PASSWORD')
     if not sender_email or not sender_pwd: return
     msg = EmailMessage()
-    msg['Subject'] = f"[🚀 成長衛星 v3.1] Alpha 報表 - {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+    msg['Subject'] = f"[🚀 成長衛星 v3.2] Alpha 報表 - {datetime.now().strftime('%Y-%m-%d %H:%M')}"
     msg['From'], msg['To'] = sender_email, receiver_email
 
     content = (
-        "總工程師您好：\n\n【成長衛星 v3.1 雲端防彈版掃描完成】\n"
+        "總工程師您好：\n\n【成長衛星 v3.2 批量快取防彈版掃描完成】\n"
         f"核心：真實 Rule40>{RULE_OF_40_MIN}、營收增長>{REV_GROWTH_MIN}%、動能>{MOMENTUM_MIN}%\n"
-        f"v3.1 特色：100% SEC 財報推算市值與 EV/Sales，已拔除 YF info 致命依賴。\n"
+        f"v3.2 特色：已導入 100% 批量快取機制，消滅 Yahoo Rate Limit 封鎖限制！\n"
         + "-" * 70 + "\n\n"
     )
     if df.empty: content += "今日無成長標的通關。"
@@ -606,7 +582,7 @@ def send_email_report(df: pd.DataFrame, receiver_email: str):
     msg.set_content(content)
     if not df.empty:
         msg.add_attachment(df.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig'), 
-                           maintype='text', subtype='csv', filename=f'Growth_v3_1_{datetime.now().strftime("%Y%m%d")}.csv')
+                           maintype='text', subtype='csv', filename=f'Growth_v3_2_{datetime.now().strftime("%Y%m%d")}.csv')
     try:
         with smtplib.SMTP('smtp.gmail.com', 587) as server:
             server.starttls(); server.login(sender_email, sender_pwd); server.send_message(msg)
@@ -619,20 +595,32 @@ def send_email_report(df: pd.DataFrame, receiver_email: str):
 if __name__ == "__main__":
     USER_EMAIL = os.environ.get('USER_EMAIL', 'a7924177@gmail.com')
     GROWTH_CACHE_FILE = "growth_universe.csv"
-    print("\n>>> 點火啟動：成長衛星管線 v3.1 (SEC 本位版) <<<\n")
+    print("\n>>> 點火啟動：成長衛星管線 v3.2 (批量快取版) <<<\n")
     try:
         if not os.path.exists(GROWTH_CACHE_FILE):
             logger.error(f"找不到 {GROWTH_CACHE_FILE}！"); exit(1)
+            
         df_c = pd.read_csv(GROWTH_CACHE_FILE)
         df_c['CIK'] = df_c['CIK'].astype(str).str.zfill(10)
         growth_universe = dict(zip(df_c['Ticker'], df_c['CIK']))
-        logger.info("抓取 SPY 基準..."); spy_close = fetch_spy_close()
+        
+        # ── 一次性批量下載所有資料 (取代原本在迴圈中的單筆請求) ──
+        all_tickers = list(growth_universe.keys()) + ['SPY']
+        pre_fetch_all_market_data(all_tickers)
+        
+        # 從快取提取 SPY 供相對動能運算使用
+        spy_close = get_cached_series('SPY', 'Close')
+        
         with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
             res = list(executor.map(lambda p: run_growth_satellite_pipeline(p[0], str(p[1]), USER_EMAIL, spy_close), growth_universe.items()))
+            
         final_df = calculate_growth_alpha(res)
         send_email_report(final_df, USER_EMAIL)
+        
         if not final_df.empty:
             print(f"\n>>> 共 {len(final_df)} 檔通關，TOP 15：\n")
             print(final_df.head(15).to_string(index=False))
         else: print("\n>>> 今日無標的通關。")
-    except Exception as e: logger.critical(f"崩潰: {e}"); traceback.print_exc()
+    except Exception as e: 
+        logger.critical(f"崩潰: {e}")
+        traceback.print_exc()
