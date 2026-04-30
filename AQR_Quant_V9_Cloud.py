@@ -41,17 +41,52 @@ import concurrent.futures
 import threading
 import traceback
 import yfinance as yf
-
-# =======================================================
-# 加入此段 Hack 規避 GitHub Actions 上的 Yahoo 401 錯誤
-# =======================================================
 import requests
-session = requests.Session()
-session.headers.update({
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-})
-import yfinance.base
-yfinance.base._requests = session
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+import time
+import random
+from yfinance import datatypes
+
+# ==============================================================================
+# 強力突破 Yahoo 401 封鎖 (Crumb 強制刷新機制)
+# ==============================================================================
+def create_stealth_session():
+    """建立一個帶有完整瀏覽器偽裝與重試機制的 session"""
+    session = requests.Session()
+    # 針對 401 (Unauthorized) 進行指數退避重試
+    retry = Retry(total=5, backoff_factor=1.5, status_forcelist=[401, 403, 429, 500, 502, 503, 504])
+    adapter = HTTPAdapter(max_retries=retry)
+    session.mount('http://', adapter)
+    session.mount('https://', adapter)
+    session.headers.update({
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5",
+        "Connection": "keep-alive"
+    })
+    return session
+
+def force_refresh_yf_crumb():
+    """強制清理 yfinance 內部的 crumb 暫存，迫使它重新協商"""
+    try:
+        # 清除 yfinance 底層暫存
+        yf.utils.empty_cache()
+        # 強制替換 session
+        yf.base._requests = create_stealth_session()
+        # 初始化 crumb manager
+        from yfinance.utils import crumb_manager
+        crumb_manager._crumb = None
+        crumb_manager._cookie = None
+        crumb_manager.get_crumb() # 強制索取新 crumb
+        return True
+    except Exception as e:
+        logger.debug(f"Crumb 刷新失敗: {e}")
+        return False
+
+# 程式啟動時先執行一次刷新
+force_refresh_yf_crumb()
+# ==============================================================================
 # =======================================================
 # ==============================================================================
 # 設定日誌
@@ -169,17 +204,37 @@ def check_global_trend(spy_close: Optional[pd.Series] = None,
     return trend_msg if trend_msg else "大氣壓力感測器離線。\n"
 
 def safe_yf_info(ticker: str) -> dict:
-    time.sleep(random.uniform(0.1, 0.4))
-    stock = yf.Ticker(ticker)
-    for attempt in range(3):
+    for attempt in range(4): # 最多嘗試 4 次
+        # 每次嘗試前，稍微隨機暫停，避免被頻率偵測
+        time.sleep(random.uniform(0.8, 2.5))
+        
+        # 建立一個獨立的 Ticker 物件，並強制塞入最新的 stealth session
+        session = create_stealth_session()
+        stock = yf.Ticker(ticker, session=session)
+        
         try:
             info = stock.info
-            if info and 'symbol' in info and (info.get('marketCap') or
-                                              info.get('currentPrice') or
-                                              info.get('regularMarketPrice')):
+            # 嚴格驗證：不但要抓到 info，還必須有實質的價格數據才算過關
+            if info and 'symbol' in info and (info.get('marketCap') or info.get('currentPrice') or info.get('regularMarketPrice')):
                 return info
-        except Exception:
+            else:
+                # 抓到空殼字典，代表被擋了，觸發強制重置
+                logger.debug(f"[{ticker}] 抓到空殼 info，準備重置 Crumb (第 {attempt+1} 次嘗試)")
+                force_refresh_yf_crumb()
+                
+        except Exception as e:
+            err_str = str(e)
+            if "401" in err_str or "Invalid Crumb" in err_str:
+                logger.debug(f"[{ticker}] 遭遇 401 封鎖，強制重置 Crumb (第 {attempt+1} 次嘗試)")
+                force_refresh_yf_crumb()
+            else:
+                logger.debug(f"[{ticker}] YF 抓取異常: {err_str}")
+            
+            # 指數退避延遲：1.5s -> 3s -> 6s -> 12s
             time.sleep(1.5 * (2 ** attempt))
+            
+    # 如果撞了 4 次還是失敗，按照你的要求「不降級」，直接回傳空字典，讓外層管線 Fail
+    logger.error(f"[{ticker}] YF info 徹底抓取失敗，放棄該標的。")
     return {}
 
 def calculate_dynamic_beta(ticker: str, spy_returns: Optional[pd.Series] = None) -> float:
