@@ -279,23 +279,30 @@ class SECDataDistiller:
                     pass
         return pd.DataFrame()
 
-    def fetch_shares_outstanding(self, cik: str) -> pd.DataFrame:
-        url = f"https://data.sec.gov/api/xbrl/companyconcept/CIK{str(cik).zfill(10)}/dei/{self.shares_tag}.json"
-        resp = self.session.get(url, headers=self.headers)
-        if not resp or resp.status_code != 200:
-            return pd.DataFrame()
-        try:
-            data = resp.json().get('units', {}).get('shares', [])
-            if not data:
-                return pd.DataFrame()
-            df = pd.DataFrame(data)
-            df['end'] = pd.to_datetime(df['end'])
-            if 'filed' in df.columns:
-                df['filed'] = pd.to_datetime(df['filed'])
-                df = df.sort_values('filed')
-            return df.drop_duplicates(subset=['end'], keep='last').sort_values('end').reset_index(drop=True)
-        except Exception:
-            return pd.DataFrame()
+   def fetch_shares_outstanding(self, cik: str) -> pd.DataFrame:
+        # 擴大雷達：加入更多常見的股本標籤，拯救那 37 檔因為標籤不同被錯殺的股票
+        tags_to_try = [
+            ('dei', 'EntityCommonStockSharesOutstanding'),
+            ('us-gaap', 'CommonStockSharesOutstanding'),
+            ('us-gaap', 'WeightedAverageNumberOfSharesOutstandingBasic')
+        ]
+        
+        for taxonomy, tag in tags_to_try:
+            url = f"https://data.sec.gov/api/xbrl/companyconcept/CIK{str(cik).zfill(10)}/{taxonomy}/{tag}.json"
+            resp = self.session.get(url, headers=self.headers)
+            if resp and resp.status_code == 200:
+                try:
+                    data = resp.json().get('units', {}).get('shares', [])
+                    if data:
+                        df = pd.DataFrame(data)
+                        df['end'] = pd.to_datetime(df['end'])
+                        if 'filed' in df.columns:
+                            df['filed'] = pd.to_datetime(df['filed'])
+                            df = df.sort_values('filed')
+                        return df.drop_duplicates(subset=['end'], keep='last').sort_values('end').reset_index(drop=True)
+                except Exception:
+                    continue
+        return pd.DataFrame()
 
     def get_latest_annual(self, df: pd.DataFrame) -> float:
         if df.empty:
