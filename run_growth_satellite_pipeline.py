@@ -279,7 +279,7 @@ class SECDataDistiller:
                     pass
         return pd.DataFrame()
 
-   def fetch_shares_outstanding(self, cik: str) -> pd.DataFrame:
+    def fetch_shares_outstanding(self, cik: str) -> pd.DataFrame:
         # 擴大雷達：加入更多常見的股本標籤，拯救那 37 檔因為標籤不同被錯殺的股票
         tags_to_try = [
             ('dei', 'EntityCommonStockSharesOutstanding'),
