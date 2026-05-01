@@ -76,21 +76,21 @@ _RF_CACHE: Optional[float] = None
 MARKET_RISK_PREMIUM = 0.046
 
 # === 核心門檻 ===
-ROIC_THRESHOLD          = 12.0
+ROIC_THRESHOLD          = 10.0
 ICR_THRESHOLD           = 5.0
 EBIT_MARGIN_THRESHOLD   = 0.05
 MIN_LIQUIDITY_USD       = 5_000_000
 WINSORIZE_PCT           = 0.025
 
 # === V10.3 沿用門檻 ===
-ROIC_3Y_AVG_MIN         = 12.0
-ROIC_3Y_MIN_FLOOR       = 8.0
+ROIC_3Y_AVG_MIN         = 10.0
+ROIC_3Y_MIN_FLOOR       = 6.0
 FCF_YIELD_PREMIUM_BP    = 200
-GROSS_MARGIN_VOL_MAX    = 0.10
+GROSS_MARGIN_VOL_MAX    = 0.15
 
 # === V11.0 新增門檻 ===
 EV_SALES_MAX            = 30.0
-PCT_FROM_52W_HIGH_MIN   = -0.30
+PCT_FROM_52W_HIGH_MIN   = -0.45
 
 # ==============================================================================
 # 批量快取系統 (取代單檔抓取)
