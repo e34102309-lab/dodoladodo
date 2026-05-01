@@ -52,24 +52,19 @@ def save_vector_cache(cache_dict):
         json.dump(cache_dict, f)
 
 _VECTOR_CACHE = load_vector_cache()
-
-def get_robust_shares_v2(ticker: str, cik: str, sec_distiller, yf_info: dict) -> float:
+def get_robust_shares_v2(ticker: str, df_shares: pd.DataFrame, sec_distiller, yf_info: dict) -> float:
     global _VECTOR_CACHE
     current_time = time.time()
     
-    # 1. 嘗試從 SEC 獲取最新與歷史股本
-    df_shares = sec_distiller.fetch_shares_outstanding(cik)
+    # 1. 嘗試從已下載的 SEC 數據提取
     shares_now, shares_1y_ago = sec_distiller.get_latest_shares(df_shares)
     
     if shares_now > 0:
-        # 計算真實的動態漂移率 (Drift Rate)
         drift = 0.02 # 預設安全墊
         if shares_1y_ago > 0:
             drift = (shares_now / shares_1y_ago) - 1.0
-            # 限制極端值防禦：年化縮減最多 10%，年化稀釋最多 20%
             drift = max(-0.10, min(0.20, drift)) 
             
-        # 成功更新向量快取
         _VECTOR_CACHE[ticker] = {
             "shares": shares_now,
             "drift": drift,
@@ -84,10 +79,7 @@ def get_robust_shares_v2(ticker: str, cik: str, sec_distiller, yf_info: dict) ->
         drift_rate = cached_data["drift"]
         last_updated = cached_data["timestamp"]
         
-        # 計算自上次成功獲取以來的經過天數
         days_passed = (current_time - last_updated) / (24 * 3600)
-        
-        # 依照該公司專屬的歷史慣性進行物理推演
         projected_shares = cached_shares * (1.0 + drift_rate * (days_passed / 365.0))
         
         logger.warning(f"[{ticker}] API斷線，啟動動態推演。歷史Drift: {drift_rate*100:.1f}%, 外插 {days_passed:.0f} 天。")
@@ -96,9 +88,10 @@ def get_robust_shares_v2(ticker: str, cik: str, sec_distiller, yf_info: dict) ->
     # 3. 若連快取都沒有，最後掙扎調用 YF Info
     yf_shares = yf_info.get('sharesOutstanding') or yf_info.get('impliedSharesOutstanding')
     if yf_shares and yf_shares > 0:
-        return yf_shares / 1e9
+        return yf_shares / 1e9 # YF 回傳的是絕對數字，這裡統一轉為十億單位
         
     return 0.0
+
 # ==============================================================================
 # 設定日誌
 # ==============================================================================
@@ -663,13 +656,12 @@ def run_v11_pipeline(ticker: str, cik: str, email: str,
         if rev_3yr_ago > 0 and rev_latest > 0:
             rev_cagr_3y = ((rev_latest / rev_3yr_ago) ** (1/3) - 1) * 100
 
-        shares_now, _ = sec.get_latest_shares(df_shares)
-        if shares_now == 0:
-            shares_now = info.get('sharesOutstanding') or info.get('impliedSharesOutstanding', 0) if info else 0.0
+# ★ 裝備動態向量快取武器
+        shares_now = get_robust_shares_v2(ticker, df_shares, sec, info)
 
-        # v11.2.1: 區分「無法獲取」vs「過低」，方便下次 fail_stats 診斷
+        # ★ 修復單位塌縮 Bug：shares_now 已經是「十億」單位，絕對不可再除以 1e9！
         if shares_now > 0:
-            mcap = (price * shares_now) / 1e9
+            mcap = price * shares_now 
         elif info.get('marketCap'):
             mcap = float(info.get('marketCap')) / 1e9
         else:
@@ -679,7 +671,6 @@ def run_v11_pipeline(ticker: str, cik: str, email: str,
             return {"Ticker": ticker, "Status": "Fail: 市值無法獲取 (SEC+YF 雙失敗)"}
         if mcap < 1.0:
             return {"Ticker": ticker, "Status": f"Fail: 市值過低 ({mcap:.2f}B)"}
-
         total_revenue = rev_history[-1] if len(rev_history) > 0 else float(info.get('totalRevenue') or 0.0) / 1e9
         
         gross_margin = 0.0
@@ -1044,6 +1035,10 @@ if __name__ == "__main__":
 
         final_df = calculate_composite_alpha(res)
         send_email_report(final_df, USER_EMAIL, trend)
+
+        # ★ 必須儲存快取，讓系統產生記憶
+        save_vector_cache(_VECTOR_CACHE)
+        logger.info(f"✅ 動態向量快取已寫入硬碟，目前記憶 {len(_VECTOR_CACHE)} 檔股本資料。")
 
         if not final_df.empty:
             print(f"\n>>> 共 {len(final_df)} 檔通關，TOP 15：\n")
