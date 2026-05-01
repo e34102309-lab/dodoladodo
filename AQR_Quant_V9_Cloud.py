@@ -34,7 +34,71 @@ import traceback
 import yfinance as yf
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+import json
+import os
+import time
+from datetime import datetime
 
+CACHE_FILE_SHARES = "local_shares_vector_cache.json"
+
+def load_vector_cache():
+    if os.path.exists(CACHE_FILE_SHARES):
+        with open(CACHE_FILE_SHARES, 'r') as f:
+            return json.load(f)
+    return {}
+
+def save_vector_cache(cache_dict):
+    with open(CACHE_FILE_SHARES, 'w') as f:
+        json.dump(cache_dict, f)
+
+_VECTOR_CACHE = load_vector_cache()
+
+def get_robust_shares_v2(ticker: str, cik: str, sec_distiller, yf_info: dict) -> float:
+    global _VECTOR_CACHE
+    current_time = time.time()
+    
+    # 1. 嘗試從 SEC 獲取最新與歷史股本
+    df_shares = sec_distiller.fetch_shares_outstanding(cik)
+    shares_now, shares_1y_ago = sec_distiller.get_latest_shares(df_shares)
+    
+    if shares_now > 0:
+        # 計算真實的動態漂移率 (Drift Rate)
+        drift = 0.02 # 預設安全墊
+        if shares_1y_ago > 0:
+            drift = (shares_now / shares_1y_ago) - 1.0
+            # 限制極端值防禦：年化縮減最多 10%，年化稀釋最多 20%
+            drift = max(-0.10, min(0.20, drift)) 
+            
+        # 成功更新向量快取
+        _VECTOR_CACHE[ticker] = {
+            "shares": shares_now,
+            "drift": drift,
+            "timestamp": current_time
+        }
+        return shares_now
+
+    # 2. 觸發本地向量快取防禦機制
+    if ticker in _VECTOR_CACHE:
+        cached_data = _VECTOR_CACHE[ticker]
+        cached_shares = cached_data["shares"]
+        drift_rate = cached_data["drift"]
+        last_updated = cached_data["timestamp"]
+        
+        # 計算自上次成功獲取以來的經過天數
+        days_passed = (current_time - last_updated) / (24 * 3600)
+        
+        # 依照該公司專屬的歷史慣性進行物理推演
+        projected_shares = cached_shares * (1.0 + drift_rate * (days_passed / 365.0))
+        
+        logger.warning(f"[{ticker}] API斷線，啟動動態推演。歷史Drift: {drift_rate*100:.1f}%, 外插 {days_passed:.0f} 天。")
+        return projected_shares
+        
+    # 3. 若連快取都沒有，最後掙扎調用 YF Info
+    yf_shares = yf_info.get('sharesOutstanding') or yf_info.get('impliedSharesOutstanding')
+    if yf_shares and yf_shares > 0:
+        return yf_shares / 1e9
+        
+    return 0.0
 # ==============================================================================
 # 設定日誌
 # ==============================================================================
