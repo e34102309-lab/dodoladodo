@@ -421,7 +421,7 @@ class SECDataDistiller:
         self.session = _GLOBAL_SEC_SESSION
         self.shares_tag = 'EntityCommonStockSharesOutstanding'
         self.config = {
-            'OCF':         ['NetCashProvidedByUsedInOperatingActivities'],
+            'OCF':         ['NetCashProvidedByUsedInOperatingActivities','NetCashProvidedByUsedInOperatingActivitiesContinuingOperations'],
             'CapEx':       ['PaymentsToAcquirePropertyPlantAndEquipment',
                             'PropertyPlantAndEquipmentAdditions'],
             'SBC':         ['ShareBasedCompensation', 'StockBasedCompensation',
@@ -443,13 +443,13 @@ class SECDataDistiller:
                             'LoansAndLeasesReceivableNet'],
             'Revenue':     ['Revenues',
                             'RevenueFromContractWithCustomerExcludingAssessedTax',
-                            'SalesRevenueNet'],
+                            'SalesRevenueNet','SalesRevenueGoodsNet'],
             'Buyback':     ['PaymentsForRepurchaseOfCommonStock',
                             'PaymentsForRepurchaseOfEquity'],
             'Dividend':    ['PaymentsOfDividendsCommonStock', 'PaymentsOfDividends'],
             'StockIssuance': ['ProceedsFromIssuanceOfCommonStock',
                               'StockIssuedDuringPeriodValueNewIssues'],
-            'GrossProfit': ['GrossProfit'],
+            'GrossProfit': ['GrossProfit','GrossMargin'],
         }
 
     def fetch_concept(self, cik: str, concept: str) -> pd.DataFrame:
