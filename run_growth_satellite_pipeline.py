@@ -1,12 +1,13 @@
 """
 =============================================================================
-GROWTH SATELLITE PIPELINE v3.2 (成長衛星管線 - 批量快取防封鎖版)
+GROWTH SATELLITE PIPELINE v3.3 (成長衛星管線 - 動能門優化 + Bug 修復版)
 =============================================================================
-改動摘要：
-1. [架構] 導入 _BULK_MARKET_DATA 批量快取機制，啟動時一次性下載所有候選股 K 線，徹底繞過 YF IP 封鎖。
-2. [防禦] safe_yf_info 改為「一鍵優雅降級」模式：若 info 被封鎖，立刻切換至本地快取抓取價格。
-3. [精準] 數據主權回歸：市值、營收、毛利、增速、EV/Sales 全部強制改由 SEC 原始數據計算，確保數據具備審計級精度。
-4. [保留] 完整繼承 v3 所有因子：營收加速度、真實 Rule of 40、R&D ROI、52W 高點防線。
+v3.3 改動摘要 (vs v3.2)：
+1. [校準] 根據 fail_stats 實證調整：絕對動能 15→0、相對動能 0→-10、距高點 35→45。
+2. [校準] Rule of 40 30→25、毛利率 40→35、營收增速 15→12 (微調，配合動能放寬整體擴大候選池)。
+3. [Bug] 加入 marketCap fallback (info.marketCap)，市值地板 1.0B → 0.5B，預期可救回 ~15-20 檔。
+4. [Bug] 修復 line 257 fetch_concept 縮排 (原本掉到 class 外)。
+5. [Bug] main 區塊去除 ThreadPoolExecutor / calculate_growth_alpha / send_email_report 的重複呼叫。
 =============================================================================
 """
 import random
@@ -33,21 +34,24 @@ from urllib3.util.retry import Retry
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s', datefmt='%H:%M:%S')
 logger = logging.getLogger(__name__)
 
-# === 成長衛星專屬門檻 ===
-MIN_LIQUIDITY_USD       = 10_000_000   # 日均成交額底線 $10M
-REV_GROWTH_MIN          = 15.0         # 營收增速底線 20%
-GROSS_MARGIN_MIN        = 0.40         # 毛利率底線 45% (定價權)
-RULE_OF_40_MIN          = 30.0         # 真實 Rule of 40 底線
-MOMENTUM_MIN            = 15.0         # 絕對動能底線 30%
-RELATIVE_MOMENTUM_MIN   = 0.0          # 相對 SPY 動能底線
-FCF_BURN_FLOOR          = -40.0        # 燒錢深度紅線
-CASH_RUNWAY_MIN_YRS     = 2.0          # 燒錢公司現金跑道底線
-DILUTION_MAX_YOY        = 0.07         # 流通股年增上限
+# === 成長衛星專屬門檻 (v3.3 校準後) ===
+MIN_LIQUIDITY_USD       = 10_000_000   # 日均成交額底線 $10M (不變)
+REV_GROWTH_MIN          = 12.0         # 營收增速底線 (15→12)
+GROSS_MARGIN_MIN        = 0.35         # 毛利率底線 (0.40→0.35)
+RULE_OF_40_MIN          = 25.0         # 真實 Rule of 40 底線 (30→25)
+MOMENTUM_MIN            = 0.0          # ★絕對動能底線 (15→0)：原本砍掉 77 檔
+RELATIVE_MOMENTUM_MIN   = -10.0        # ★相對 SPY 動能底線 (0→-10)：配套放寬
+FCF_BURN_FLOOR          = -40.0        # 燒錢深度紅線 (不變)
+CASH_RUNWAY_MIN_YRS     = 2.0          # 燒錢公司現金跑道底線 (不變)
+DILUTION_MAX_YOY        = 0.10         # 流通股年增上限 (0.07→0.10)
 
-# === v3 新增紅線 ===
-PCT_FROM_52W_HIGH_MIN   = -0.35        # 距 52 週高點不得低於 -25% (動能反轉防線)
-GROSS_MARGIN_TREND_MIN  = -0.02        # 毛利率 YoY 衰退不得超過 2pp
-EV_SALES_MAX            = 30.0         # EV/Sales 極端紅線 (防泡沫)
+# === v3 新增紅線 (v3.3 微調) ===
+PCT_FROM_52W_HIGH_MIN   = -0.45        # 距 52 週高點 (-0.35→-0.45)
+GROSS_MARGIN_TREND_MIN  = -0.03        # 毛利率 YoY 衰退 (-0.02→-0.03)
+EV_SALES_MAX            = 30.0         # EV/Sales 極端紅線 (不變)
+
+# === v3.3 新增：市值地板 ===
+MIN_MARKET_CAP_B        = 0.5          # 市值地板 (原 1.0B→0.5B)，搭配 marketCap fallback
 
 WINSORIZE_PCT           = 0.025
 
@@ -253,7 +257,8 @@ class SECDataDistiller:
             'ShortTermInvestments': ['ShortTermInvestments',
                                      'MarketableSecuritiesCurrent'],
         }
-def fetch_concept(self, cik: str, concept: str) -> pd.DataFrame:
+
+    def fetch_concept(self, cik: str, concept: str) -> pd.DataFrame:
         for tag in self.config.get(concept, [concept]):
             url = f"https://data.sec.gov/api/xbrl/companyconcept/CIK{str(cik).zfill(10)}/us-gaap/{tag}.json"
             resp = self.session.get(url, headers=self.headers)
@@ -399,13 +404,18 @@ def run_growth_satellite_pipeline(ticker: str, cik: str, email: str,
         cash_total = sec.get_latest_annual(df_cash) + sec.get_latest_annual(df_sti)
 
         # ── Stage 4: 核心估值與基本面推算 (SEC 本位) ────────────────────
-        # 1. 市值計算 (不依賴 YF)
+        # 1. 市值計算 (v3.3：加 marketCap fallback + 降低地板)
         shares_now, shares_old = sec.get_latest_shares(df_shares)
         if shares_now == 0:
             shares_now = info.get('sharesOutstanding') or info.get('impliedSharesOutstanding', 0) if info else 0.0
         mcap = (price * shares_now) / 1e9 if shares_now > 0 else 0.0
-        if mcap < 1.0:
-            return {"Ticker": ticker, "Status": "Fail: 市值無法獲取"}
+        # ★ v3.3 關鍵 fallback：若 SEC + YF shares 都拿不到，直接用 YF 的 marketCap
+        if mcap < MIN_MARKET_CAP_B:
+            mcap_yf = float(info.get('marketCap') or 0.0) / 1e9
+            if mcap_yf >= MIN_MARKET_CAP_B:
+                mcap = mcap_yf
+        if mcap < MIN_MARKET_CAP_B:
+            return {"Ticker": ticker, "Status": f"Fail: 市值無法獲取 ({mcap:.2f}B)"}
 
         # 2. 營收增速與加速度
         total_revenue = rev_history[-1]
@@ -540,13 +550,13 @@ def send_email_report(df: pd.DataFrame, receiver_email: str):
     sender_email, sender_pwd = os.environ.get('EMAIL_SENDER'), os.environ.get('EMAIL_PASSWORD')
     if not sender_email or not sender_pwd: return
     msg = EmailMessage()
-    msg['Subject'] = f"[🚀 成長衛星 v3.2] Alpha 報表 - {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+    msg['Subject'] = f"[🚀 成長衛星 v3.3] Alpha 報表 - {datetime.now().strftime('%Y-%m-%d %H:%M')}"
     msg['From'], msg['To'] = sender_email, receiver_email
 
     content = (
-        "總工程師您好：\n\n【成長衛星 v3.2 批量快取防彈版掃描完成】\n"
-        f"核心：真實 Rule40>{RULE_OF_40_MIN}、營收增長>{REV_GROWTH_MIN}%、動能>{MOMENTUM_MIN}%\n"
-        f"v3.2 特色：已導入 100% 批量快取機制，消滅 Yahoo Rate Limit 封鎖限制！\n"
+        "總工程師您好：\n\n【成長衛星 v3.3 動能門校準版掃描完成】\n"
+        f"核心：真實 Rule40>{RULE_OF_40_MIN}、營收增長>{REV_GROWTH_MIN}%、絕對動能>{MOMENTUM_MIN}%\n"
+        f"v3.3 校準：動能門 15→0、相對動能 0→-10、市值地板 1.0B→0.5B + marketCap fallback\n"
         + "-" * 70 + "\n\n"
     )
     if df.empty: content += "今日無成長標的通關。"
@@ -557,7 +567,7 @@ def send_email_report(df: pd.DataFrame, receiver_email: str):
     msg.set_content(content)
     if not df.empty:
         msg.add_attachment(df.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig'), 
-                           maintype='text', subtype='csv', filename=f'Growth_v3_2_{datetime.now().strftime("%Y%m%d")}.csv')
+                           maintype='text', subtype='csv', filename=f'Growth_v3_3_{datetime.now().strftime("%Y%m%d")}.csv')
     try:
         with smtplib.SMTP('smtp.gmail.com', 587) as server:
             server.starttls(); server.login(sender_email, sender_pwd); server.send_message(msg)
@@ -570,7 +580,7 @@ def send_email_report(df: pd.DataFrame, receiver_email: str):
 if __name__ == "__main__":
     USER_EMAIL = os.environ.get('USER_EMAIL', 'a7924177@gmail.com')
     GROWTH_CACHE_FILE = "growth_universe.csv"
-    print("\n>>> 點火啟動：成長衛星管線 v3.2 (批量快取版) <<<\n")
+    print("\n>>> 點火啟動：成長衛星管線 v3.3 (動能門校準版) <<<\n")
     try:
         if not os.path.exists(GROWTH_CACHE_FILE):
             logger.error(f"找不到 {GROWTH_CACHE_FILE}！"); exit(1)
@@ -588,12 +598,9 @@ if __name__ == "__main__":
         
         with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
             res = list(executor.map(lambda p: run_growth_satellite_pipeline(p[0], str(p[1]), USER_EMAIL, spy_close), growth_universe.items()))
-       # (前面的程式碼不變...)
-        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
-            res = list(executor.map(lambda p: run_growth_satellite_pipeline(p[0], str(p[1]), USER_EMAIL, spy_close), growth_universe.items()))
             
         # ==========================================
-        # 🔥 新增：把這段死因統計加進去 🔥
+        # 死因統計 (證明程式有認真在跑)
         # ==========================================
         fail_stats = {}
         for r in res:
@@ -608,14 +615,11 @@ if __name__ == "__main__":
                 fail_stats[key] = fail_stats.get(key, 0) + 1
         
         if fail_stats:
-            logger.info("💀 淘汰原因分布 (證明程式有認真在跑)：")
+            logger.info("💀 淘汰原因分布：")
             for k, v in sorted(fail_stats.items(), key=lambda x: -x[1]):
                 logger.info(f"  {k}: {v} 檔")
         # ==========================================
             
-        final_df = calculate_growth_alpha(res)
-        send_email_report(final_df, USER_EMAIL)
-        # (後面的程式碼不變...)     
         final_df = calculate_growth_alpha(res)
         send_email_report(final_df, USER_EMAIL)
         
