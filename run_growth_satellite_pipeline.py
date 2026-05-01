@@ -271,7 +271,7 @@ class SECDataDistiller:
         self.session = _GLOBAL_SEC_SESSION
         self.shares_tag = 'EntityCommonStockSharesOutstanding'
         self.config = {
-            'OCF':         ['NetCashProvidedByUsedInOperatingActivities'],
+            'OCF':         ['NetCashProvidedByUsedInOperatingActivities','NetCashProvidedByUsedInOperatingActivitiesContinuingOperations'],
             'CapEx':       ['PaymentsToAcquirePropertyPlantAndEquipment',
                             'PropertyPlantAndEquipmentAdditions'],
             'SBC':         ['ShareBasedCompensation', 'StockBasedCompensation',
@@ -282,8 +282,8 @@ class SECDataDistiller:
             'RND':         ['ResearchAndDevelopmentExpense'],
             'Revenue':     ['Revenues',
                             'RevenueFromContractWithCustomerExcludingAssessedTax',
-                            'SalesRevenueNet'],
-            'GrossProfit': ['GrossProfit'],
+                            'SalesRevenueNet','SalesRevenueGoodsNet'],
+            'GrossProfit': ['GrossProfit','GrossMargin'],
             'Cash':        ['CashAndCashEquivalentsAtCarryingValue',
                             'CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents'],
             'ShortTermInvestments': ['ShortTermInvestments',
@@ -401,10 +401,29 @@ def run_growth_satellite_pipeline(ticker: str, cik: str, email: str,
  
         if mom_12m is None:
             return {"Ticker": ticker, "Status": "Fail: 動能無資料"}
-        if mom_12m < MOMENTUM_MIN:
-            return {"Ticker": ticker, "Status": f"Fail: 絕對動能不足 ({mom_12m:.1f}%)"}
-        if rel_mom is not None and rel_mom < RELATIVE_MOMENTUM_MIN:
-            return {"Ticker": ticker, "Status": f"Fail: 相對動能輸大盤 ({rel_mom:+.1f}%)"}
+
+        # ====================================================================
+        # ★ 動態環境動能校正 (Dynamic Regime-Adjusted Momentum)
+        # ====================================================================
+        # 1. 反推大盤 (SPY) 過去 12 個月的真實動能
+        spy_mom = (mom_12m - rel_mom) if rel_mom is not None else 0.0
+        
+        # 2. 絕對動能防線 (動態放寬)：
+        # 成長股的 Beta 通常較高。若大盤大跌，我們允許成長股承受大盤 1.5 倍的回撤。
+        # 取 min() 是為了確保在多頭市場時，依然要守住原本設定的 MOMENTUM_MIN 底線。
+        dynamic_mom_min = min(MOMENTUM_MIN, spy_mom * 1.5) 
+        
+        if mom_12m < dynamic_mom_min:
+            return {"Ticker": ticker, "Status": f"Fail: 絕對動能不足 ({mom_12m:.1f}%, 底線 {dynamic_mom_min:.1f}%)"}
+            
+        # 3. 相對動能防線 (動態收緊)：
+        # 當大盤處於跌勢 (spy_mom <= 0) 時，我們可以原諒你的絕對報酬為負，
+        # 但你必須展現出強大的「相對抗跌性」。因此將相對動能底線嚴格拉高至 -5.0%。
+        strict_rel_mom_min = RELATIVE_MOMENTUM_MIN if spy_mom > 0 else -5.0
+        
+        if rel_mom is not None and rel_mom < strict_rel_mom_min:
+            return {"Ticker": ticker, "Status": f"Fail: 相對動能輸大盤 ({rel_mom:+.1f}%, 底線 {strict_rel_mom_min:+.1f}%)"}
+        # ====================================================================
  
         if pct_from_high < PCT_FROM_52W_HIGH_MIN:
             return {"Ticker": ticker, "Status": f"Fail: 距高點過遠 ({pct_from_high*100:+.1f}%)"}
