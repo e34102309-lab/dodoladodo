@@ -1,16 +1,19 @@
 """
 =============================================================================
-GROWTH SATELLITE PIPELINE v3.4 (成長衛星管線 - 結構性 bug 修復版)
+GROWTH SATELLITE PIPELINE v3.4.1 (成長衛星管線 - IndexError 修復補丁)
 =============================================================================
+v3.4.1 改動摘要 (vs v3.4)：
+1. ★[Bug] form filter 從 == '10-K' 改為 startswith('10-K')。
+   原本會過濾掉 10-K/A (修正案)，導致 AMD/APH/KLAC 等歷史有修正案的
+   公司 rev_history 變空 list，下游 rev_history[-1] 觸發 IndexError 崩潰。
+2. ★[Bug] rev_history / gross_history 抓取後加入空 list 防呆守門，
+   回傳 "Fail: 無 10-K 年度數據" 而非讓 IndexError 擊穿整條管線。
+   (例：剛 IPO 的 ARM 還沒累積足夠 10-K)
+ 
 v3.4 改動摘要 (vs v3.3)：
-1. ★[嚴重] EV 修正：V3.3 把 debt 寫死為 0，導致高槓桿成長股繞過 EV/Sales 門檻。
-   - 新增 SEC 'Debt' 與 'ShortTermDebt' 標籤抓取。
-   - EV 公式還原為 EV = MCap + 總債務 - Cash。
-2. ★[嚴重] 現金跑道修正：之前只看 FCF burn 線性外推，無視到期 debt wall。
-   - runway = cash / (abs(real_fcf) + short_term_debt)
+1. ★[嚴重] EV 修正：補回 debt 進入 EV 計算。
+2. ★[嚴重] 現金跑道修正：分母加入到期短債。
 3. ★[嚴重] 併發/yf.Ticker 衝突修正：worker 線程零 yf.Ticker.info 呼叫。
-   - 新增 pre_fetch_all_info()：啟動時主線程批量抓一次，存到 _INFO_CACHE。
-   - safe_yf_info() 改純讀快取，worker 線程零網路呼叫。
 =============================================================================
 """
 import random
@@ -345,7 +348,8 @@ class SECDataDistiller:
     def get_latest_annual(self, df: pd.DataFrame) -> float:
         if df.empty:
             return 0.0
-        annual = df[df['form'] == '10-K']
+        # v3.4.1: 涵蓋 10-K 與 10-K/A (修正案)，避免 AMD/APH/KLAC 之類的歷史修正案被過濾掉
+        annual = df[df['form'].astype(str).str.startswith('10-K')]
         if annual.empty:
             return 0.0
         return float(annual['val'].iloc[-1]) / 1e9
@@ -353,7 +357,8 @@ class SECDataDistiller:
     def get_annual_history(self, df: pd.DataFrame, n_years: int = 3) -> List[float]:
         if df.empty:
             return []
-        annual = df[df['form'] == '10-K']
+        # v3.4.1: 涵蓋 10-K 與 10-K/A
+        annual = df[df['form'].astype(str).str.startswith('10-K')]
         if annual.empty:
             return []
         if 'fy' in annual.columns:
@@ -432,6 +437,11 @@ def run_growth_satellite_pipeline(ticker: str, cik: str, email: str,
         rev_history   = sec.get_annual_history(df_rev,   3)
         gross_history = sec.get_annual_history(df_gross, 3)
         rnd_history   = sec.get_annual_history(df_rnd,   3)
+        
+        # v3.4.1 守門：history 為空表示沒有可用的 10-K 年度資料 (例如新 IPO 或 SEC tag 不匹配)
+        # 不擋的話下游 rev_history[-1] 會直接 IndexError 把整支管線炸掉
+        if not rev_history or not gross_history:
+            return {"Ticker": ticker, "Status": "Fail: 無 10-K 年度數據"}
         
         ocf   = sec.get_latest_annual(df_ocf)
         capex = abs(sec.get_latest_annual(df_capex))
@@ -597,11 +607,11 @@ def send_email_report(df: pd.DataFrame, receiver_email: str):
     sender_email, sender_pwd = os.environ.get('EMAIL_SENDER'), os.environ.get('EMAIL_PASSWORD')
     if not sender_email or not sender_pwd: return
     msg = EmailMessage()
-    msg['Subject'] = f"[🚀 成長衛星 v3.4] Alpha 報表 - {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+    msg['Subject'] = f"[🚀 成長衛星 v3.4.1] Alpha 報表 - {datetime.now().strftime('%Y-%m-%d %H:%M')}"
     msg['From'], msg['To'] = sender_email, receiver_email
  
     content = (
-        "總工程師您好：\n\n【成長衛星 v3.4 結構性 bug 修復版掃描完成】\n"
+        "總工程師您好：\n\n【成長衛星 v3.4.1 IndexError 補丁版掃描完成】\n"
         f"核心：真實 Rule40>{RULE_OF_40_MIN}、營收增長>{REV_GROWTH_MIN}%、絕對動能>{MOMENTUM_MIN}%\n"
         f"v3.4 修復：EV 補回 debt、跑道納入短債、worker 線程零 yf 呼叫\n"
         + "-" * 70 + "\n\n"
@@ -614,7 +624,7 @@ def send_email_report(df: pd.DataFrame, receiver_email: str):
     msg.set_content(content)
     if not df.empty:
         msg.add_attachment(df.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig'), 
-                           maintype='text', subtype='csv', filename=f'Growth_v3_4_{datetime.now().strftime("%Y%m%d")}.csv')
+                           maintype='text', subtype='csv', filename=f'Growth_v3_4_1_{datetime.now().strftime("%Y%m%d")}.csv')
     try:
         with smtplib.SMTP('smtp.gmail.com', 587) as server:
             server.starttls(); server.login(sender_email, sender_pwd); server.send_message(msg)
@@ -627,7 +637,7 @@ def send_email_report(df: pd.DataFrame, receiver_email: str):
 if __name__ == "__main__":
     USER_EMAIL = os.environ.get('USER_EMAIL', 'a7924177@gmail.com')
     GROWTH_CACHE_FILE = "growth_universe.csv"
-    print("\n>>> 點火啟動：成長衛星管線 v3.4 (結構性 bug 修復版) <<<\n")
+    print("\n>>> 點火啟動：成長衛星管線 v3.4.1 (IndexError 補丁) <<<\n")
     try:
         if not os.path.exists(GROWTH_CACHE_FILE):
             logger.error(f"找不到 {GROWTH_CACHE_FILE}！"); exit(1)
