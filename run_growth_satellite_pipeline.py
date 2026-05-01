@@ -253,8 +253,7 @@ class SECDataDistiller:
             'ShortTermInvestments': ['ShortTermInvestments',
                                      'MarketableSecuritiesCurrent'],
         }
-
-    def fetch_concept(self, cik: str, concept: str) -> pd.DataFrame:
+def fetch_concept(self, cik: str, concept: str) -> pd.DataFrame:
         for tag in self.config.get(concept, [concept]):
             url = f"https://data.sec.gov/api/xbrl/companyconcept/CIK{str(cik).zfill(10)}/us-gaap/{tag}.json"
             resp = self.session.get(url, headers=self.headers)
