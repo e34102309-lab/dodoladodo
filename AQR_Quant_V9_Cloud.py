@@ -1,20 +1,13 @@
 """
 =============================================================================
-V11.2.1 SHARES MULTI-TAG PATCH (核心持股管線 - 數據管路強化版)
+V11.3 SHARES MULTI-TAG PATCH (第一原理淨化版)
 =============================================================================
-v11.2.1 改動摘要 (vs v11.2)：
-1. ★[Bug] fetch_shares_outstanding 從單 tag → 多 tag chain：
-   - 之前只試 dei.EntityCommonStockSharesOutstanding，不少 us-gaap-only 申報
-     的公司會抓不到，連帶 yfinance fallback 不穩，導致「市值無法獲取」灌水。
-   - 改試三組 tag：dei.Entity..、us-gaap.CommonStockShares..、us-gaap.WeightedAverage..
-2. [診斷] 拆分 Fail 訊息：「市值無法獲取」(SEC+YF 都失敗) vs「市值過低」(<$1B)，
-   下次能直接從 fail_stats 看出真正瓶頸。
-3. [防禦] pre_fetch_all_info 加入：失敗重試 1 次、每筆小睡 0.05s、印成功率，
-   降低 yfinance 受速率限制干擾。
-
-v11.2 改動摘要 (vs v11.1)：
-1. ★[嚴重] EBITDA 壓力測試剔除 SBC 加回 (原本內部矛盾)。
-2. ★[嚴重] worker 線程零 yf.Ticker.info 呼叫 (避免併發限流)。
+v11.3 改動摘要 (vs v11.2.1)：
+1. ★[估值淨化] 徹底廢除 EV/Sales 紅線，穩態企業估值全權交給 Yield 與 EV/EBITDA。
+2. ★[財技拆穿] 嚴格重構 Buyback Yield 公式：強制從買回金額中扣除 SBC (員工認股)。
+               若 SBC 支出大於買回金額，實質庫藏股殖利率強制歸零，破除印鈔幻覺。
+3. ★[邏輯校正] 將 ROIC < WACC 的訊號從「硬停損」改為「預警」，避免 Beta 錯殺。
+               真實破產紅線交由 ICR 與動態 EV 雙殺測試把關。
 =============================================================================
 """
 import random
@@ -154,23 +147,19 @@ ROIC_3Y_MIN_FLOOR       = 8.0
 FCF_YIELD_PREMIUM_BP    = 200
 GROSS_MARGIN_VOL_MAX    = 0.10
 
-# === V11.0 新增門檻 ===
-EV_SALES_MAX            = 30.0
+# ★ [v11.3] 廢除 EV_SALES_MAX，不再讓營收倍數污染核心管線
 PCT_FROM_52W_HIGH_MIN   = -0.45
 
 # ==============================================================================
 # 批量快取系統 (取代單檔抓取)
 # ==============================================================================
 def pre_fetch_all_market_data(tickers: List[str]):
-    """一次性批量下載所有候選股的 K 線資料，完美避開 Yahoo 封鎖"""
     global _BULK_MARKET_DATA
     logger.info(f"開始一次性批量下載 {len(tickers)} 檔報價資料...對 Yahoo 只算 1 次請求！")
-    # 直接讓 yfinance 底層自己的 curl_cffi 去接管
     _BULK_MARKET_DATA = yf.download(tickers, period='3y', progress=False, auto_adjust=True)
     logger.info("批量下載完成！")
 
 def get_cached_series(ticker: str, col: str) -> Optional[pd.Series]:
-    """從全域快取中切片提取特定股票的特定欄位 (Close, Volume)"""
     global _BULK_MARKET_DATA
     if _BULK_MARKET_DATA is None or _BULK_MARKET_DATA.empty:
         return None
@@ -247,17 +236,11 @@ def get_fallback_price(ticker: str) -> float:
         return float(close.iloc[-1])
     return 0.0
 
-# v11.2: 啟動時填充的全域 info 快取，worker 線程「只讀」此 dict，不再呼叫 yf.Ticker
 _INFO_CACHE: Dict[str, dict] = {}
 
 def pre_fetch_all_info(tickers: List[str]):
-    """主線程批量抓取所有 yf.info，避免 worker 線程觸發 Yahoo 限流。
-    
-    v11.2.1 強化：失敗重試 1 次 + 每筆 50ms 節流 + 印成功率，
-    yfinance info 端點本就不穩，加重試把成功率拉到可接受範圍。
-    """
     global _INFO_CACHE
-    logger.info(f"[v11.2.1] 主線程批量抓取 {len(tickers)} 檔 yf.info（含重試）...")
+    logger.info(f"主線程批量抓取 {len(tickers)} 檔 yf.info（含重試）...")
     success = 0
     for i, t in enumerate(tickers):
         info_data = {}
@@ -271,17 +254,14 @@ def pre_fetch_all_info(tickers: List[str]):
             except Exception:
                 pass
             if attempt == 0:
-                time.sleep(0.4)  # 第一次失敗時退避，避免連續 429
+                time.sleep(0.4) 
         _INFO_CACHE[t] = info_data
-        time.sleep(0.05)  # 每筆間距 50ms，降低速率限制機率
+        time.sleep(0.05)
         if (i + 1) % 100 == 0:
             rate = success / (i + 1) * 100
             logger.info(f"  [info] {i+1}/{len(tickers)} (成功率 {rate:.0f}%)")
-    final_rate = success / len(tickers) * 100 if tickers else 0
-    logger.info(f"[v11.2.1] info 批量完成：成功 {success}/{len(tickers)} ({final_rate:.0f}%)")
 
 def safe_yf_info(ticker: str) -> dict:
-    """v11.2 版：純讀 _INFO_CACHE，worker 線程零網路呼叫。"""
     info = _INFO_CACHE.get(ticker, {})
     if info and (info.get('currentPrice') or info.get('regularMarketPrice')):
         return info
@@ -300,7 +280,6 @@ def calculate_dynamic_beta(ticker: str, spy_returns: Optional[pd.Series] = None)
         if tk_close is None or len(tk_close) < 50:
             return 1.0
         
-        # 將日線轉換為週線計算 Beta
         tk_weekly = tk_close.resample('W').last().dropna()
         tk_ret = tk_weekly.pct_change().dropna()
         
@@ -471,8 +450,6 @@ class SECDataDistiller:
         return pd.DataFrame()
 
     def fetch_shares_outstanding(self, cik: str) -> pd.DataFrame:
-        # v11.2.1: 多 tag chain，覆蓋不同申報方式
-        # 不少公司不在 dei taxonomy 下申報，只有 us-gaap 版本
         tags_to_try = [
             ('dei',     'EntityCommonStockSharesOutstanding'),
             ('us-gaap', 'CommonStockSharesOutstanding'),
@@ -573,7 +550,7 @@ def calc_roic_unified(ebit: float, equity: float, debt: float,
     return (ebit / max(ic, 0.1)) * 100
 
 # ==============================================================================
-# 核心管線 V11.1
+# 核心管線 V11.3 (第一原理淨化版)
 # ==============================================================================
 def run_v11_pipeline(ticker: str, cik: str, email: str,
                       spy_returns: Optional[pd.Series] = None) -> dict:
@@ -651,15 +628,14 @@ def run_v11_pipeline(ticker: str, cik: str, email: str,
         buyback_3y     = sec.get_n_year_sum(df_buyback, 3)
         dividend_3y    = sec.get_n_year_sum(df_div, 3)
         issuance_3y    = sec.get_n_year_sum(df_issuance, 3)
+        sbc_3y         = sec.get_n_year_sum(df_sbc, 3) # ★ [v11.3] 抓取 3 年 SBC 總和
 
         rev_cagr_3y = 0.0
         if rev_3yr_ago > 0 and rev_latest > 0:
             rev_cagr_3y = ((rev_latest / rev_3yr_ago) ** (1/3) - 1) * 100
 
-# ★ 裝備動態向量快取武器
         shares_now = get_robust_shares_v2(ticker, df_shares, sec, info)
 
-        # ★ 修復單位塌縮 Bug：shares_now 已經是「十億」單位，絕對不可再除以 1e9！
         if shares_now > 0:
             mcap = price * shares_now 
         elif info.get('marketCap'):
@@ -671,6 +647,7 @@ def run_v11_pipeline(ticker: str, cik: str, email: str,
             return {"Ticker": ticker, "Status": "Fail: 市值無法獲取 (SEC+YF 雙失敗)"}
         if mcap < 1.0:
             return {"Ticker": ticker, "Status": f"Fail: 市值過低 ({mcap:.2f}B)"}
+            
         total_revenue = rev_history[-1] if len(rev_history) > 0 else float(info.get('totalRevenue') or 0.0) / 1e9
         
         gross_margin = 0.0
@@ -685,14 +662,7 @@ def run_v11_pipeline(ticker: str, cik: str, email: str,
         else:
             rev_growth = float(info.get('revenueGrowth') or 0.0)
 
-        ev_sales = 0.0
-        if mcap > 0 and total_revenue > 0:
-            ev_sales = (mcap + debt - cash) / total_revenue
-        else:
-            ev_sales = float(info.get('enterpriseToRevenue') or 0.0)
-            
-        if ev_sales > EV_SALES_MAX:
-            return {"Ticker": ticker, "Status": f"Fail: EV/Sales 過熱 ({ev_sales:.1f}x)"}
+        # ★ [v11.3] 刪除所有 EV_Sales 判斷，避免污染核心估值邏輯
 
         if capex == 0:
             capex = abs(float(info.get('capitalExpenditures') or 0)) / 1e9
@@ -775,7 +745,8 @@ def run_v11_pipeline(ticker: str, cik: str, email: str,
         min_fcf_yield = rf_pct + (FCF_YIELD_PREMIUM_BP / 100)
         valuation_warning = fcf_yield < min_fcf_yield
 
-        net_buyback_3y = max(0.0, buyback_3y - issuance_3y)
+        # ★ [v11.3] 實質股東殖利率修正：嚴格扣除 3 年累計 SBC
+        net_buyback_3y = max(0.0, buyback_3y - issuance_3y - sbc_3y)
         buyback_yield = (net_buyback_3y / 3 / mcap) * 100 if mcap > 0 else 0.0
         dividend_yield_calc = (dividend_3y / 3 / mcap) * 100 if mcap > 0 else 0.0
 
@@ -800,14 +771,6 @@ def run_v11_pipeline(ticker: str, cik: str, email: str,
                     cond_b = True
         cycle_top_warning = cond_a or cond_b
 
-        is_growth_monster = False
-        if total_revenue > 0:
-            billings_growth = rev_growth + (defrev_change / total_revenue)
-            real_r40 = ((real_fcf / total_revenue) + billings_growth) * 100
-            if gross_margin >= 0.70 and (roic - wacc * 100) > 5.0 and real_r40 >= 40.0:
-                is_growth_monster = True
-
-        # v11.2 修正：FCF 已扣 SBC，這裡不再加回 (避免內部會計幻覺矛盾)
         ebitda = ebit + dna
         if ebitda > 0:
             current_mult = true_ev / ebitda
@@ -826,31 +789,28 @@ def run_v11_pipeline(ticker: str, cik: str, email: str,
             return {"Ticker": ticker, "Status": f"Drop: 極限回撤({drawdown_risk:.1f}%)"}
 
         exit_signal = "Hold ✅"
-        if is_growth_monster:
-            exit_signal = "🚀 Rule of 40 通行證 ✅"
-            if sec.check_q_yoy_decline(df_ocf):
-                exit_signal += " | 🟡 預警: 成長股OCF衰退"
-        else:
-            if fcf_yield < (get_risk_free_rate() * 100) and mom_12m < 0:
-                exit_signal = "🔴 停損: 溢酬消失"
-            elif roic < wacc * 100:
-                exit_signal = "🔴 停損: 價值摧毀"
+        
+        if fcf_yield < (get_risk_free_rate() * 100) and mom_12m < 0:
+            exit_signal = "🔴 停損: 溢酬消失"
+        elif roic < wacc * 100:
+            # ★ [v11.3] 降級為預警，避免高波動 Beta 錯殺好公司
+            exit_signal = "🟡 預警: 價值摧毀 (ROIC < WACC)"
 
-            if sec.check_q_yoy_decline(df_ocf):
-                if exit_signal == "Hold ✅":
-                    exit_signal = "🟡 預警: OCF YoY衰退"
-                else:
-                    exit_signal += " | 🟡 OCF YoY衰退"
+        if sec.check_q_yoy_decline(df_ocf):
+            if exit_signal == "Hold ✅":
+                exit_signal = "🟡 預警: OCF YoY衰退"
+            else:
+                exit_signal += " | 🟡 OCF YoY衰退"
 
-            if adjusted_buyback_yield < 0:
-                exit_signal = ("⚠️ 高位接盤警告" if exit_signal == "Hold ✅"
-                                else exit_signal + " | ⚠️ 溢價庫藏股")
+        if adjusted_buyback_yield < 0:
+            exit_signal = ("⚠️ 高位接盤警告" if exit_signal == "Hold ✅"
+                            else exit_signal + " | ⚠️ 溢價庫藏股")
 
         if cycle_top_warning:
             exit_signal = ("🟠 週期頂警告" if exit_signal == "Hold ✅"
                             else exit_signal + " | 🟠 週期頂")
 
-        if valuation_warning and not is_growth_monster:
+        if valuation_warning:
             exit_signal = ("🟡 溢酬偏薄" if exit_signal == "Hold ✅"
                             else exit_signal + " | 🟡 溢酬薄")
 
@@ -865,13 +825,13 @@ def run_v11_pipeline(ticker: str, cik: str, email: str,
             'GM_Vol(pp)':           round(gross_margin_vol * 100, 2),
             'FCF_Yield(%)':         round(fcf_yield, 2),
             'Real_FCF(B)':          round(real_fcf, 3),
-            'Buyback_Yield(%)':     round(buyback_yield, 2),
+            'Buyback_Yield(%)':     round(buyback_yield, 2), # 淨化後的真實數值
             'Dividend_Yield(%)':    round(dividend_yield_calc, 2),
             'Total_SH_Yield(%)':    round(total_shareholder_yield, 2),
             'Rev_CAGR_3Y(%)':       round(rev_cagr_3y, 2),
             'Momentum(%)':          round(mom_12m, 2),
             'Pct_From_52W_High(%)': round(pct_from_high * 100, 2),
-            'EV_Sales(x)':          round(ev_sales, 2),
+            'EV_EBITDA(x)':         round(true_ev/ebitda if ebitda>0 else 0, 2), # 替代原本的 EV/Sales
             'Max_Drawdown_Risk(%)': round(drawdown_risk, 1),
             'Liquidity($M)':        round(pm['dollar_volume'] / 1e6, 1),
             'Exit_Signal':          exit_signal,
@@ -918,7 +878,8 @@ def calculate_composite_alpha(results: List[dict]) -> pd.DataFrame:
 
     df['_cycle_penalty']        = df['Exit_Signal'].apply(lambda x: -0.5 if '週期頂' in str(x) else 0.0)
     df['_thin_premium_penalty'] = df['Exit_Signal'].apply(lambda x: -0.3 if ('溢酬偏薄' in str(x) or '溢酬薄' in str(x)) else 0.0)
-    df['_value_destruction']    = df['Exit_Signal'].apply(lambda x: -0.7 if '價值摧毀' in str(x) else 0.0)
+    # 預警扣分調整
+    df['_value_destruction']    = df['Exit_Signal'].apply(lambda x: -0.3 if '價值摧毀' in str(x) else 0.0)
 
     df['Alpha_Score'] = (
         df['Z_Quality']      * 0.25 +
@@ -945,17 +906,17 @@ def send_email_report(df: pd.DataFrame, receiver_email: str, trend_report: str):
         logger.warning("未設定 EMAIL_SENDER 或 EMAIL_PASSWORD，略過發信。")
         return
     msg = EmailMessage()
-    msg['Subject'] = f"[V11.2.1 核心持股] Alpha 報表 - {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+    msg['Subject'] = f"[V11.3 核心持股] Alpha 報表 - {datetime.now().strftime('%Y-%m-%d %H:%M')}"
     msg['From'] = sender_email
     msg['To'] = receiver_email
     content = f"總工程師您好：\n\n【全域監測】\n{trend_report}\n" + "-" * 60
-    content += "\n[v11.2.1 數據管路強化版] 多 tag shares chain + pre_fetch 重試 + fail 訊息拆分。\n\n"
+    content += "\n[v11.3 第一原理淨化版] 廢除 EV/Sales、拆穿 SBC 庫藏股幻覺、校正 WACC 停損。\n\n"
     if df.empty:
         content += "今日無通關標的。"
     else:
         content += f"共計 {len(df)} 檔通關。\n\n【TOP 10】\n"
-        cols = ['Ticker', 'Price', 'ROIC_3Y_Avg(%)', 'ROIC_3Y_Min(%)', 'FCF_Yield(%)',
-                'Total_SH_Yield(%)', 'Momentum(%)', 'EV_Sales(x)', 'Alpha_Score', 'Exit_Signal']
+        cols = ['Ticker', 'Price', 'ROIC_3Y_Avg(%)', 'FCF_Yield(%)',
+                'Total_SH_Yield(%)', 'Momentum(%)', 'EV_EBITDA(x)', 'Alpha_Score', 'Exit_Signal']
         cols = [c for c in cols if c in df.columns]
         content += df.head(10)[cols].to_string(index=False)
     msg.set_content(content)
@@ -963,7 +924,7 @@ def send_email_report(df: pd.DataFrame, receiver_email: str, trend_report: str):
         msg.add_attachment(
             df.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig'),
             maintype='text', subtype='csv',
-            filename=f'V11.2_1_Alpha_{datetime.now().strftime("%Y%m%d")}.csv'
+            filename=f'V11.3_Alpha_{datetime.now().strftime("%Y%m%d")}.csv'
         )
     try:
         with smtplib.SMTP('smtp.gmail.com', 587) as server:
@@ -981,7 +942,7 @@ if __name__ == "__main__":
     USER_EMAIL = os.environ.get('USER_EMAIL', 'a7924177@gmail.com')
     CACHE_FILE = "qualified_universe.csv"
 
-    print("\n>>> 點火啟動：V11.2.1 核心持股管線 (數據管路強化版) <<<\n")
+    print("\n>>> 點火啟動：V11.3 核心持股管線 (第一原理淨化版) <<<\n")
 
     try:
         if not os.path.exists(CACHE_FILE):
@@ -993,21 +954,16 @@ if __name__ == "__main__":
         universe = dict(zip(df_c['Ticker'], df_c['CIK']))
         logger.info(f"讀取 {len(universe)} 檔候選股")
 
-        # ── 一次性批量下載所有資料 (取代原本在迴圈中的單筆請求) ──
         all_tickers = list(universe.keys()) + ['SPY', 'QQQ', '^TNX']
         pre_fetch_all_market_data(all_tickers)
-        
-        # v11.2 關鍵：主線程批量抓 info 一次，worker 線程不再碰 yf.Ticker
         pre_fetch_all_info(list(universe.keys()))
 
-        # 預先計算 SPY 的週報酬率，供迴圈內的 Beta 函數取用
         spy_close = get_cached_series('SPY', 'Close')
         spy_returns = None
         if spy_close is not None and not spy_close.empty:
             spy_weekly = spy_close.resample('W').last().dropna()
             spy_returns = spy_weekly.pct_change().dropna()
 
-        # 檢查大盤趨勢 (已自動從快取中抓取)
         trend = check_global_trend()
         print(trend)
 
@@ -1036,15 +992,14 @@ if __name__ == "__main__":
         final_df = calculate_composite_alpha(res)
         send_email_report(final_df, USER_EMAIL, trend)
 
-        # ★ 必須儲存快取，讓系統產生記憶
         save_vector_cache(_VECTOR_CACHE)
         logger.info(f"✅ 動態向量快取已寫入硬碟，目前記憶 {len(_VECTOR_CACHE)} 檔股本資料。")
 
         if not final_df.empty:
             print(f"\n>>> 共 {len(final_df)} 檔通關，TOP 15：\n")
-            cols = ['Ticker', 'ROIC(%)', 'ROIC_3Y_Avg(%)', 'ROIC_3Y_Min(%)',
+            cols = ['Ticker', 'ROIC(%)', 'ROIC_3Y_Avg(%)',
                     'FCF_Yield(%)', 'Total_SH_Yield(%)', 'Momentum(%)',
-                    'EV_Sales(x)', 'Pct_From_52W_High(%)', 'Alpha_Score', 'Exit_Signal']
+                    'EV_EBITDA(x)', 'Pct_From_52W_High(%)', 'Alpha_Score', 'Exit_Signal']
             cols = [c for c in cols if c in final_df.columns]
             print(final_df.head(15)[cols].to_string(index=False))
         else:
