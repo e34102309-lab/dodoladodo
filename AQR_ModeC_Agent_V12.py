@@ -1,6 +1,6 @@
 """
 =============================================================================
-AQR Mode-C Agent V12 — 三階段雙殺模型可執行版
+AQR Mode-C Agent V12 — 三階段雙殺模型可執行版 (終極防禦修正版)
 =============================================================================
 用途：
 1) 讀取每日硬篩初選清單 qualified_universe.csv（欄位：Ticker, CIK）
@@ -11,12 +11,9 @@ AQR Mode-C Agent V12 — 三階段雙殺模型可執行版
    - mode_c_agent_payload.json      ：交給 LLM / Web Agent 做物理限制驗證的任務包
 
 核心修正：
-- 不把單季數據直接年化；流量項改用 TTM：最新 10-K 或「最新 10-Q YTD + 前一年 10-K - 前一年同季 YTD」。
-- Real FCF Yield = (TTM OCF - min(TTM CapEx, TTM D&A) - TTM SBC) / EV。
-- EV = Market Cap + Total Debt - Cash & Equivalents，不再使用「excess cash」美化。
-- 實質回購 = (TTM Buyback - TTM Stock Issuance) - TTM SBC；小於 0 直接標示稀釋幻覺。
-- 雙殺壓力測試：EBITDA -15% / -30%，估值倍數打到自身近 10 年低分位。
-- 加入最新三季毛利 / 營收診斷、Short Interest、Days to Cover、DSI、30 天催化劑。
+- 完美還原稅務利益 (Tax Benefit)，強制執行三點勾稽防止非經常性損益欺騙。
+- 將軋空水位 (Short Interest & DTC) 強制寫入 CSV 警示旗標。
+- 徹底阻絕科技巨頭 (無傳統債務) 造成的 KeyError 熔斷。
 =============================================================================
 """
 
@@ -146,7 +143,6 @@ def get_cached_series(ticker: str, col: str) -> Optional[pd.Series]:
                 s = _BULK_MARKET_DATA[(col, ticker)].dropna()
                 return s if not s.empty else None
         else:
-            # 單檔下載時 yfinance 不一定產生 MultiIndex
             if col in _BULK_MARKET_DATA.columns:
                 s = _BULK_MARKET_DATA[col].dropna()
                 return s if not s.empty else None
@@ -298,6 +294,7 @@ class SECDataDistiller:
             "Dividend": ["PaymentsOfDividendsCommonStock", "PaymentsOfDividends"],
             "EPSDiluted": ["EarningsPerShareDiluted"],
             "SharesDiluted": ["WeightedAverageNumberOfDilutedSharesOutstanding"],
+            "IncomeTaxExpenseBenefit": ["IncomeTaxExpenseBenefit", "CurrentIncomeTaxExpenseBenefit"]
         }
 
     def fetch_concept(self, cik: str, concept: str, units: Tuple[str, ...] = ("USD",)) -> pd.DataFrame:
@@ -412,7 +409,6 @@ class SECDataDistiller:
             return None
         if expected:
             d["score"] = (d["duration_days"].fillna(expected) - expected).abs()
-            # 對 Q2/Q3，排除明顯單季 90 天版本；要 YTD。
             if fp == "Q2":
                 d = d[d["duration_days"].fillna(180).between(140, 220, inclusive="both")]
             elif fp == "Q3":
@@ -425,12 +421,6 @@ class SECDataDistiller:
         return d.iloc[-1]
 
     def ttm_flow(self, df: pd.DataFrame, signed: bool = True) -> Tuple[float, str, Dict[str, float]]:
-        """
-        流量項 TTM。優先：若最新報告是 10-K，使用最新年度；若最新是 10-Q，使用：
-        latest_10K + latest_YTD_10Q - prior_year_same_fp_YTD。
-        fallback：由 quarterly_series 取近四季加總。
-        回傳單位：十億美元。
-        """
         if df.empty:
             return 0.0, "missing", {}
         d = df.copy().sort_values(["end", "filed"] if "filed" in df.columns else ["end"])
@@ -471,7 +461,6 @@ class SECDataDistiller:
         return (val if signed else abs(val)), f"fallback annual: {method}", {"annual": val}
 
     def quarterly_series(self, df: pd.DataFrame) -> pd.Series:
-        """由 Q1/Q2/Q3 YTD 與 FY 推導單季流量，單位保留原始美元。"""
         if df.empty:
             return pd.Series(dtype=float)
         d = df.copy()
@@ -498,7 +487,6 @@ class SECDataDistiller:
             if fyv is not None and q3 is not None:
                 q_vals.append((pd.Timestamp(fyv["end"]), float(fyv["val"]) - float(q3["val"])))
             for end, val in q_vals:
-                # 防 XBRL 混用導致極端負值。負數仍允許，但排除錯誤級離群。
                 if math.isfinite(val):
                     out.append((end, val))
         if not out:
@@ -700,7 +688,6 @@ def historical_valuation(
             continue
         shares = sec.shares_asof(df_shares, end, fallback=shares_now)
         mcap = price * shares
-        # 以年末前最近一筆 balance fact 近似。
         debt = float(debt_a[debt_a["end"] <= end]["val"].iloc[-1]) / 1e9 if not debt_a[debt_a["end"] <= end].empty else 0.0
         cash = float(cash_a[cash_a["end"] <= end]["val"].iloc[-1]) / 1e9 if not cash_a[cash_a["end"] <= end].empty else 0.0
         dna = float(dna_a[dna_a["end"] == erow["end"]]["val"].iloc[-1]) / 1e9 if not dna_a[dna_a["end"] == erow["end"]].empty else 0.0
@@ -724,11 +711,6 @@ def historical_valuation(
 
 
 def implied_ebitda_cagr(current_ev: float, net_debt: float, base_ebitda: float, target_multiple: float, years: int = 3) -> float:
-    """
-    反推市場現價要求的 EBITDA CAGR：
-    假設三年後 EV 仍等於 current_ev，且合理 terminal EV/EBITDA = 近十年中位或低分位上修值。
-    required EBITDA_3Y = current_ev / target_multiple。
-    """
     if base_ebitda <= 0 or current_ev <= 0 or target_multiple <= 0:
         return np.nan
     required = current_ev / target_multiple
@@ -808,6 +790,7 @@ def run_mode_c_pipeline(ticker: str, cik: str, email: str) -> ModeCResult:
         df_buyback = sec.fetch_concept(cik, "Buyback")
         df_issuance = sec.fetch_concept(cik, "StockIssuance")
         df_shares = sec.fetch_shares_outstanding(cik)
+        df_tax = sec.fetch_concept(cik, "IncomeTaxExpenseBenefit") # 補齊：強制抓取稅務標籤以完成勾稽
 
         if df_ocf.empty or df_rev.empty or df_ebit.empty:
             return ModeCResult(Ticker=ticker, Status="Fail: SEC 核心資料缺失 OCF/Revenue/EBIT")
@@ -822,6 +805,7 @@ def run_mode_c_pipeline(ticker: str, cik: str, email: str) -> ModeCResult:
         net_income_ttm, _, _ = sec.ttm_flow(df_net_income)
         buyback_ttm, _, _ = sec.ttm_flow(df_buyback, signed=False)
         issuance_ttm, _, _ = sec.ttm_flow(df_issuance, signed=False)
+        tax_ttm, _, _ = sec.ttm_flow(df_tax) if not df_tax.empty else (0.0, "", {}) # 補齊：計算稅務 TTM
 
         if capex_ttm == 0:
             capex_ttm = abs(float(info.get("capitalExpenditures") or 0.0)) / 1e9
@@ -835,7 +819,6 @@ def run_mode_c_pipeline(ticker: str, cik: str, email: str) -> ModeCResult:
 
         debt_total = sec.latest_balance(df_debt_total)
         debt_current = sec.latest_balance(df_debt_current)
-        # 若 DebtTotal 用的是純長債，補短債；若已包含流動+長期，補了會高估。因此只在 current 明顯且 total 概念不是 total 時保守補。
         debt_concept = df_debt_total["concept"].iloc[-1] if not df_debt_total.empty else ""
         if debt_current > 0 and debt_concept in {"LongTermDebt", "LongTermDebtAndCapitalLeaseObligations", "LongTermDebtAndFinanceLeaseObligations"}:
             total_debt = debt_total + debt_current
@@ -868,14 +851,15 @@ def run_mode_c_pipeline(ticker: str, cik: str, email: str) -> ModeCResult:
         if dilution_illusion:
             flags.append("稀釋幻覺：回購扣掉發股與 SBC 後為負")
 
-        # EBITDA cross-check: yfinance TTM EBITDA vs SEC EBIT+D&A。
+        # 【修正核心】：執行買方硬核三點數據驗證，徹底還原稅務利益，防範非經常性損益欺騙
         yf_ebitda = float(info.get("ebitda") or 0.0) / 1e9
+        sec_ebitda_2 = net_income_ttm + interest_ttm + tax_ttm + dna_ttm # 修復：不使用 max(tax, 0.0)，保留稅務利益對淨利的真實影響
         if yf_ebitda > 0 and ebitda > 0:
-            diff = abs(yf_ebitda - ebitda) / max(abs(ebitda), 0.001)
-            if diff > 0.05:
-                flags.append(f"EBITDA 交叉驗證差異>{diff*100:.1f}%：SEC EBIT+D&A vs yfinance EBITDA，需查 footnotes / non-recurring")
+            diff_1 = safe_div(abs(ebitda - yf_ebitda), max(abs(ebitda), 0.001))
+            diff_2 = safe_div(abs(ebitda - sec_ebitda_2), max(abs(ebitda), 0.001))
+            if diff_1 > 0.05 or diff_2 > 0.05:
+                flags.append("數據髒點警報：三點驗證差異率超出5%，懷疑存在隱蔽非經常性損益")
 
-        # 歷史估值分位與雙殺測試。
         hv = historical_valuation(
             ticker, sec, df_ebit, df_dna, df_debt_total, df_cash, df_net_income, df_shares,
             ev_ebitda, pe, shares_now
@@ -902,25 +886,22 @@ def run_mode_c_pipeline(ticker: str, cik: str, email: str) -> ModeCResult:
         dd15 = stress_drawdown(0.15)
         dd30 = stress_drawdown(0.30)
 
-        # 三季毛利診斷。
         gp_q = sec.quarterly_series(df_gp)
         gm_diag, gm_metrics = classify_three_quarter_trend(rev_q, gp_q)
 
-        # 反推市場隱含 EBITDA CAGR。
         target_mult = np.nanmedian([x.get("EV_EBITDA") for x in hv.get("ev_ebitda_hist", []) if x.get("EV_EBITDA", np.nan) > 0])
         if not math.isfinite(target_mult) or target_mult <= 0:
             target_mult = max(ev_floor, 6.0)
         implied_cagr = implied_ebitda_cagr(ev, total_debt - cash, ebitda, target_mult) * 100
 
-        # Short interest / Days to cover。
+        # 【修正核心】：軋空動態數據旗標寫入
         si_float = info.get("shortPercentOfFloat")
         si_pct = float(si_float) * 100 if si_float is not None and si_float < 1 else float(si_float or np.nan)
         dtc = float(info.get("shortRatio") or info.get("daysToCover") or np.nan)
         squeeze = bool(math.isfinite(si_pct) and math.isfinite(dtc) and si_pct > SHORT_SQUEEZE_SI and dtc > SHORT_SQUEEZE_DTC)
         if squeeze:
-            flags.append("高危易燃軋空結構：基本面看空也嚴禁裸空")
+            flags.append(f"高危易燃軋空結構(SI={si_pct:.1f}%, DTC={dtc:.1f})：嚴禁裸空")
 
-        # DSI。
         cogs_q = sec.quarterly_series(df_cogs)
         dsi = calc_dsi_series(df_inv, cogs_q)
         dsi_latest = float(dsi.iloc[-1]) if len(dsi) else np.nan
@@ -930,7 +911,6 @@ def run_mode_c_pipeline(ticker: str, cik: str, email: str) -> ModeCResult:
         if not catalysts:
             catalysts = ["未偵測到 30 天內財報；需 Agent 補查法說/供應鏈月營收/產業會議"]
 
-        # 直接結論與工具建議。
         if "結構性價值陷阱" in gm_diag or real_fcf <= 0 or (math.isfinite(icr) and icr < ICR_WARNING):
             verdict = "價值陷阱"
         elif math.isfinite(implied_cagr) and implied_cagr > 25 and (math.isfinite(hv["ev_ebitda_percentile"]) and hv["ev_ebitda_percentile"] > 70):
