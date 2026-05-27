@@ -1,53 +1,12 @@
-name: Dual Quant Pipeline (V11.0 & Growth V3)
+name: Mode-C Buy-Side PM Agent Pipeline
 
 on:
   schedule:
-    # 每天美東時間盤後執行
-    - cron: '0 22 * * 1-5' 
-  workflow_dispatch: # 允許手動點擊按鈕執行
+    - cron: '0 22 * * 1-5' # 美東盤後執行
+  workflow_dispatch: # 允許手動觸發
 
 jobs:
-  # ==========================================
-  # 虛擬機 A：執行 V11.0 核心持股管線
-  # ==========================================
-  run-value-pipeline:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-        
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
-          
-      - name: Install Dependencies
-        # 強制升級 pip 與 yfinance 以規避 401 錯誤
-        run: |
-          python -m pip install --upgrade pip
-          pip install pandas numpy scipy requests
-          pip install --upgrade yfinance
-        
-      - name: Run V11.0 Core Pipeline
-        env:
-          USER_EMAIL: ${{ secrets.USER_EMAIL }}
-          EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
-          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
-        # 確保此處的檔名與你上傳到 GitHub 的檔名完全一致
-        run: python AQR_Quant_V9_Cloud.py 
-
-      - name: Upload Core Pipeline Results
-        uses: actions/upload-artifact@v4
-        with:
-          name: V11_Core_Results
-          # 使用萬用字元捕捉帶有日期的產出檔
-          path: V11_Alpha_*.csv
-          if-no-files-found: ignore
-
-  # ==========================================
-  # 虛擬機 B：執行 V3 成長衛星管線 (與 A 同時啟動)
-  # ==========================================
-  run-growth-pipeline:
+  run-mode-c-pipeline:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
@@ -61,21 +20,26 @@ jobs:
       - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pandas numpy scipy requests
-          pip install --upgrade yfinance
+          pip install pandas numpy scipy requests yfinance google-genai
         
-      - name: Run Growth Satellite Pipeline
+      - name: Execution Layer 2: Mode-C Quant Engine
         env:
+          SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }} # 格式: YourName your-email@example.com
+        run: python AQR_ModeC_Agent_V12.py 
+
+      - name: Execution Layer 3 & 4: AI Web & PM Agent
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }} # 注入 AI 密鑰
           USER_EMAIL: ${{ secrets.USER_EMAIL }}
           EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
-        # 確保此處的檔名與你上傳到 GitHub 的檔名完全一致
-        run: python run_growth_satellite_pipeline.py
+        run: python run_mode_c_ai_agent.py # 我們即將在 Step 2 建立此檔案
 
-      - name: Upload Growth Pipeline Results
+      - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Growth_Satellite_Results
-          # 使用萬用字元捕捉帶有日期的產出檔
-          path: Growth_Satellite_v3_*.csv
-          if-no-files-found: ignore
+          name: Mode_C_Final_Outputs
+          path: |
+            mode_c_screen.csv
+            Mode_C_Investment_Memo.md
+          if-no-files-found: error
