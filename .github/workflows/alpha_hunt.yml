@@ -7,8 +7,9 @@ on:
 
 jobs:
   run-mode-c-pipeline:
-    runs-on: ubuntu-latest
+    runs-on: macos-latest  # <--- 從 ubuntu-latest 改成 macos-latest
     steps:
+      # ... (下方保持不變)
       - name: Checkout Code
         uses: actions/checkout@v4
 
