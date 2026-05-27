@@ -18,8 +18,8 @@ def execute_pm_agent_reasoning(payload_data):
     # 初始化 Gemini Client (自動讀取環境變數 GEMINI_API_KEY)
     client = genai.Client()
     
-    # 結構化提取硬數據上下文
-    tasks_str = json.dumps(payload_data.get("tasks", []), indent=2, ensure_handling=False)
+    # 核心修復：使用 ensure_ascii=False 完美保留繁體中文，徹底砍掉引發 TypeError 的髒參數
+    tasks_str = json.dumps(payload_data.get("tasks", []), indent=2, ensure_ascii=False)
     
     prompt = f"""
     你現在是華爾街頂級買方資深 PM，嚴格執行【模式C：三階段雙殺模型】。
@@ -29,7 +29,7 @@ def execute_pm_agent_reasoning(payload_data):
     
     請啟動 Google Search 聯網工具，針對清單中的每檔標的，執行 Layer 3 聯網審查與 Layer 4 買方決策：
     1. 根據 'must_verify' 欄位，核對該公司過去 30 天內最新 10-K/10-Q 的 footnotes，抓出 non-recurring / restructuring 等 EBITDA 隱蔽調整項，挑戰 'numbers_to_challenge' 中的數據是否乾淨。
-    2. 如果標的涉及半導體或 AI 供應鏈，強制對齊 2026 年最新台積電(TSMC)先進製程產能利用率、ASML EUV 交期以及四大 CSP 的最新 CapEx 指引，驗證其隱含 CAGR 是否撞上物理產能硬限制。
+    2. 如果標的涉及半導體或 AI 供應鏈，強制對齊最新台積電(TSMC)先進製程產能利用率、ASML EUV 交期以及四大 CSP 的最新 CapEx 指引，驗證其隱含 CAGR 是否撞上物理產能硬限制。
     3. 交叉比對最新官方短倉數據，覆核 Short Interest > 15% 與 Days to Cover > 5 天的軋空禁制。
     
     輸出要求：
@@ -40,11 +40,11 @@ def execute_pm_agent_reasoning(payload_data):
     
     print("[+] 正在啟動 Gemini 3.5 Web Evidence & PM Decision Agent (2026 Live Mode)...")
     response = client.models.generate_content(
-        model='gemini-3.5-flash', # <--- 正式修正：全面啟用 2026-05 最新 3.5 旗艦模型
+        model='gemini-3.5-flash', # 全面啟用最新 3.5 旗艦核心
         contents=prompt,
         config=types.GenerateContentConfig(
-            tools=[types.Tool(google_search=types.GoogleSearch())], # 保持聯網核心工具
-            temperature=0.1 # 鎖低隨機性，鎖死硬核理工邏輯
+            tools=[types.Tool(google_search=types.GoogleSearch())], # 實時聯網
+            temperature=0.1 
         )
     )
     return response.text
@@ -64,11 +64,10 @@ def send_final_decision_email(final_memo):
     msg["To"] = user_email
     msg.set_content(final_memo)
     
-    # 順便將 Quant 引擎的底層 CSV 結構化數據作為附件帶上
     csv_path = "mode_c_screen.csv"
     if os.path.exists(csv_path):
         with open(csv_path, "rb") as f:
-            msg.add_attachment(f.read(), maintype="text", subtype="csv", filename=csv_path)
+            msg.add_attachment(f.read(), maintype="text", subtype="csv", filename=os.path.basename(csv_path))
             
     with smtplib.SMTP("smtp.gmail.com", 587) as server:
         server.starttls()
@@ -78,15 +77,12 @@ def send_final_decision_email(final_memo):
 
 if __name__ == "__main__":
     payload = load_quant_payload()
-    if payload and payload.get("hard_screen_passed"):
-        # 執行 Layer 3 + Layer 4 的融合推理
+    if payload and payload.get("tasks"):
         final_memo_report = execute_pm_agent_reasoning(payload)
         
-        # 本地存檔備查
         with open("Mode_C_Final_Decision_Memo.md", "w", encoding="utf-8") as f:
             f.write(final_memo_report)
             
-        # 發送包含聯網證據的最終決策書
         send_final_decision_email(final_memo_report)
     else:
         print("[*] 今日無標的通過初選，或初選池為空，無需執行 AI 審查。")
