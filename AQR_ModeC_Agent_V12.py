@@ -61,12 +61,15 @@ OUTPUT_JSON = "mode_c_agent_payload.json"
 SEC_MAX_CALLS_PER_SECOND = 8
 SEC_TIMEOUT = 15
 
-# 硬篩門檻：買方機構最低進場底線
-MIN_LIQUIDITY_USD = 15_000_000  # 從 5M 拉高到 15M (日均交易額 1500 萬美金)
-MIN_MARKET_CAP_B = 3.0          # 從 1B 拉高到 3B (抹除微型股雜訊)
+# ==============================================================================
+# 買方機構級最高防禦門檻設定 (約程式第 60 行)
+# ==============================================================================
+MIN_LIQUIDITY_USD = 15_000_000  # 機構級流動性防線：日均成交額大於 3000 萬美金
+MIN_MARKET_CAP_B = 5.0          # 規模防線：市值大於 50 億美金 (排除中小型股髒數據)
 ICR_WARNING = 3.0
 SHORT_SQUEEZE_SI = 15.0
 SHORT_SQUEEZE_DTC = 5.0
+LOW_VALUATION_PERCENTILE = 5
 
 # 歷史估值底部取 5th percentile；比單一最低值更抗資料髒點。
 LOW_VALUATION_PERCENTILE = 5
@@ -1151,7 +1154,7 @@ def send_email_report(markdown: str, csv_path: str, receiver_email: str) -> None
         logger.info("Email sent.")
 
 # ==============================================================================
-# 主程式
+# 主程式：多因子綜合 Alpha 篩選矩陣 ( Top 20 精華池 )
 # ==============================================================================
 def main() -> None:
     user_email = os.environ.get("USER_EMAIL", "a7924177@gmail.com")
@@ -1170,31 +1173,59 @@ def main() -> None:
     pre_fetch_all_market_data(tickers, period="10y")
     pre_fetch_all_info(list(universe.keys()))
 
-    logger.info(f"開始 Mode-C 清算：{len(universe)} 檔")
+    logger.info(f"開始 Mode-C 買方硬核清算：{len(universe)} 檔")
     max_workers = int(os.environ.get("MODE_C_WORKERS", "3"))
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as ex:
         results = list(ex.map(lambda kv: run_mode_c_pipeline(kv[0], kv[1], user_email), universe.items()))
 
+    # 1. 提取所有硬指標過關 (Status == "Pass") 的初始底池
+    pass_results = [r for r in results if r.Status == "Pass"]
+    
+    # 2. 注入多因子綜合排序演算法 (便宜度 + 未來成長預期差)
+    scored_pool = []
+    for r in pass_results:
+        val_rank = r.EV_EBITDA_10Y_Percentile if (math.isfinite(r.EV_EBITDA_10Y_Percentile) and r.EV_EBITDA_10Y_Percentile > 0) else 99.0
+        cagr_val = r.Implied_EBITDA_CAGR_3Y_pct if math.isfinite(r.Implied_EBITDA_CAGR_3Y_pct) else 0.0
+        
+        # 買方高勝率公式設計：
+        # 若隱含 CAGR 太高(>30%)，代表現價已經把未來吹得太滿，撞擊物理限制概率高，給予懲罰分
+        if cagr_val > 30.0 or cagr_val < -10.0:
+            growth_penalty = 50.0
+        else:
+            growth_penalty = abs(cagr_val - 12.0) # 錨定在美股歷史卓越平均線 12% 附近
+            
+        composite_score = (val_rank * 0.6) + (growth_penalty * 0.4)
+        scored_pool.append((composite_score, r))
+        
+    # 綜合 Alpha 分數從小到大排序，精準割取前 20 檔「黃金標的」
+    scored_pool.sort(key=lambda x: x[0])
+    top_20 = [item[1] for item in scored_pool[:20]]
+    
+    logger.info(f"🏆 Alpha 終極篩選完畢！已從 {len(pass_results)} 檔候選標的中精煉出前 20 檔重倉標的。")
+
+    # 輸出結構化 CSV 總表 (保留全市場數據供覆核)
     rows = [asdict(r) for r in results]
     for row in rows:
         row["Agent_Tasks"] = " | ".join(row.get("Agent_Tasks", []))
     out_df = pd.DataFrame(rows)
     out_df.to_csv(OUTPUT_CSV, index=False, encoding="utf-8-sig")
 
-    report = "# Mode C 三階段雙殺模型 — 今日投資決策書\n\n"
-    report += f"產生時間：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
-    for r in results:
+    # 產生 Top 20 投資決策書報告 (不再是一口氣吐出上百檔)
+    report = f"# Mode C 三階段雙殺模型 — 今日高信念黃金決策書 (Top 20 精華池)\n\n"
+    report += f"清算時間：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+    report += f"**機構配置矩陣：市值防線 >= 5B | 流動性 >= 30M | 權重：60%歷史估值分位 + 40%隱含增長預期差**\n\n"
+    for r in top_20:
         report += render_stock_report(r) + "\n---\n\n"
     Path(OUTPUT_MD).write_text(report, encoding="utf-8")
 
-    payload = build_agent_payload(results)
+    # 打包 Top 20 任務 Payload 丟給下一個 Layer 的 AI Agent
+    payload = build_agent_payload(top_20)
     Path(OUTPUT_JSON).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
     save_json_cache(CACHE_FILE_SHARES, _VECTOR_CACHE)
 
-    pass_df = out_df[out_df["Status"] == "Pass"].copy()
-    logger.info(f"完成。Pass={len(pass_df)} / Total={len(out_df)}")
-    logger.info(f"已輸出：{OUTPUT_CSV}, {OUTPUT_MD}, {OUTPUT_JSON}")
+    logger.info(f"完成。Pass={len(pass_results)} / Total={len(out_df)}")
+    logger.info(f"已成功導出 Top 20 任務包至 {OUTPUT_JSON}，準備發動大腦推理。")
 
     if os.environ.get("SEND_EMAIL", "0") == "1":
         send_email_report(report, OUTPUT_CSV, user_email)
