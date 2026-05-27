@@ -82,22 +82,21 @@ if __name__ == "__main__":
         all_tasks = payload.get("tasks", [])
         final_memo_report = ""
         
-        # 買方限速排隊戰術：每批只處理 4 檔標的，規避免費版 5 RPM / 250K TPM 限額
-        batch_size = 4
-        total_batches = (len(all_tasks) + batch_size - 1) // batch_size
+        # 買方限速排隊戰術：極限微批次，每次只打 1 檔，絕對不碰 TPM 天花板
+        batch_size = 1
+        total_batches = len(all_tasks)
         
         for i in range(0, len(all_tasks), batch_size):
-            current_batch_idx = i // batch_size + 1
+            current_batch_idx = i + 1
             batch_data = {"tasks": all_tasks[i : i + batch_size]}
             
-            print(f"\n[+] 正在執行第 {current_batch_idx}/{total_batches} 批次推理...")
+            print(f"\n[+] 正在執行第 {current_batch_idx}/{total_batches} 檔標的聯網推理...")
             memo = execute_pm_agent_reasoning(batch_data)
             final_memo_report += memo + "\n\n"
             
-            # 如果後面還有批次，強制進入冷卻時間，擊穿 429 限制
-            if i + batch_size < len(all_tasks):
-                print("[!] 觸發防禦性冷卻機制，強制停頓 65 秒以恢復 API 算力頻寬...")
-                time.sleep(65)
+            if current_batch_idx < total_batches:
+                print("[!] 單發點射完畢，冷卻 15 秒以欺騙 API 速率監控...")
+                time.sleep(15) # 15秒 * 20檔 = 5分鐘跑完，非常安全
                 
         # 導出最終整合決策書
         with open("Mode_C_Final_Decision_Memo.md", "w", encoding="utf-8") as f:
