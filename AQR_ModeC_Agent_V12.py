@@ -61,9 +61,9 @@ OUTPUT_JSON = "mode_c_agent_payload.json"
 SEC_MAX_CALLS_PER_SECOND = 8
 SEC_TIMEOUT = 15
 
-# 硬篩門檻：這些是「Agent 前置硬篩」，不是最終交易結論。
-MIN_LIQUIDITY_USD = 5_000_000
-MIN_MARKET_CAP_B = 1.0
+# 硬篩門檻：買方機構最低進場底線
+MIN_LIQUIDITY_USD = 15_000_000  # 從 5M 拉高到 15M (日均交易額 1500 萬美金)
+MIN_MARKET_CAP_B = 3.0          # 從 1B 拉高到 3B (抹除微型股雜訊)
 ICR_WARNING = 3.0
 SHORT_SQUEEZE_SI = 15.0
 SHORT_SQUEEZE_DTC = 5.0
@@ -671,7 +671,9 @@ def historical_valuation(
     ni_a = sec._annual_facts(df_net_income)
     debt_a = sec._annual_facts(df_debt)
     cash_a = sec._annual_facts(df_cash)
-    if ebit_a.empty:
+    
+    # 核心防禦：如果連核心 EBIT 數據或時間戳都沒有，直接退出
+    if ebit_a.empty or "end" not in ebit_a.columns:
         return {
             "ev_ebitda_hist": [],
             "pe_hist": [],
@@ -680,6 +682,63 @@ def historical_valuation(
             "ev_ebitda_floor": np.nan,
             "pe_floor": np.nan,
         }
+        
+    rows = []
+    for _, erow in ebit_a.tail(10).iterrows():
+        end = pd.Timestamp(erow["end"])
+        price = get_price_asof(ticker, end)
+        if price <= 0:
+            continue
+        shares = sec.shares_asof(df_shares, end, fallback=shares_now)
+        mcap = price * shares
+        
+        # 1. 嚴密防禦：歷史總債務 (先確認欄位存在，再過濾時間)
+        debt = 0.0
+        if not debt_a.empty and "end" in debt_a.columns:
+            sub_debt = debt_a[debt_a["end"] <= end]
+            if not sub_debt.empty: 
+                debt = float(sub_debt["val"].iloc[-1]) / 1e9
+                
+        # 2. 嚴密防禦：歷史現金
+        cash = 0.0
+        if not cash_a.empty and "end" in cash_a.columns:
+            sub_cash = cash_a[cash_a["end"] <= end]
+            if not sub_cash.empty: 
+                cash = float(sub_cash["val"].iloc[-1]) / 1e9
+                
+        # 3. 嚴密防禦：折舊攤銷 (D&A)
+        dna = 0.0
+        if not dna_a.empty and "end" in dna_a.columns:
+            sub_dna = dna_a[dna_a["end"] == erow["end"]]
+            if not sub_dna.empty: 
+                dna = float(sub_dna["val"].iloc[-1]) / 1e9
+                
+        # 4. 嚴密防禦：淨利 (Net Income)
+        ni = np.nan
+        if not ni_a.empty and "end" in ni_a.columns:
+            sub_ni = ni_a[ni_a["end"] == erow["end"]]
+            if not sub_ni.empty: 
+                ni = float(sub_ni["val"].iloc[-1]) / 1e9
+                
+        ebit = float(erow["val"]) / 1e9
+        ebitda = ebit + abs(dna)
+        ev = mcap + debt - cash
+        ev_ebitda = safe_div(ev, ebitda)
+        pe = safe_div(mcap, ni)
+        
+        rows.append({"end": str(end.date()), "EV_EBITDA": ev_ebitda, "PE": pe})
+        
+    ev_hist = [r["EV_EBITDA"] for r in rows if math.isfinite(r["EV_EBITDA"]) and r["EV_EBITDA"] > 0]
+    pe_hist = [r["PE"] for r in rows if math.isfinite(r["PE"]) and r["PE"] > 0]
+    
+    return {
+        "ev_ebitda_hist": rows,
+        "pe_hist": pe_hist,
+        "ev_ebitda_percentile": percentile_rank(ev_hist, current_ev_ebitda),
+        "pe_percentile": percentile_rank(pe_hist, current_pe),
+        "ev_ebitda_floor": low_percentile(ev_hist),
+        "pe_floor": low_percentile(pe_hist),
+    }
     rows = []
     for _, erow in ebit_a.tail(10).iterrows():
         end = pd.Timestamp(erow["end"])
@@ -938,13 +997,27 @@ def run_mode_c_pipeline(ticker: str, cik: str, email: str) -> ModeCResult:
             "若客戶集中於 CSP：核對 MSFT/AMZN/GOOGL/META 最新 CapEx 指引與算力需求，判斷物理產能上限。",
             f"抓取官方或付費短倉資料，複核 {ticker} Short Interest % Float 與 Days to Cover。",
         ]
+# ---------------------------------------------------------
+        # 【買方基本面鍘刀】：控制過關率，砍掉無效算力與平庸公司
+        # ---------------------------------------------------------
+        status = "Pass"
+        if not squeeze:  # 若具備高危軋空條件則特赦放行（保留期權博弈價值）
+            if math.isfinite(icr) and icr < 1.0:
+                status = "Fail: 基本面鍘刀 (ICR < 1.0，殭屍企業)"
+            elif real_fcf_yield < -10.0:
+                status = "Fail: 基本面鍘刀 (FCF 深度負值，慢性失血)"
+            elif "雙重惡化" in gm_diag:
+                status = "Fail: 基本面鍘刀 (營收與毛利雙崩無底洞)"
+            elif verdict == "觀察名單：未構成重倉條件":
+                status = "Fail: 算力防火牆 (平庸標的，不進 LLM 決策)"
 
         return ModeCResult(
             Ticker=ticker,
-            Status="Pass",
+            Status=status,  # <--- 將原本寫死的 "Pass" 替換為動態 status
             Price=round(price, 2),
             MarketCap_B=round(mcap, 3),
             EV_B=round(ev, 3),
+            # ... (下方保持你原本的變數原封不動) ...
             Real_FCF_Yield_pct=round(real_fcf_yield, 2),
             TTM_OCF_B=round(ocf_ttm, 3),
             Dynamic_CapEx_B=round(dynamic_capex, 3),
