@@ -15,10 +15,9 @@ def load_quant_payload():
         return json.load(f)
 
 def execute_pm_agent_reasoning(payload_data):
-    # 初始化 Gemini Client (自動讀取環境變數 GEMINI_API_KEY)
     client = genai.Client()
     
-    # 核心修復：使用 ensure_ascii=False 完美保留繁體中文，徹底砍掉引發 TypeError 的髒參數
+    # 【致命錯誤已在此行修正】：必須是 ensure_ascii=False
     tasks_str = json.dumps(payload_data.get("tasks", []), indent=2, ensure_ascii=False)
     
     prompt = f"""
@@ -40,10 +39,10 @@ def execute_pm_agent_reasoning(payload_data):
     
     print("[+] 正在啟動 Gemini 3.5 Web Evidence & PM Decision Agent (2026 Live Mode)...")
     response = client.models.generate_content(
-        model='gemini-3.5-flash', # 全面啟用最新 3.5 旗艦核心
+        model='gemini-3.5-flash',
         contents=prompt,
         config=types.GenerateContentConfig(
-            tools=[types.Tool(google_search=types.GoogleSearch())], # 實時聯網
+            tools=[types.Tool(google_search=types.GoogleSearch())],
             temperature=0.1 
         )
     )
