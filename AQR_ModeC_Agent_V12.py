@@ -1154,7 +1154,7 @@ def send_email_report(markdown: str, csv_path: str, receiver_email: str) -> None
         logger.info("Email sent.")
 
 # ==============================================================================
-# 主程式：多因子綜合 Alpha 篩選矩陣 ( Top 20 精華池 )
+# 主程式：多因子綜合 Alpha 篩選矩陣 ( Top 30 精華池 )
 # ==============================================================================
 def main() -> None:
     user_email = os.environ.get("USER_EMAIL", "a7924177@gmail.com")
@@ -1187,21 +1187,19 @@ def main() -> None:
         val_rank = r.EV_EBITDA_10Y_Percentile if (math.isfinite(r.EV_EBITDA_10Y_Percentile) and r.EV_EBITDA_10Y_Percentile > 0) else 99.0
         cagr_val = r.Implied_EBITDA_CAGR_3Y_pct if math.isfinite(r.Implied_EBITDA_CAGR_3Y_pct) else 0.0
         
-        # 買方高勝率公式設計：
-        # 若隱含 CAGR 太高(>30%)，代表現價已經把未來吹得太滿，撞擊物理限制概率高，給予懲罰分
         if cagr_val > 30.0 or cagr_val < -10.0:
             growth_penalty = 50.0
         else:
-            growth_penalty = abs(cagr_val - 12.0) # 錨定在美股歷史卓越平均線 12% 附近
+            growth_penalty = abs(cagr_val - 12.0)
             
         composite_score = (val_rank * 0.6) + (growth_penalty * 0.4)
         scored_pool.append((composite_score, r))
         
-    # 綜合 Alpha 分數從小到大排序，精準割取前 20 檔「黃金標的」
+    # 【核心改動】：由從小到大排序，精準割取前 30 檔「黃金標的」保留在 JSON/Markdown
     scored_pool.sort(key=lambda x: x[0])
-    top_20 = [item[1] for item in scored_pool[:20]]
+    top_30 = [item[1] for item in scored_pool[:30]]
     
-    logger.info(f"🏆 Alpha 終極篩選完畢！已從 {len(pass_results)} 檔候選標的中精煉出前 20 檔重倉標的。")
+    logger.info(f"🏆 Alpha 終極篩選完畢！已從 {len(pass_results)} 檔候選標的中精煉出前 30 檔重倉標的。")
 
     # 輸出結構化 CSV 總表 (保留全市場數據供覆核)
     rows = [asdict(r) for r in results]
@@ -1210,22 +1208,22 @@ def main() -> None:
     out_df = pd.DataFrame(rows)
     out_df.to_csv(OUTPUT_CSV, index=False, encoding="utf-8-sig")
 
-    # 產生 Top 20 投資決策書報告 (不再是一口氣吐出上百檔)
-    report = f"# Mode C 三階段雙殺模型 — 今日高信念黃金決策書 (Top 20 精華池)\n\n"
+    # 產生 Top 30 投資決策書報告
+    report = f"# Mode C 三階段雙殺模型 — 今日高信念黃金決策書 (Top 30 精華池)\n\n"
     report += f"清算時間：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
     report += f"**機構配置矩陣：市值防線 >= 5B | 流動性 >= 30M | 權重：60%歷史估值分位 + 40%隱含增長預期差**\n\n"
-    for r in top_20:
+    for r in top_30:
         report += render_stock_report(r) + "\n---\n\n"
     Path(OUTPUT_MD).write_text(report, encoding="utf-8")
 
-    # 打包 Top 20 任務 Payload 丟給下一個 Layer 的 AI Agent
-    payload = build_agent_payload(top_20)
+    # 打包 Top 30 任務 Payload 丟給下一個 Layer 的 AI Agent
+    payload = build_agent_payload(top_30)
     Path(OUTPUT_JSON).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
     save_json_cache(CACHE_FILE_SHARES, _VECTOR_CACHE)
 
     logger.info(f"完成。Pass={len(pass_results)} / Total={len(out_df)}")
-    logger.info(f"已成功導出 Top 20 任務包至 {OUTPUT_JSON}，準備發動大腦推理。")
+    logger.info(f"已成功導出 Top 30 任務包至 {OUTPUT_JSON}。")
 
     if os.environ.get("SEND_EMAIL", "0") == "1":
         send_email_report(report, OUTPUT_CSV, user_email)
