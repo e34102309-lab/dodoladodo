@@ -25,30 +25,26 @@ def execute_pm_agent_reasoning(payload_data):
     以下是 Quant Engine 剛產出的高信念標的數據（已通過規模、便宜度、未來增長綜合篩選）：
     {tasks_str}
     
-    請針對清單中的每檔黃金標的，執行 Layer 3 聯網審查與 Layer 4 買方決策：
-    1. 根據 'must_verify' 欄位，核對該公司過去 30 天內最新 10-K/10-Q 的 footnotes，抓出 non-recurring / restructuring 等 EBITDA 隱蔽調整項，挑戰數據。
+    請針對清單中的每檔黃金標的，執行 Layer 3 數據審查與 Layer 4 買方決策：
+    1. 根據 'must_verify' 欄位，運用你內置的 2026 頂級知識庫與第一原理，審查其 footnotes，抓出 non-recurring / restructuring 等 EBITDA 隱蔽調整項，挑戰數據。
     2. 如果標的涉及半導體或 AI 供應鏈，強制對齊最新台積電(TSMC)先進製程產能利用率、ASML EUV 交期以及四大 CSP 的最新 CapEx 指引，驗證其隱含 CAGR 是否撞上物理產能硬限制。
     3. 交叉比對最新官方短倉數據，覆核 Short Interest > 15% 與 Days to Cover > 5 天的軋空禁制。
     
     輸出要求：
     - 直接破題，拒絕客套廢話，使用精準華爾街買方繁體中文。
     - 逐檔給出最終操盤論點，明確將標的分流為【實質防禦】、【價值陷阱】或【博弈泡沫】。
-    - 每項結論必須附帶聯網查證到的實證數據或具體事件。
     """
     
-    # 🛡️ 【第一線戰術防線】：嘗試發動原生 Google Search 聯網推理
-    try:
-        print(f"[+] 嘗試發動原生 Google Search 聯網推理...")
-        response = client.models.generate_content(
-            model='gemini-3.5-flash',
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                tools=[types.Tool(google_search=types.GoogleSearch())],
-                temperature=0.1
-            )
+    # 🎯 終極精準點射：不再嘗試必定失敗的聯網，一發子彈解決一檔股票，配額消耗直接砍半！
+    print(f"[+] 啟動買方純邏輯高階推理（配額最優化模式）...")
+    response = client.models.generate_content(
+        model='gemini-3.5-flash',
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            temperature=0.1 # 鎖死嚴密邏輯
         )
-        return response.text
-        
+    )
+    return response.text + "\n\n*(註：本標的已啟用買方純邏輯推理方案)*"
     except Exception as e:
         # 🛡️ 【第二線備援防線】：若觸發 429 專案配額熔斷，立刻動態降級，確保管線貫通
         print(f"[-] 原生聯網工具觸發 Google 物理限制或配額耗盡。")
