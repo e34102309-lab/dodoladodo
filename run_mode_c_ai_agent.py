@@ -60,7 +60,7 @@ def execute_pm_agent_reasoning(payload_data):
             model='gemini-3.5-flash',
             contents=fallback_prompt,
             config=types.GenerateContentConfig(
-                temperature=0.1 # 依然鎖死嚴密邏輯
+                temperature=0.1 
             )
         )
         return response.text + "\n\n*(註：本標的因 Google Search 專案配額熔斷，已自動切換至買方純邏輯推理備援方案)*"
@@ -75,7 +75,7 @@ def send_final_decision_email(final_memo):
         return
         
     msg = EmailMessage()
-    msg["Subject"] = f"【Mode C 頂級買方實戰決策書】黃金標的聯網審查日報 - {datetime.now().strftime('%Y-%m-%d')}"
+    msg["Subject"] = f"【Mode C 頂級買方實戰決策書】核心標的聯網審查日報 - {datetime.now().strftime('%Y-%m-%d')}"
     msg["From"] = sender_email
     msg["To"] = user_email
     msg.set_content(final_memo)
@@ -95,17 +95,20 @@ if __name__ == "__main__":
     payload = load_quant_payload()
     if payload and payload.get("tasks"):
         all_tasks = payload.get("tasks", [])
+        
+        # 🔪【買方戰略切片】：不管 Payload JSON 裡面有多少檔標的（現為前 30 強），AI 深度推理只咬死最頂級的前 5 檔
+        target_tasks = all_tasks[:5]
         final_memo_report = ""
         
-        # 買方單發點射戰術
+        # 🎯【單發點射戰術】：保持一檔一檔發送，精確掌控日誌
         batch_size = 1
-        total_batches = len(all_tasks)
+        total_batches = len(target_tasks)
         
-        for i in range(0, len(all_tasks), batch_size):
+        for i in range(0, len(target_tasks), batch_size):
             current_batch_idx = i + 1
-            batch_data = {"tasks": all_tasks[i : i + batch_size]}
+            batch_data = {"tasks": target_tasks[i : i + batch_size]}
             
-            print(f"\n[+] 正在執行第 {current_batch_idx}/{total_batches} 檔標的推理...")
+            print(f"\n[+] 正在執行第 {current_batch_idx}/{total_batches} 檔核心標的推理...")
             memo = execute_pm_agent_reasoning(batch_data)
             final_memo_report += memo + "\n\n"
             
