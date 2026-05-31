@@ -7,7 +7,7 @@ on:
 
 jobs:
   run-mode-c-pipeline:
-    runs-on: macos-latest  # <--- 從 ubuntu-latest 改成 macos-latest
+    runs-on: ubuntu-latest  # <--- 聽我的，立刻從 macos-latest 改回 ubuntu-latest！
     steps:
       # ... (下方保持不變)
       - name: Checkout Code
