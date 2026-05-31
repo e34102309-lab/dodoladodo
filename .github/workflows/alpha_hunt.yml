@@ -4,25 +4,24 @@ on:
   schedule:
     # 涵蓋夏令時 (UTC 13:00) 與冬令時 (UTC 14:00) 的開盤前時間點
     - cron: '0 13,14 * * 1-5'
-  workflow_dispatch: # 保留手動觸發按鈕，方便你隨時測試
+  workflow_dispatch: # 保留手動觸發按鈕
 
-jobs:
-  pre-market-test:
+jobs: # 全域只能有一個 jobs 宣告
+  run-mode-c-pipeline:
     runs-on: ubuntu-latest
     steps:
+      # --- 防禦階段：時間攔截器 ---
       - name: 檢查是否為紐約時間 09:00 (美股開盤前)
         id: time-check
         run: |
-          # 1. 強制取得目前的美東（紐約）小時與星期
           NY_HOUR=$(TZ="America/New_York" date +%H)
           NY_DAY=$(TZ="America/New_York" date +%u) # 1=週一, 5=週五, 6=週六
           
           echo "當前紐約時間小時: $NY_HOUR, 星期: $NY_DAY"
           
-          # 2. 邊界條件檢查：如果不是紐約時間早上 09 點，或是週末，直接阻斷
           if [ "$NY_HOUR" != "09" ]; then
             echo "❌ 當前紐約時間為 $NY_HOUR 點，非目標 09:00，跳過執行。"
-            exit 78 # GitHub 專用：優雅中止，不會發送失敗報警
+            exit 78
           fi
           
           if [ "$NY_DAY" -gt 5 ]; then
@@ -31,11 +30,8 @@ jobs:
           fi
           
           echo "🚀 紐約時間 09:00 確認，屬於美股交易日盤前，放行測試！"
-jobs:
-  run-mode-c-pipeline:
-    runs-on: ubuntu-latest  # <--- 聽我的，立刻從 macos-latest 改回 ubuntu-latest！
-    steps:
-      # ... (下方保持不變)
+
+      # --- 進攻階段：核心模型與 Agent 啟動 ---
       - name: Checkout Code
         uses: actions/checkout@v4
 
