@@ -2,34 +2,51 @@ name: Mode-C Buy-Side PM Agent Pipeline
 
 on:
   schedule:
-    # 涵蓋夏令時 (UTC 13:00) 與冬令時 (UTC 14:00) 的開盤前時間點
+    # 涵蓋美股夏令時 (UTC 13:00) 與冬令時 (UTC 14:00) 的開盤前發查
     - cron: '0 13,14 * * 1-5'
-  workflow_dispatch: # 保留手動觸發按鈕
+  workflow_dispatch: # 開放手動強制觸發
 
-jobs: # 全域只能有一個 jobs 宣告
+jobs:
   run-mode-c-pipeline:
     runs-on: ubuntu-latest
     steps:
-      # --- 防禦階段：時間攔截器 ---
-      - name: 檢查是否為紐約時間 09:00 (美股開盤前)
+      # --- 防禦階段：時間攔截與權限覆寫 ---
+      - name: 驗證紐約時間 09:00 或手動強制放行
         id: time-check
         run: |
+          # 1. 第一原理控制流：手動觸發具備最高優先級 (Bypass 絕對時間鎖)
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            echo "🚀 偵測到手動觸發 (workflow_dispatch)，繞過時間檢查，強制放行 Mode-C Pipeline！"
+            exit 0
+          fi
+
+          # 2. 自動排程邊界條件驗證 (Time Interceptor)
           NY_HOUR=$(TZ="America/New_York" date +%H)
-          NY_DAY=$(TZ="America/New_York" date +%u) # 1=週一, 5=週五, 6=週六
+          NY_MIN=$(TZ="America/New_York" date +%M)
+          NY_DAY=$(TZ="America/New_York" date +%u) # 1=週一, 5=週五, 6=週六, 7=週日
           
-          echo "當前紐約時間小時: $NY_HOUR, 星期: $NY_DAY"
+          echo "當前紐約時間: $NY_HOUR:$NY_MIN, 星期: $NY_DAY"
           
-          if [ "$NY_HOUR" != "09" ]; then
-            echo "❌ 當前紐約時間為 $NY_HOUR 點，非目標 09:00，跳過執行。"
-            exit 78
-          fi
-          
+          # 週末防禦機制
           if [ "$NY_DAY" -gt 5 ]; then
-            echo "❌ 週末美股休市，跳過執行。"
+            echo "❌ 系統判定：週末美股休市，攔截執行。"
             exit 78
           fi
           
-          echo "🚀 紐約時間 09:00 確認，屬於美股交易日盤前，放行測試！"
+          # 盤前小時鎖定
+          if [ "$NY_HOUR" != "09" ]; then
+            echo "❌ 系統判定：當前時間非 09:00 區間，攔截執行。"
+            exit 78
+          fi
+
+          # 嚴防開盤數據污染 (分鐘級別邊界條件)
+          if [ "$NY_MIN" -ge 30 ]; then
+            echo "❌ 系統判定：當前紐約時間 $NY_HOUR:$NY_MIN。美股已開盤 (>= 09:30)！"
+            echo "❌ 預防盤中波動污染盤前預期差數據，強制攔截 Mode-C。"
+            exit 78
+          fi
+          
+          echo "🚀 紐約時間 09:00~09:29 確認，未達開盤時間，系統放行！"
 
       # --- 進攻階段：核心模型與 Agent 啟動 ---
       - name: Checkout Code
