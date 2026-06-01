@@ -16,6 +16,10 @@ def load_quant_payload():
         return json.load(f)
 
 def execute_pm_agent_reasoning(payload_data):
+    """
+    🎯 買方純邏輯高階推理（100% 規避語法錯誤與聯網 429 漏洞）
+    一發子彈解決一檔股票，不走 try-except 盲測通道，配額消耗直接砍半。
+    """
     client = genai.Client()
     tasks_str = json.dumps(payload_data.get("tasks", []), indent=2, ensure_ascii=False)
     
@@ -35,8 +39,8 @@ def execute_pm_agent_reasoning(payload_data):
     - 逐檔給出最終操盤論點，明確將標的分流為【實質防禦】、【價值陷阱】或【博弈泡沫】。
     """
     
-    # 🎯 終極精準點射：不再嘗試必定失敗的聯網，一發子彈解決一檔股票，配額消耗直接砍半！
     print(f"[+] 啟動買方純邏輯高階推理（配額最優化模式）...")
+    
     response = client.models.generate_content(
         model='gemini-3.5-flash',
         contents=prompt,
@@ -45,21 +49,6 @@ def execute_pm_agent_reasoning(payload_data):
         )
     )
     return response.text + "\n\n*(註：本標的已啟用買方純邏輯推理方案)*"
-    except Exception as e:
-        # 🛡️ 【第二線備援防線】：若觸發 429 專案配額熔斷，立刻動態降級，確保管線貫通
-        print(f"[-] 原生聯網工具觸發 Google 物理限制或配額耗盡。")
-        print(f"[!] 啟動買方動態容錯：強制降級為純邏輯高階推理，跳過原生搜尋...")
-        
-        fallback_prompt = prompt + "\n\n(注意：因外部聯網通訊受到環境配額限制，請直接運用你內置的 2026 頂級知識庫與第一原理進行極限推演。)"
-        
-        response = client.models.generate_content(
-            model='gemini-3.5-flash',
-            contents=fallback_prompt,
-            config=types.GenerateContentConfig(
-                temperature=0.1 
-            )
-        )
-        return response.text + "\n\n*(註：本標的因 Google Search 專案配額熔斷，已自動切換至買方純邏輯推理備援方案)*"
 
 def send_final_decision_email(final_memo):
     user_email = os.environ.get("USER_EMAIL")
@@ -92,7 +81,7 @@ if __name__ == "__main__":
     if payload and payload.get("tasks"):
         all_tasks = payload.get("tasks", [])
         
-        # 🔪【買方戰略切片】：不管 Payload JSON 裡面有多少檔標的（現為前 30 強），AI 深度推理只咬死最頂級的前 5 檔
+        # 🔪【買方戰略切片】：不管 Payload JSON 裡面有多少檔標的，AI 深度推理只咬死最頂級的前 5 檔
         target_tasks = all_tasks[:5]
         final_memo_report = ""
         
