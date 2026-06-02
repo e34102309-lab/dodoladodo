@@ -17,8 +17,8 @@ def load_quant_payload():
 
 def execute_pm_agent_reasoning(payload_data):
     """
-    🎯 買方純邏輯高階推理（100% 規避語法錯誤與聯網 429 漏洞）
-    一發子彈解決一檔股票，不走 try-except 盲測通道，配額消耗直接砍半。
+    🎯 買方純邏輯高階推理（配額最優化模式）
+    100% 移除 try-except 懸空結構，一發子彈解決一檔，杜絕編譯器語法錯誤。
     """
     client = genai.Client()
     tasks_str = json.dumps(payload_data.get("tasks", []), indent=2, ensure_ascii=False)
@@ -39,13 +39,12 @@ def execute_pm_agent_reasoning(payload_data):
     - 逐檔給出最終操盤論點，明確將標的分流為【實質防禦】、【價值陷阱】或【博弈泡沫】。
     """
     
-    print(f"[+] 啟動買方純邏輯高階推理（配額最優化模式）...")
-    
+    print(f"[+] 啟動買方純邏輯高階推理...")
     response = client.models.generate_content(
         model='gemini-3.5-flash',
         contents=prompt,
         config=types.GenerateContentConfig(
-            temperature=0.1 # 鎖死嚴密邏輯
+            temperature=0.1
         )
     )
     return response.text + "\n\n*(註：本標的已啟用買方純邏輯推理方案)*"
@@ -81,11 +80,11 @@ if __name__ == "__main__":
     if payload and payload.get("tasks"):
         all_tasks = payload.get("tasks", [])
         
-        # 🔪【買方戰略切片】：不管 Payload JSON 裡面有多少檔標的，AI 深度推理只咬死最頂級的前 5 檔
+        # 🔪【買方戰略切片】：AI 深度推理只咬死最頂級的前 5 檔
         target_tasks = all_tasks[:5]
         final_memo_report = ""
         
-        # 🎯【單發點射戰術】：保持一檔一檔發送，精確掌控日誌
+        # 🎯【單發點射戰術】：維持一檔一檔發送，精確掌控日誌
         batch_size = 1
         total_batches = len(target_tasks)
         
