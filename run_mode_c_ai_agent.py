@@ -14,11 +14,10 @@ def load_quant_payload():
         return None
     with open(payload_path, "r", encoding="utf-8") as f:
         return json.load(f)
-
 def execute_pm_agent_reasoning(payload_data):
     """
-    🎯 買方純邏輯高階推理（配額最優化模式）
-    100% 移除 try-except 懸空結構，一發子彈解決一檔，杜絕編譯器語法錯誤。
+    🎯 買方純邏輯高階推理 + 503 伺服器壅塞避震器
+    遇到 Google 伺服器當機自動退避 30 秒，不浪費配額，確保管線不死。
     """
     client = genai.Client()
     tasks_str = json.dumps(payload_data.get("tasks", []), indent=2, ensure_ascii=False)
@@ -39,15 +38,32 @@ def execute_pm_agent_reasoning(payload_data):
     - 逐檔給出最終操盤論點，明確將標的分流為【實質防禦】、【價值陷阱】或【博弈泡沫】。
     """
     
-    print(f"[+] 啟動買方純邏輯高階推理...")
-    response = client.models.generate_content(
-        model='gemini-3.5-flash',
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            temperature=0.1
-        )
-    )
-    return response.text + "\n\n*(註：本標的已啟用買方純邏輯推理方案)*"
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            print(f"[+] 啟動買方純邏輯高階推理 (嘗試 {attempt + 1}/{max_retries})...")
+            response = client.models.generate_content(
+                model='gemini-3.5-flash',
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    temperature=0.1
+                )
+            )
+            return response.text + "\n\n*(註：本標的已啟用買方純邏輯推理方案)*"
+            
+        except Exception as e:
+            error_msg = str(e)
+            if "503" in error_msg or "UNAVAILABLE" in error_msg:
+                if attempt < max_retries - 1:
+                    print(f"[-] Google 伺服器滿載 (503 UNAVAILABLE)，進入強制冷卻退避 30 秒...")
+                    time.sleep(30)
+                else:
+                    print(f"[-] 連續 {max_retries} 次撞擊 503 壅塞，跳過此標的。")
+                    return f"【系統警告】此標的因 Google 伺服器滿載 (503) 無法完成推理。\n"
+            else:
+                # 遇到非 503 的其他致命錯誤，直接拋出讓程式停止
+                raise e
+
 
 def send_final_decision_email(final_memo):
     user_email = os.environ.get("USER_EMAIL")
