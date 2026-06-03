@@ -2,8 +2,8 @@ name: Mode-C Buy-Side PM Agent Pipeline
 
 on:
   schedule:
-    # 涵蓋美股夏令時 (UTC 13:00) 與冬令時 (UTC 14:00) 的開盤前發查
-    - cron: '0 13,14 * * 1-5'
+    # 台灣時間早上 09:00 等於 UTC 01:00。美股已完全收盤，適合進行發查
+    - cron: '0 1 * * 1-5'
   workflow_dispatch: # 開放手動強制觸發
 
 jobs:
@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       # --- 防禦階段：時間攔截與權限覆寫 ---
-      - name: 驗證紐約時間 09:00 或手動強制放行
+      - name: 驗證執行時間 (台灣 09:00) 或手動強制放行
         id: time-check
         run: |
           # 1. 第一原理控制流：手動觸發具備最高優先級 (Bypass 絕對時間鎖)
@@ -21,32 +21,18 @@ jobs:
           fi
 
           # 2. 自動排程邊界條件驗證 (Time Interceptor)
-          NY_HOUR=$(TZ="America/New_York" date +%H)
-          NY_MIN=$(TZ="America/New_York" date +%M)
-          NY_DAY=$(TZ="America/New_York" date +%u) # 1=週一, 5=週五, 6=週六, 7=週日
+          # 直接鎖定 UTC 01:00 (即台灣時間 09:00)，邏輯最單純
+          UTC_HOUR=$(date -u +%H)
           
-          echo "當前紐約時間: $NY_HOUR:$NY_MIN, 星期: $NY_DAY"
+          echo "當前 UTC 小時: $UTC_HOUR (台灣時間應為 09:00 區間)"
           
-          # 週末防禦機制
-          if [ "$NY_DAY" -gt 5 ]; then
-            echo "❌ 系統判定：週末美股休市，攔截執行。"
-            exit 78
+          # 允許 1 小時的 GitHub 延遲緩衝 (若在 01:00 ~ 01:59 之間啟動皆放行)
+          if [ "$UTC_HOUR" != "01" ]; then
+            echo "💡 系統判定：當前非台灣早上 09:00 (UTC 01:00) 區間，安全攔截不執行。"
+            exit 0
           fi
           
-          # 盤前小時鎖定
-          if [ "$NY_HOUR" != "09" ]; then
-            echo "❌ 系統判定：當前時間非 09:00 區間，攔截執行。"
-            exit 78
-          fi
-
-          # 嚴防開盤數據污染 (分鐘級別邊界條件)
-          if [ "$NY_MIN" -ge 30 ]; then
-            echo "❌ 系統判定：當前紐約時間 $NY_HOUR:$NY_MIN。美股已開盤 (>= 09:30)！"
-            echo "❌ 預防盤中波動污染盤前預期差數據，強制攔截 Mode-C。"
-            exit 78
-          fi
-          
-          echo "🚀 紐約時間 09:00~09:29 確認，未達開盤時間，系統放行！"
+          echo "🚀 台灣時間 09:00 區間確認，美股數據已定價完畢，系統放行！"
 
       # --- 進攻階段：核心模型與 Agent 啟動 ---
       - name: Checkout Code
@@ -84,4 +70,4 @@ jobs:
           path: |
             mode_c_screen.csv
             Mode_C_Final_Decision_Memo.md
-          if-no-files-found: error
+          if-no-files-found: error # 沒找到產出物時直接報錯，代表 Agent 執行失敗
