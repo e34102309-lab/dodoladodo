@@ -26,6 +26,12 @@ class HunterSourceTests(unittest.TestCase):
         self.assertIn("raise RateLimitStop", source)
         self.assertNotIn("ThreadPoolExecutor", source)
 
+    def test_each_detail_request_has_a_hard_timeout(self):
+        source = MODULE_PATH.read_text(encoding="utf-8")
+        self.assertIn("run_yahoo_request_with_timeout", source)
+        self.assertIn("process.terminate()", source)
+        self.assertIn("--request-timeout", source)
+
     def test_partial_run_does_not_replace_complete_universe(self):
         source = MODULE_PATH.read_text(encoding="utf-8")
         self.assertIn("qualified_universe.partial.csv", source)
@@ -35,6 +41,14 @@ class HunterSourceTests(unittest.TestCase):
 
 @unittest.skipIf(hunter is None, "project dependencies are not installed locally")
 class HunterRuntimeTests(unittest.TestCase):
+    def test_sec_contact_email_must_be_ascii(self):
+        self.assertEqual(
+            hunter.validate_sec_contact_email("name@gmail.com"),
+            "name@gmail.com",
+        )
+        with self.assertRaisesRegex(ValueError, "不能包含中文"):
+            hunter.validate_sec_contact_email("你的信箱@gmail.com")
+
     def test_sec_exchange_payload_is_normalized(self):
         parsed = hunter.parse_sec_exchange_payload(
             {
