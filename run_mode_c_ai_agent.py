@@ -1,10 +1,11 @@
-import os
 import json
-import time
+import os
 import random
 import smtplib
-from email.message import EmailMessage
+import time
 from datetime import datetime
+from email.message import EmailMessage
+
 from google import genai
 from google.genai import types
 
@@ -49,6 +50,7 @@ def build_generation_config() -> types.GenerateContentConfig:
             print(f"[-] 無法啟用 Google Search grounding，改用非連網推理：{exc}")
     return types.GenerateContentConfig(**kwargs)
 
+
 def load_quant_payload():
     payload_path = "mode_c_agent_payload.json"
     if not os.path.exists(payload_path):
@@ -56,46 +58,46 @@ def load_quant_payload():
         return None
     with open(payload_path, "r", encoding="utf-8") as f:
         return json.load(f)
-def execute_pm_agent_reasoning(payload_data):
-    """
-    買方二審推理 + API 暫時性錯誤退避。
 
-    修正重點：
-    - 僅依 payload 的 must_verify / physical_check 執行，不把 TSMC/ASML/CSP 套到每檔股票。
-    - 若 ENABLE_GEMINI_SEARCH=1，啟用 Google Search grounding；否則明確標註未連網。
-    - 503/429/5xx 採 exponential backoff + jitter；認證/模型錯誤不盲目重試。
-    """
+
+def execute_pm_agent_reasoning(payload_data):
+    """對長期價值研究候選做可審計的二次查核。"""
     client = genai.Client()
     tasks = payload_data.get("tasks", [])
+    limits = payload_data.get("portfolio_limits", {})
     tasks_str = json.dumps(tasks, indent=2, ensure_ascii=False)
+    limits_str = json.dumps(limits, indent=2, ensure_ascii=False)
     grounding_state = "已啟用 Google Search grounding" if ENABLE_GEMINI_SEARCH else "未啟用 Google Search grounding，僅做非連網邏輯覆核"
 
     prompt = f"""
-你現在是買方資深 PM，執行【模式C：三階段雙殺模型】Layer 3/4 二審。
+你是協助年輕投資人的長期價值研究員。投資組合採 70% ETF 核心、最多 30% 主動個股；只做多，不使用槓桿、期權或放空。Quant 模型只提供研究漏斗，不能直接下買入指令。
 
 【執行狀態】{grounding_state}
 【模型】{GEMINI_MODEL}
+【投資組合限制】
+{limits_str}
 
-以下是 Quant Engine 產出的候選標的任務包：
+【Quant 候選與查核任務】
 {tasks_str}
 
-請逐檔輸出結論，且嚴格遵守：
-1. 只根據每檔的 `must_verify` 與 `physical_check` 做查核；不得把半導體/AI/CSP 的 TSMC/ASML/CSP 檢查泛化到所有股票。
-2. 若 `physical_check` 寫明「不套用 TSMC/ASML」，請改查該產業真正瓶頸，例如需求、產能、庫存、價格、融資、法規、臨床/FDA、信用損失、客流、訂單/backlog 等。
-3. 對每檔明確標示：`適用查核`、`不適用查核`、`仍需補查`。不要把「待查」寫成「已驗證」。
-4. 若未啟用 Google Search grounding，凡涉及最新 CapEx、交期、短倉、財報日期、法說與新聞者，必須標示「未連網，待查」。
-5. 最終仍需分流為【實質防禦】、【價值陷阱】、【博弈泡沫】或【資料不足/待查】，並指出最關鍵的降級條件。
+請逐檔輸出，嚴格遵守：
+1. 先列出三句話投資論點、最強反方論點、論點失效條件；無法驗證時標記「待查」，不可假裝確認。
+2. 建立悲觀/基準/樂觀三情境，說明營收、毛利、自由現金流與估值倍數假設，不提供精確目標價幻覺。
+3. 驗證最新 10-K/10-Q footnotes、管理層資本配置、股數稀釋、產業瓶頸與主要競爭風險。
+4. 檢查候選和常見大盤/科技 ETF 的個股與產業重疊；重疊過高時建議降低主動部位，而不是把同一風險買兩次。
+5. 高 Short Interest 只作波動風險，不得變成事件交易、放空或期權建議。
+6. 分流為【研究優先】、【觀察】、【排除】或【資料不足】；說明最關鍵的升級/降級條件。
+7. 即使列為研究優先，也只能建議完成研究後的小額起始部位，且不得突破 payload 的權重上限。
 
-輸出風格：繁體中文、直接、可審計；避免誇張保證語，例如「完美」、「鐵一般證明」、「終極武器」。
+輸出：繁體中文、直接、可審計；避免「保證」、「必漲」、「完美」等語言，並在最後提醒這不是個人化投資建議。
 """
 
     config = build_generation_config()
     last_error = ""
     max_retries = max(1, GEMINI_MAX_RETRIES)
-
     for attempt in range(max_retries):
         try:
-            print(f"[+] 啟動 Mode-C Agent 二審：model={GEMINI_MODEL}, search={ENABLE_GEMINI_SEARCH}, 嘗試 {attempt + 1}/{max_retries}...")
+            print(f"[+] 啟動長期價值 Agent 二審：model={GEMINI_MODEL}, search={ENABLE_GEMINI_SEARCH}, 嘗試 {attempt + 1}/{max_retries}...")
             response = client.models.generate_content(
                 model=GEMINI_MODEL,
                 contents=prompt,
@@ -106,77 +108,69 @@ def execute_pm_agent_reasoning(payload_data):
                 return "【系統警告】Gemini 回傳空內容；本批標的未完成二審。\n"
             footer = f"\n\n*(Agent 二審設定：model={GEMINI_MODEL}; Google Search grounding={'ON' if ENABLE_GEMINI_SEARCH else 'OFF'})*"
             return memo + footer
-
-        except Exception as e:
-            last_error = str(e)
+        except Exception as exc:
+            last_error = str(exc)
             if is_retryable_error(last_error):
                 if attempt < max_retries - 1:
                     delay = retry_delay_seconds(attempt)
                     print(f"[-] Gemini API 暫時性錯誤/限流，冷卻 {delay:.1f} 秒後重試。錯誤摘要：{last_error[:180]}")
                     time.sleep(delay)
                     continue
-                print(f"[-] 連續 {max_retries} 次 API 暫時性錯誤，本批標的標記為待查。")
-                return f"【系統警告】Gemini API 暫時性錯誤或限流，已重試 {max_retries} 次仍失敗；本批標的未完成二審。錯誤摘要：{last_error[:240]}\n"
-
-            # 認證、模型不存在、參數錯誤等通常不是等待能解決；讓 workflow 明確失敗。
-            raise e
+                return f"【系統警告】Gemini API 已重試 {max_retries} 次仍失敗；本批標的未完成二審。錯誤摘要：{last_error[:240]}\n"
+            raise
 
 
 def send_final_decision_email(final_memo):
     user_email = os.environ.get("USER_EMAIL")
     sender_email = os.environ.get("EMAIL_SENDER")
     sender_pwd = os.environ.get("EMAIL_PASSWORD")
-    
     if not all([user_email, sender_email, sender_pwd]):
         print("[-] 郵件環境變數不完整，略過報告寄送。")
         return
-        
+
     msg = EmailMessage()
-    msg["Subject"] = f"【Mode C 買方二審決策書】核心標的Agent審查日報 - {datetime.now().strftime('%Y-%m-%d')}"
+    msg["Subject"] = f"【Mode C 長期價值研究】候選標的二審 - {datetime.now().strftime('%Y-%m-%d')}"
     msg["From"] = sender_email
     msg["To"] = user_email
     msg.set_content(final_memo)
-    
-    csv_path = "mode_c_screen.csv"
+
+    csv_path = "mode_c_shortlist.csv"
     if os.path.exists(csv_path):
         with open(csv_path, "rb") as f:
             msg.add_attachment(f.read(), maintype="text", subtype="csv", filename=os.path.basename(csv_path))
-            
+
     with smtplib.SMTP("smtp.gmail.com", 587) as server:
         server.starttls()
         server.login(sender_email, sender_pwd)
         server.send_message(msg)
-        print("[+] 頂級買方實戰決策書已成功送達指定郵箱。")
+        print("[+] 長期價值研究報告已寄出。")
+
 
 if __name__ == "__main__":
     payload = load_quant_payload()
     if payload and payload.get("tasks"):
         all_tasks = payload.get("tasks", [])
-        
-        # 🔪【買方戰略切片】：AI 深度推理只咬死最頂級的前 5 檔
         target_tasks = all_tasks[:5]
         final_memo_report = ""
-        
-        # 🎯【單發點射戰術】：維持一檔一檔發送，精確掌控日誌
         batch_size = int(os.environ.get("GEMINI_BATCH_SIZE", "1"))
         total_batches = (len(target_tasks) + batch_size - 1) // batch_size
-        
+
         for i in range(0, len(target_tasks), batch_size):
             current_batch_idx = (i // batch_size) + 1
-            batch_data = {"tasks": target_tasks[i : i + batch_size]}
-            
-            print(f"\n[+] 正在執行第 {current_batch_idx}/{total_batches} 檔核心標的推理...")
+            batch_data = {
+                "tasks": target_tasks[i:i + batch_size],
+                "portfolio_limits": payload.get("portfolio_limits", {}),
+            }
+            print(f"\n[+] 正在執行第 {current_batch_idx}/{total_batches} 批長期研究覆核...")
             memo = execute_pm_agent_reasoning(batch_data)
             final_memo_report += memo + "\n\n"
-            
             if current_batch_idx < total_batches:
-                print(f"[!] 本批推理完成，冷卻 {GEMINI_BETWEEN_TASK_SECONDS:.1f} 秒以降低 API 限流機率...")
+                print(f"[!] 本批完成，冷卻 {GEMINI_BETWEEN_TASK_SECONDS:.1f} 秒以降低 API 限流機率...")
                 time.sleep(GEMINI_BETWEEN_TASK_SECONDS)
-                
+
         with open("Mode_C_Final_Decision_Memo.md", "w", encoding="utf-8") as f:
             f.write(final_memo_report)
-        print("[+] 最終 Mode_C_Final_Decision_Memo.md 報告已整合完畢。")
-            
+        print("[+] Mode_C_Final_Decision_Memo.md 已整合完畢。")
         send_final_decision_email(final_memo_report)
     else:
-        print("[*] 今日初選底池為空，AI Agent 無法發動推理。")
+        print("[*] 本次沒有通過長期持有門檻的候選，不啟動 AI 二審。")
