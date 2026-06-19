@@ -18,12 +18,12 @@ import argparse
 import hashlib
 import json
 import math
-import multiprocessing
 import os
 import queue
 import random
 import re
 import sys
+import threading
 import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -40,7 +40,7 @@ from urllib3.util.retry import Retry
 # ==============================================================================
 # Default screening policy
 # ==============================================================================
-MIN_MCAP_B = 3.0
+MIN_MCAP_B = 5.0
 MIN_GROSS_MARGIN = 0.25
 MAX_DEBT_EBITDA = 4.0
 MAX_PPE_REV_RATIO = 1.0
@@ -96,6 +96,15 @@ DUAL_CLASS_KEEP = {
     "UA": "UAA",
 }
 
+WINDOWS_RESERVED_BASENAMES = {
+    "CON",
+    "PRN",
+    "AUX",
+    "NUL",
+    *(f"COM{number}" for number in range(1, 10)),
+    *(f"LPT{number}" for number in range(1, 10)),
+}
+
 SEC_TICKER_URL = "https://www.sec.gov/files/company_tickers_exchange.json"
 SCREENER_PAGE_SIZE = 250
 SCREENER_CACHE_HOURS = 24
@@ -136,6 +145,10 @@ class RateLimitStop(RuntimeError):
 
 class TemporaryDataError(RuntimeError):
     """Raised for retryable connectivity failures that are not rate limits."""
+
+
+class RequestTimeoutStop(RuntimeError):
+    """Raised when one Yahoo request hangs and this run must stop safely."""
 
 
 @dataclass(frozen=True)
@@ -510,6 +523,15 @@ def prefilter_candidates(
 
 def ticker_cache_path(cache_dir: Path, ticker: str) -> Path:
     safe_ticker = re.sub(r"[^A-Z0-9_-]", "_", ticker.upper())
+    # Prefix the filename because Windows reserves names such as CON, PRN,
+    # AUX, NUL, COM1 and LPT1 even when an extension is present.
+    return cache_dir / "ticker_info" / f"ticker_{safe_ticker}.json"
+
+
+def legacy_ticker_cache_path(cache_dir: Path, ticker: str) -> Optional[Path]:
+    safe_ticker = re.sub(r"[^A-Z0-9_-]", "_", ticker.upper())
+    if safe_ticker in WINDOWS_RESERVED_BASENAMES:
+        return None
     return cache_dir / "ticker_info" / f"{safe_ticker}.json"
 
 
@@ -523,7 +545,7 @@ def classify_yahoo_exception(exc: Exception) -> str:
 
 
 def _yahoo_request_worker(ticker: str, operation: str, result_queue) -> None:
-    """Run one Yahoo request in an isolated process so Windows can enforce timeout."""
+    """Run one request in a daemon thread; the main thread owns the timeout."""
     try:
         stock = yf.Ticker(ticker)
         if operation == "info":
@@ -568,21 +590,16 @@ def run_yahoo_request_with_timeout(
     operation: str,
     timeout_seconds: float,
 ) -> Any:
-    context = multiprocessing.get_context("spawn")
-    result_queue = context.Queue(maxsize=1)
-    process = context.Process(
+    result_queue = queue.Queue(maxsize=1)
+    worker = threading.Thread(
         target=_yahoo_request_worker,
         args=(ticker, operation, result_queue),
         daemon=True,
     )
-    process.start()
-    process.join(max(5.0, float(timeout_seconds)))
-    if process.is_alive():
-        process.terminate()
-        process.join(5)
-        result_queue.close()
-        result_queue.join_thread()
-        raise TemporaryDataError(
+    worker.start()
+    worker.join(max(5.0, float(timeout_seconds)))
+    if worker.is_alive():
+        raise RequestTimeoutStop(
             f"{ticker}: Yahoo {operation} request exceeded "
             f"{timeout_seconds:.0f} seconds"
         )
@@ -592,9 +609,6 @@ def run_yahoo_request_with_timeout(
         raise TemporaryDataError(
             f"{ticker}: Yahoo {operation} worker exited without a result"
         ) from exc
-    finally:
-        result_queue.close()
-        result_queue.join_thread()
     if status == "ok":
         return payload
     raise RuntimeError(
@@ -613,12 +627,18 @@ def fetch_ticker_info(
 ) -> Tuple[dict, bool]:
     cache_path = ticker_cache_path(cache_dir, ticker)
     cached = load_json(cache_path)
+    if not isinstance(cached, dict):
+        legacy_path = legacy_ticker_cache_path(cache_dir, ticker)
+        if legacy_path is not None and legacy_path.exists():
+            cached = load_json(legacy_path)
     if (
         not fresh
         and isinstance(cached, dict)
         and is_fresh(cached.get("fetched_at"), INFO_CACHE_DAYS * 24 * 60 * 60)
         and isinstance(cached.get("info"), dict)
     ):
+        if not cache_path.exists():
+            atomic_write_json(cache_path, cached)
         return cached["info"], True
 
     last_error: Optional[Exception] = None
@@ -693,7 +713,8 @@ def fetch_optional_net_ppe(
     pacer: RequestPacer,
     timeout_seconds: float = DEFAULT_REQUEST_TIMEOUT_SECONDS,
 ) -> Optional[float]:
-    cache_path = cache_dir / "ticker_ppe" / f"{ticker}.json"
+    safe_ticker = re.sub(r"[^A-Z0-9_-]", "_", ticker.upper())
+    cache_path = cache_dir / "ticker_ppe" / f"ticker_{safe_ticker}.json"
     cached = load_json(cache_path)
     if (
         isinstance(cached, dict)
@@ -1090,6 +1111,7 @@ def run(args: argparse.Namespace) -> int:
     )
 
     stopped_early = False
+    hard_timeout_stop = False
     consecutive_transient_failures = 0
     started_at = time.monotonic()
 
@@ -1118,9 +1140,17 @@ def run(args: argparse.Namespace) -> int:
                 result = make_result(
                     candidate,
                     config,
-                    f"Retry: Yahoo 限流；下次從此處接續 ({str(exc)[:120]})",
+                    f"Retry: Yahoo 限流或請求逾時；下次從此處接續 ({str(exc)[:120]})",
                 )
                 stopped_early = True
+            except RequestTimeoutStop as exc:
+                result = make_result(
+                    candidate,
+                    config,
+                    f"Retry: Yahoo 請求逾時；下次從此處接續 ({str(exc)[:120]})",
+                )
+                stopped_early = True
+                hard_timeout_stop = True
             except TemporaryDataError as exc:
                 consecutive_transient_failures += 1
                 result = make_result(
@@ -1162,6 +1192,14 @@ def run(args: argparse.Namespace) -> int:
                     "[安全停止] 已保留 checkpoint 與 partial CSV。"
                     "請稍後用相同指令重跑；既有完整 qualified_universe.csv 未被覆蓋。"
                 )
+                if hard_timeout_stop:
+                    # Some Yahoo/curl backends keep non-daemon helper threads alive
+                    # after the request thread times out. The checkpoint and partial
+                    # CSV are already durable, so force process exit instead of
+                    # waiting forever during interpreter shutdown.
+                    sys.stdout.flush()
+                    sys.stderr.flush()
+                    os._exit(5)
                 break
     except KeyboardInterrupt:
         stopped_early = True
