@@ -1,4 +1,4 @@
-name: Mode-C Buy-Side PM Agent Pipeline
+name: Mode-C Long-Term Value Research Pipeline
 
 on:
   schedule:
@@ -69,7 +69,7 @@ jobs:
           SEND_EMAIL: "0"
         run: python AQR_ModeC_Agent_V12.py
 
-      - name: Run AI Web Evidence and PM Agent
+      - name: Run AI Evidence Review
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           USER_EMAIL: ${{ secrets.USER_EMAIL }}
@@ -80,9 +80,10 @@ jobs:
       - name: Upload Final Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Mode_C_Real_Time_Outputs
+          name: Mode_C_Long_Term_Value_Outputs
           path: |
             mode_c_screen.csv
+            mode_c_shortlist.csv
             mode_c_report.md
             mode_c_agent_payload.json
             Mode_C_Final_Decision_Memo.md
