@@ -36,9 +36,12 @@ PowerShell 先測試 20 檔：
 
 重要行為：
 
+- 初篩市值至少 50 億美元，與 Mode C 深篩門檻一致。
 - Yahoo 詳細資料預設循序抓取，每次至少間隔 2.5 秒，不使用多執行緒轟炸。
 - SEC 對照快取 7 天、Yahoo Screener 快取 24 小時、個股資料與結果快取 7 天。
 - 中斷、斷線或限流後，重新執行相同指令即可接續；不要加 `--fresh`。
+- 每檔 Yahoo 詳細請求有 75 秒硬逾時；逾時會寫入 Retry 並安全停止。
+- Windows 的 `CON`、`PRN`、`AUX`、`NUL` 等保留名稱會使用安全快取檔名，不會卡住。
 - 未完成時只更新 `*.partial.csv`，不會覆蓋上次完整的 `qualified_universe.csv`。
 - `hunter_audit.csv` 保留全部通過、淘汰與待查原因。
 - 機構持股與 PP&E/Revenue 是選用篩選，預設關閉以降低額外請求。
