@@ -29,7 +29,11 @@ class HunterSourceTests(unittest.TestCase):
     def test_each_detail_request_has_a_hard_timeout(self):
         source = MODULE_PATH.read_text(encoding="utf-8")
         self.assertIn("run_yahoo_request_with_timeout", source)
-        self.assertIn("process.terminate()", source)
+        self.assertIn("class RequestTimeoutStop", source)
+        self.assertIn("threading.Thread", source)
+        self.assertIn("daemon=True", source)
+        self.assertIn("worker.join", source)
+        self.assertIn("os._exit(5)", source)
         self.assertIn("--request-timeout", source)
 
     def test_partial_run_does_not_replace_complete_universe(self):
@@ -94,6 +98,18 @@ class HunterRuntimeTests(unittest.TestCase):
     def test_yahoo_query_can_be_constructed(self):
         query = hunter._build_yahoo_query(hunter.HunterConfig())
         self.assertIsNotNone(query)
+
+    def test_windows_reserved_ticker_uses_safe_cache_filename(self):
+        cache_path = hunter.ticker_cache_path(Path("cache"), "CON")
+        self.assertEqual(cache_path.name, "ticker_CON.json")
+        self.assertIsNone(hunter.legacy_ticker_cache_path(Path("cache"), "CON"))
+        self.assertEqual(
+            hunter.legacy_ticker_cache_path(Path("cache"), "MSFT").name,
+            "MSFT.json",
+        )
+
+    def test_initial_market_cap_floor_matches_mode_c(self):
+        self.assertEqual(hunter.MIN_MCAP_B, 5.0)
 
 
 if __name__ == "__main__":
