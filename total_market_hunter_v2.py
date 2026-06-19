@@ -18,7 +18,9 @@ import argparse
 import hashlib
 import json
 import math
+import multiprocessing
 import os
+import queue
 import random
 import re
 import sys
@@ -105,6 +107,7 @@ RESULT_CACHE_DAYS = 7
 DEFAULT_YAHOO_INTERVAL_SECONDS = 2.5
 DEFAULT_SCREENER_INTERVAL_SECONDS = 4.0
 DEFAULT_MAX_TRANSIENT_FAILURES = 3
+DEFAULT_REQUEST_TIMEOUT_SECONDS = 75.0
 
 RATE_LIMIT_MARKERS = (
     "429",
@@ -519,12 +522,94 @@ def classify_yahoo_exception(exc: Exception) -> str:
     return "other"
 
 
+def _yahoo_request_worker(ticker: str, operation: str, result_queue) -> None:
+    """Run one Yahoo request in an isolated process so Windows can enforce timeout."""
+    try:
+        stock = yf.Ticker(ticker)
+        if operation == "info":
+            getter = getattr(stock, "get_info", None)
+            payload = getter() if callable(getter) else stock.info
+            if not isinstance(payload, dict) or len(payload) < 5:
+                raise TemporaryDataError("empty or incomplete info payload")
+            result_queue.put(("ok", json_safe(payload)))
+            return
+        if operation == "ppe":
+            getter = getattr(stock, "get_balance_sheet", None)
+            statement = (
+                getter(freq="quarterly")
+                if callable(getter)
+                else stock.quarterly_balance_sheet
+            )
+            net_ppe = latest_statement_value(
+                statement,
+                (
+                    "Net PPE",
+                    "Property Plant Equipment",
+                    "Property Plant And Equipment Net",
+                ),
+            )
+            result_queue.put(("ok", net_ppe))
+            return
+        raise ValueError(f"unsupported Yahoo operation: {operation}")
+    except Exception as exc:
+        result_queue.put(
+            (
+                "error",
+                {
+                    "type": type(exc).__name__,
+                    "message": str(exc),
+                },
+            )
+        )
+
+
+def run_yahoo_request_with_timeout(
+    ticker: str,
+    operation: str,
+    timeout_seconds: float,
+) -> Any:
+    context = multiprocessing.get_context("spawn")
+    result_queue = context.Queue(maxsize=1)
+    process = context.Process(
+        target=_yahoo_request_worker,
+        args=(ticker, operation, result_queue),
+        daemon=True,
+    )
+    process.start()
+    process.join(max(5.0, float(timeout_seconds)))
+    if process.is_alive():
+        process.terminate()
+        process.join(5)
+        result_queue.close()
+        result_queue.join_thread()
+        raise TemporaryDataError(
+            f"{ticker}: Yahoo {operation} request exceeded "
+            f"{timeout_seconds:.0f} seconds"
+        )
+    try:
+        status, payload = result_queue.get_nowait()
+    except queue.Empty as exc:
+        raise TemporaryDataError(
+            f"{ticker}: Yahoo {operation} worker exited without a result"
+        ) from exc
+    finally:
+        result_queue.close()
+        result_queue.join_thread()
+    if status == "ok":
+        return payload
+    raise RuntimeError(
+        f"{ticker}: {payload.get('type', 'YahooError')}: "
+        f"{payload.get('message', 'unknown Yahoo error')}"
+    )
+
+
 def fetch_ticker_info(
     ticker: str,
     cache_dir: Path,
     pacer: RequestPacer,
     fresh: bool = False,
     max_attempts: int = 2,
+    timeout_seconds: float = DEFAULT_REQUEST_TIMEOUT_SECONDS,
 ) -> Tuple[dict, bool]:
     cache_path = ticker_cache_path(cache_dir, ticker)
     cached = load_json(cache_path)
@@ -540,11 +625,11 @@ def fetch_ticker_info(
     for attempt in range(max_attempts):
         pacer.wait()
         try:
-            stock = yf.Ticker(ticker)
-            getter = getattr(stock, "get_info", None)
-            info = getter() if callable(getter) else stock.info
-            if not isinstance(info, dict) or len(info) < 5:
-                raise TemporaryDataError("empty or incomplete info payload")
+            info = run_yahoo_request_with_timeout(
+                ticker,
+                "info",
+                timeout_seconds,
+            )
             atomic_write_json(
                 cache_path,
                 {"fetched_at": utc_now_iso(), "info": info},
@@ -606,6 +691,7 @@ def fetch_optional_net_ppe(
     ticker: str,
     cache_dir: Path,
     pacer: RequestPacer,
+    timeout_seconds: float = DEFAULT_REQUEST_TIMEOUT_SECONDS,
 ) -> Optional[float]:
     cache_path = cache_dir / "ticker_ppe" / f"{ticker}.json"
     cached = load_json(cache_path)
@@ -617,20 +703,10 @@ def fetch_optional_net_ppe(
 
     pacer.wait()
     try:
-        stock = yf.Ticker(ticker)
-        getter = getattr(stock, "get_balance_sheet", None)
-        statement = (
-            getter(freq="quarterly")
-            if callable(getter)
-            else stock.quarterly_balance_sheet
-        )
-        net_ppe = latest_statement_value(
-            statement,
-            (
-                "Net PPE",
-                "Property Plant Equipment",
-                "Property Plant And Equipment Net",
-            ),
+        net_ppe = run_yahoo_request_with_timeout(
+            ticker,
+            "ppe",
+            timeout_seconds,
         )
         atomic_write_json(
             cache_path,
@@ -671,6 +747,7 @@ def evaluate_candidate(
     cache_dir: Path,
     yahoo_pacer: RequestPacer,
     used_info_cache: bool,
+    request_timeout_seconds: float = DEFAULT_REQUEST_TIMEOUT_SECONDS,
 ) -> dict:
     ticker = candidate["Ticker"]
     quote = candidate.get("ScreenerQuote") or {}
@@ -774,7 +851,12 @@ def evaluate_candidate(
     if config.enable_ppe_filter:
         net_ppe = first_number(merged, "netPPE", "propertyPlantEquipment")
         if net_ppe is None:
-            net_ppe = fetch_optional_net_ppe(ticker, cache_dir, yahoo_pacer)
+            net_ppe = fetch_optional_net_ppe(
+                ticker,
+                cache_dir,
+                yahoo_pacer,
+                request_timeout_seconds,
+            )
         if net_ppe is None or net_ppe < 0:
             return make_result(candidate, config, "Review: PP&E 資料缺失")
         ppe_revenue = net_ppe / revenue
@@ -926,6 +1008,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_MAX_TRANSIENT_FAILURES,
         help="Stop after this many consecutive temporary network failures.",
     )
+    parser.add_argument(
+        "--request-timeout",
+        type=float,
+        default=DEFAULT_REQUEST_TIMEOUT_SECONDS,
+        help="Hard timeout in seconds for each detailed Yahoo request.",
+    )
     return parser
 
 
@@ -1014,6 +1102,7 @@ def run(args: argparse.Namespace) -> int:
                     cache_dir,
                     yahoo_pacer,
                     fresh=args.fresh,
+                    timeout_seconds=max(5.0, args.request_timeout),
                 )
                 result = evaluate_candidate(
                     candidate,
@@ -1022,6 +1111,7 @@ def run(args: argparse.Namespace) -> int:
                     cache_dir,
                     yahoo_pacer,
                     used_cache,
+                    request_timeout_seconds=max(5.0, args.request_timeout),
                 )
                 consecutive_transient_failures = 0
             except RateLimitStop as exc:
