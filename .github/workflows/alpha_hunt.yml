@@ -5,13 +5,45 @@ on:
     # GitHub 排程可能延遲；cron 是啟動條件，不再用執行時鐘二次攔截。
     - cron: '0 1 * * 1-5'
   workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - '**.py'
+      - 'ModeC_requirements.txt'
+      - '.github/workflows/alpha_hunt.yml'
 
 concurrency:
-  group: mode-c-${{ github.ref }}
-  cancel-in-progress: false
+  group: mode-c-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  quality-checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: pip
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r ModeC_requirements.txt
+
+      - name: Compile Python Sources
+        run: python -m py_compile AQR_ModeC_Agent_V12.py total_market_hunter_v2.py run_mode_c_ai_agent.py
+
+      - name: Run Unit Tests
+        run: python -m unittest discover -s tests -v
+
   run-mode-c-pipeline:
+    if: github.event_name != 'pull_request'
+    needs: quality-checks
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -28,9 +60,6 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r ModeC_requirements.txt
-
-      - name: Run Unit Tests
-        run: python -m unittest discover -s tests -v
 
       - name: Validate Uploaded Universe and Run Quant Engine
         env:
