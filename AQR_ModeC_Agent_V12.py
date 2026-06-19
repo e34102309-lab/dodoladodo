@@ -1,13 +1,14 @@
 """
 =============================================================================
-AQR Mode-C Agent V12 — 三階段雙殺模型可執行版 (終極防禦修正版)
+AQR Mode-C Agent V13 — 70/30 長期價值研究框架
 =============================================================================
 用途：
 1) 讀取每日硬篩初選清單 qualified_universe.csv（欄位：Ticker, CIK）
 2) 使用 SEC XBRL Company Concept 對齊 TTM / 最新 10-K / 最新 10-Q
 3) 產出：
-   - mode_c_screen.csv              ：結構化數據總表
-   - mode_c_report.md               ：三階段雙殺中文投資決策書
+   - mode_c_screen.csv              ：全量結構化數據總表
+   - mode_c_shortlist.csv           ：產業分散後的長期研究候選
+   - mode_c_report.md               ：長期價值研究報告
    - mode_c_agent_payload.json      ：交給 LLM / Web Agent 做物理限制驗證的任務包
 
 核心修正：
@@ -60,6 +61,7 @@ logger = logging.getLogger("ModeC")
 CACHE_FILE_SHARES = "local_shares_vector_cache.json"
 QUALIFIED_UNIVERSE = "qualified_universe.csv"
 OUTPUT_CSV = "mode_c_screen.csv"
+OUTPUT_SHORTLIST_CSV = "mode_c_shortlist.csv"
 OUTPUT_MD = "mode_c_report.md"
 OUTPUT_JSON = "mode_c_agent_payload.json"
 
@@ -70,18 +72,21 @@ SEC_TIMEOUT = 15
 
 
 # ==============================================================================
-# 買方機構級最高防禦門檻設定 (約程式第 60 行)
+# 70% ETF 核心 + 30% 主動選股：長期價值投資框架
 # ==============================================================================
-MIN_LIQUIDITY_USD = 15_000_000  # 流動性防線：近30日平均成交額至少 1500 萬美元
-MIN_MARKET_CAP_B = 5.0          # 規模防線：市值大於 50 億美金 (排除中小型股髒數據)
+MIN_LIQUIDITY_USD = 15_000_000
+MIN_MARKET_CAP_B = 5.0
 ICR_WARNING = 3.0
 SHORT_SQUEEZE_SI = 15.0
 SHORT_SQUEEZE_DTC = 5.0
 LOW_VALUATION_PERCENTILE = 5
-
-
-# 歷史估值底部取 5th percentile；比單一最低值更抗資料髒點。
-LOW_VALUATION_PERCENTILE = 5
+ACTIVE_SLEEVE_LIMIT_PCT = 30.0
+TARGET_SHORTLIST_SIZE = 12
+MAX_PER_SECTOR = 3
+STARTER_WEIGHT_PCT_TOTAL = 1.5
+MAX_POSITION_WEIGHT_PCT_TOTAL = 3.0
+MAX_SECTOR_WEIGHT_PCT_TOTAL = 9.0
+MIN_LONG_TERM_SCORE = 60.0
 
 
 # ==============================================================================
@@ -1014,7 +1019,7 @@ def build_agent_verification_plan(
         tasks.append(f"高 FCF Yield 防偽：核對 {t} 是否因維持性 CapEx 低估、一次性營運資金流入或裁員/重組造成短期美化。")
 
 
-    tasks.append(f"抓取官方或付費短倉資料，複核 {t} Short Interest % Float 與 Days to Cover；若 SI>15% 且 DTC>5，禁止裸空。")
+    tasks.append(f"抓取官方或付費短倉資料，複核 {t} Short Interest % Float 與 Days to Cover；高軋空僅列為波動風險，不放寬基本面門檻。")
     return physical_check, tasks
 
 
@@ -1068,15 +1073,159 @@ def prepare_uploaded_universe(df: pd.DataFrame) -> Dict[str, str]:
     return accepted
 
 
-def composite_score_for_result(r: "ModeCResult") -> float:
-    val_rank = r.EV_EBITDA_10Y_Percentile
-    val_penalty = val_rank if math.isfinite(val_rank) and val_rank >= 0 else 99.0
-    cagr_val = r.Implied_EBITDA_CAGR_3Y_pct
-    if not math.isfinite(cagr_val) or cagr_val > 30.0 or cagr_val < -10.0:
-        growth_penalty = 50.0
+def _bounded_score(value: float, low: float, high: float, missing: float = 0.0) -> float:
+    if not math.isfinite(value):
+        return missing
+    if high <= low:
+        return missing
+    return float(max(0.0, min(100.0, (value - low) / (high - low) * 100.0)))
+
+
+def _expectations_score(implied_cagr: float) -> float:
+    if not math.isfinite(implied_cagr):
+        return 20.0
+    if 0.0 <= implied_cagr <= 15.0:
+        return 100.0
+    if -5.0 <= implied_cagr < 0.0 or 15.0 < implied_cagr <= 20.0:
+        return 75.0
+    if -10.0 <= implied_cagr < -5.0 or 20.0 < implied_cagr <= 25.0:
+        return 40.0
+    if 25.0 < implied_cagr <= 30.0:
+        return 20.0
+    return 0.0
+
+
+def calculate_long_term_scores(r: "ModeCResult") -> Dict[str, float]:
+    valuation_pct = r.EV_EBITDA_10Y_Percentile
+    valuation_score = 100.0 - valuation_pct if math.isfinite(valuation_pct) and 0.0 <= valuation_pct <= 100.0 else 20.0
+    fcf_score = _bounded_score(r.Real_FCF_Yield_pct, 0.0, 10.0, missing=0.0)
+    value_score = valuation_score * 0.55 + fcf_score * 0.45
+
+    if math.isinf(r.ICR) and r.ICR > 0:
+        icr_score = 100.0
     else:
-        growth_penalty = abs(cagr_val - 12.0)
-    return (val_penalty * 0.6) + (growth_penalty * 0.4)
+        icr_score = _bounded_score(r.ICR, 1.0, 10.0, missing=20.0)
+    fcf_quality = 100.0 if r.Real_FCF_Yield_pct >= 5.0 else 70.0 if r.Real_FCF_Yield_pct >= 2.0 else 35.0 if r.Real_FCF_Yield_pct > 0 else 0.0
+    if "暫時落難好股" in r.GM_Diagnosis:
+        trend_score = 85.0
+    elif "中性" in r.GM_Diagnosis:
+        trend_score = 70.0
+    elif "結構性價值陷阱" in r.GM_Diagnosis or "雙重惡化" in r.GM_Diagnosis:
+        trend_score = 0.0
+    else:
+        trend_score = 25.0
+    if r.Dilution_Illusion:
+        shareholder_score = 0.0
+    elif math.isfinite(r.Share_Count_Change_pct):
+        shareholder_score = 100.0 if r.Share_Count_Change_pct <= 0.0 else 65.0 if r.Share_Count_Change_pct <= 1.0 else 25.0
+    else:
+        shareholder_score = 40.0
+    quality_score = icr_score * 0.35 + fcf_quality * 0.25 + trend_score * 0.25 + shareholder_score * 0.15
+
+    expectations_score = _expectations_score(r.Implied_EBITDA_CAGR_3Y_pct)
+    momentum_score = _bounded_score(r.Momentum_12M_pct, -30.0, 30.0, missing=50.0)
+
+    risk_penalty = 0.0
+    if math.isfinite(r.EBITDA_Drawdown_30_pct):
+        if r.EBITDA_Drawdown_30_pct <= -80.0:
+            risk_penalty += 35.0
+        elif r.EBITDA_Drawdown_30_pct <= -60.0:
+            risk_penalty += 25.0
+        elif r.EBITDA_Drawdown_30_pct <= -40.0:
+            risk_penalty += 15.0
+        elif r.EBITDA_Drawdown_30_pct <= -25.0:
+            risk_penalty += 5.0
+    else:
+        risk_penalty += 10.0
+    if r.Dilution_Illusion:
+        risk_penalty += 20.0
+    if "結構性價值陷阱" in r.GM_Diagnosis:
+        risk_penalty += 25.0
+    if "雙重惡化" in r.GM_Diagnosis:
+        risk_penalty += 35.0
+    if r.Squeeze_Risk:
+        risk_penalty += 8.0
+    if r.Data_Quality_Flags and r.Data_Quality_Flags != "OK":
+        risk_penalty += 5.0
+
+    long_term_score = value_score * 0.35 + quality_score * 0.35 + expectations_score * 0.20 + momentum_score * 0.10 - risk_penalty
+    return {
+        "value_score": round(value_score, 2),
+        "quality_score": round(quality_score, 2),
+        "expectations_score": round(expectations_score, 2),
+        "risk_penalty": round(risk_penalty, 2),
+        "long_term_score": round(max(0.0, min(100.0, long_term_score)), 2),
+    }
+
+
+def apply_long_term_framework(r: "ModeCResult") -> "ModeCResult":
+    scores = calculate_long_term_scores(r)
+    r.Value_Score = scores["value_score"]
+    r.Quality_Score = scores["quality_score"]
+    r.Expectations_Score = scores["expectations_score"]
+    r.Risk_Penalty = scores["risk_penalty"]
+    r.Long_Term_Score = scores["long_term_score"]
+
+    cagr_ok = math.isfinite(r.Implied_EBITDA_CAGR_3Y_pct) and -10.0 <= r.Implied_EBITDA_CAGR_3Y_pct <= 30.0
+    drawdown_ok = math.isfinite(r.EBITDA_Drawdown_30_pct) and r.EBITDA_Drawdown_30_pct > -75.0
+    trend_ok = not any(x in r.GM_Diagnosis for x in ["結構性價值陷阱", "雙重惡化", "資料不足"])
+    r.Long_Term_Eligible = bool(
+        r.Status == "Pass"
+        and r.Long_Term_Score >= MIN_LONG_TERM_SCORE
+        and math.isfinite(r.EV_EBITDA_10Y_Percentile)
+        and r.Real_FCF_Yield_pct >= 2.0
+        and (math.isinf(r.ICR) or r.ICR >= ICR_WARNING)
+        and not r.Dilution_Illusion
+        and cagr_ok
+        and drawdown_ok
+        and trend_ok
+    )
+
+    if r.Long_Term_Eligible and r.Long_Term_Score >= 70.0:
+        r.Verdict = "研究優先：品質與估值同時達標"
+        r.Research_Action = "完成投資論點、熊市情境、失效條件與 ETF 重疊檢查後，可考慮 1.5% 總資產起始部位"
+        r.Suggested_Starter_Weight_pct_Total = STARTER_WEIGHT_PCT_TOTAL
+    elif r.Long_Term_Eligible:
+        r.Verdict = "研究候選：達標但安全邊際普通"
+        r.Research_Action = "先列入觀察；只有在估值改善或研究信心提高時才建立小部位"
+        r.Suggested_Starter_Weight_pct_Total = 0.0
+    elif r.Status == "Pass":
+        r.Verdict = "觀察：未達長期持有門檻"
+        r.Research_Action = "不自動買入；等待品質、估值或下檔風險改善"
+        r.Suggested_Starter_Weight_pct_Total = 0.0
+    else:
+        r.Verdict = "排除"
+        r.Research_Action = "不進入主動投資研究池"
+        r.Suggested_Starter_Weight_pct_Total = 0.0
+    r.Trade_Tool = r.Research_Action
+    return r
+
+
+def composite_score_for_result(r: "ModeCResult") -> float:
+    """Backward-compatible sort key: lower is better."""
+    return 100.0 - calculate_long_term_scores(r)["long_term_score"]
+
+
+def select_diversified_shortlist(
+    results: List["ModeCResult"],
+    target_size: int = TARGET_SHORTLIST_SIZE,
+    max_per_sector: int = MAX_PER_SECTOR,
+) -> List["ModeCResult"]:
+    candidates = sorted(
+        [r for r in results if r.Status == "Pass" and r.Long_Term_Eligible],
+        key=lambda r: (-r.Long_Term_Score, r.Ticker),
+    )
+    selected: List[ModeCResult] = []
+    sector_counts: Dict[str, int] = {}
+    for r in candidates:
+        sector = (r.Sector or "Unknown").strip() or "Unknown"
+        if sector_counts.get(sector, 0) >= max_per_sector:
+            continue
+        selected.append(r)
+        sector_counts[sector] = sector_counts.get(sector, 0) + 1
+        if len(selected) >= target_size:
+            break
+    return selected
 
 
 @dataclass
@@ -1108,6 +1257,15 @@ class ModeCResult:
     GM_Latest_pct: float = np.nan
     GM_3Q_Change_pp: float = np.nan
     Implied_EBITDA_CAGR_3Y_pct: float = np.nan
+    Momentum_12M_pct: float = np.nan
+    Value_Score: float = np.nan
+    Quality_Score: float = np.nan
+    Expectations_Score: float = np.nan
+    Risk_Penalty: float = np.nan
+    Long_Term_Score: float = np.nan
+    Long_Term_Eligible: bool = False
+    Research_Action: str = ""
+    Suggested_Starter_Weight_pct_Total: float = 0.0
     Physical_Check: str = "依產業分類動態產生；非半導體/AI/CSP 不套用 TSMC/ASML/CSP。"
     ShortInterest_pctFloat: float = np.nan
     DaysToCover: float = np.nan
@@ -1306,7 +1464,7 @@ def run_mode_c_pipeline(ticker: str, cik: str, email: str) -> ModeCResult:
         dtc = float(info.get("shortRatio") or info.get("daysToCover") or np.nan)
         squeeze = bool(math.isfinite(si_pct) and math.isfinite(dtc) and si_pct > SHORT_SQUEEZE_SI and dtc > SHORT_SQUEEZE_DTC)
         if squeeze:
-            flags.append(f"高危易燃軋空結構(SI={si_pct:.1f}%, DTC={dtc:.1f})：嚴禁裸空")
+            flags.append(f"高軋空波動風險(SI={si_pct:.1f}%, DTC={dtc:.1f})：不因事件題材放寬基本面門檻")
 
 
         cogs_q = sec.quarterly_series(df_cogs)
@@ -1320,60 +1478,33 @@ def run_mode_c_pipeline(ticker: str, cik: str, email: str) -> ModeCResult:
             catalysts = ["未偵測到 30 天內財報；需 Agent 補查法說/供應鏈月營收/產業會議"]
 
 
-        if "結構性價值陷阱" in gm_diag or real_fcf <= 0 or (math.isfinite(icr) and icr < ICR_WARNING):
-            verdict = "價值陷阱"
-        elif math.isfinite(implied_cagr) and implied_cagr > 25 and (math.isfinite(hv["ev_ebitda_percentile"]) and hv["ev_ebitda_percentile"] > 70):
-            verdict = "博弈泡沫"
-        elif real_fcf_yield > 6 and (math.isfinite(hv["ev_ebitda_percentile"]) and hv["ev_ebitda_percentile"] <= 35) and not dilution_illusion:
-            verdict = "實質防禦"
-        else:
-            verdict = "觀察名單：未構成重倉條件"
-
-
-        if squeeze and verdict in {"價值陷阱", "博弈泡沫"}:
-            trade_tool = "買入價外 Put / Put Spread，禁止裸空"
-        elif verdict == "實質防禦":
-            trade_tool = "正股小倉位 + 催化劑前加碼"
-        elif verdict == "價值陷阱":
-            trade_tool = "Sell Side / 排除；若要做空僅限期權"
-        elif verdict == "博弈泡沫":
-            trade_tool = "事件型 Put Spread；等待流動性鬆動"
-        else:
-            trade_tool = "不交易，等待 DSI/毛利/財報催化劑"
-
-
         physical_check, agent_tasks = build_agent_verification_plan(
             ticker=ticker,
             info=info,
             implied_cagr_pct=implied_cagr,
             real_fcf_yield_pct=real_fcf_yield,
         )
-# ---------------------------------------------------------
-        # 【買方基本面鍘刀】：控制過關率，砍掉無效算力與平庸公司
-        # ---------------------------------------------------------
+
+        # 先排除財務結構明顯不適合長期持有的公司；其餘交給多因子框架排序。
         status = "Pass"
         if gm_diag.startswith("資料不足"):
-            status = "Fail: 季度毛利資料不足，不進入決策池"
-        elif not squeeze:  # 保留既有軋空事件觀察邏輯，但資料缺失不得特赦
-            if math.isfinite(icr) and icr < 1.0:
-                status = "Fail: 基本面鍘刀 (ICR < 1.0，殭屍企業)"
-            elif real_fcf_yield < -10.0:
-                status = "Fail: 基本面鍘刀 (FCF 深度負值，慢性失血)"
-            elif "雙重惡化" in gm_diag:
-                status = "Fail: 基本面鍘刀 (營收與毛利雙崩無底洞)"
-            elif verdict == "觀察名單：未構成重倉條件":
-                status = "Fail: 算力防火牆 (平庸標的，不進 LLM 決策)"
+            status = "Fail: 季度毛利資料不足"
+        elif math.isfinite(icr) and icr < 1.0:
+            status = "Fail: ICR < 1.0，財務韌性不足"
+        elif real_fcf <= 0:
+            status = "Fail: Real FCF 非正值"
+        elif "雙重惡化" in gm_diag:
+            status = "Fail: 營收與毛利同步惡化"
 
 
-        return ModeCResult(
+        result = ModeCResult(
             Ticker=ticker,
-            Status=status,  # <--- 將原本寫死的 "Pass" 替換為動態 status
+            Status=status,
             Price=round(price, 2),
             Sector=str(info.get("sector") or ""),
             Industry=str(info.get("industry") or ""),
             MarketCap_B=round(mcap, 3),
             EV_B=round(ev, 3),
-            # ... (下方保持你原本的變數原封不動) ...
             Real_FCF_Yield_pct=round(real_fcf_yield, 2),
             TTM_OCF_B=round(ocf_ttm, 3),
             Dynamic_CapEx_B=round(dynamic_capex, 3),
@@ -1394,6 +1525,7 @@ def run_mode_c_pipeline(ticker: str, cik: str, email: str) -> ModeCResult:
             GM_Latest_pct=round(gm_metrics.get("gm_latest_pct", np.nan), 2),
             GM_3Q_Change_pp=round(gm_metrics.get("gm_3q_change_pp", np.nan), 2),
             Implied_EBITDA_CAGR_3Y_pct=round(implied_cagr, 2) if math.isfinite(implied_cagr) else np.nan,
+            Momentum_12M_pct=round(pm["momentum_12m"], 2) if pm.get("momentum_12m") is not None and math.isfinite(pm["momentum_12m"]) else np.nan,
             Physical_Check=physical_check,
             ShortInterest_pctFloat=round(si_pct, 2) if math.isfinite(si_pct) else np.nan,
             DaysToCover=round(dtc, 2) if math.isfinite(dtc) else np.nan,
@@ -1402,10 +1534,11 @@ def run_mode_c_pipeline(ticker: str, cik: str, email: str) -> ModeCResult:
             DSI_2Q_Down=dsi_2q_down,
             Catalysts_30D="; ".join(catalysts),
             Data_Quality_Flags="; ".join(flags) if flags else "OK",
-            Verdict=verdict,
-            Trade_Tool=trade_tool,
+            Verdict="",
+            Trade_Tool="",
             Agent_Tasks=agent_tasks,
         )
+        return apply_long_term_framework(result)
     except Exception as e:
         logger.error(f"[{ticker}] pipeline error: {str(e)[:120]}")
         return ModeCResult(Ticker=ticker, Status=f"Error: {str(e)[:80]}")
@@ -1415,86 +1548,87 @@ def run_mode_c_pipeline(ticker: str, cik: str, email: str) -> ModeCResult:
 # 報告產生
 # ==============================================================================
 def render_stock_report(r: ModeCResult) -> str:
-    if r.Status != "Pass":
-        return f"## 【今日初選標的：{r.Ticker}】直接破題結論\n\n- 狀態：{r.Status}\n"
-
-
-    squeeze_note = "高危易燃軋空，禁止裸空。" if r.Squeeze_Risk else "無明顯軋空禁制。"
-    catalyst_note = r.Catalysts_30D
     lines = []
-    lines.append(f"## 1. **【今日初選標的：{r.Ticker}】直接破題結論**")
+    lines.append(f"## {r.Ticker} — {r.Verdict}")
     lines.append("")
-    lines.append(f"**判定：{r.Verdict}。交易建議：{r.Trade_Tool}。**")
-    lines.append(f"產業分類：{r.Sector or 'N/A'} / {r.Industry or 'N/A'}")
-    lines.append(f"數據旗標：{r.Data_Quality_Flags}")
+    lines.append(f"- 產業：{r.Sector or 'N/A'} / {r.Industry or 'N/A'}")
+    lines.append(f"- 長期綜合分數：{r.Long_Term_Score:.2f} / 100")
+    lines.append(f"- 研究動作：{r.Research_Action}")
+    lines.append(f"- 建議起始權重：{r.Suggested_Starter_Weight_pct_Total:.1f}% 總資產；單一公司上限 {MAX_POSITION_WEIGHT_PCT_TOTAL:.1f}%")
     lines.append("")
-    lines.append("## 2. **【第一階段：防守清算數據表】**")
+    lines.append("### 四構面評分")
     lines.append("")
-    lines.append("| 指標 | 數值 | 判讀 |")
-    lines.append("|---|---:|---|")
-    lines.append(f"| Real FCF Yield | {r.Real_FCF_Yield_pct:.2f}% | OCF - 動態CapEx - SBC，全扣。|")
-    lines.append(f"| TTM OCF / Dynamic CapEx / TTM SBC | {r.TTM_OCF_B:.3f}B / {r.Dynamic_CapEx_B:.3f}B / {r.TTM_SBC_B:.3f}B | 不用單季年化。|")
-    lines.append(f"| ICR | {r.ICR:.2f}x | {'脆弱' if r.ICR < ICR_WARNING else '可承受'} |")
-    lines.append(f"| 淨現金回購 / 近一年股數變化 | {r.Real_Buyback_B:.3f}B / {r.Share_Count_Change_pct if math.isfinite(r.Share_Count_Change_pct) else 'N/A'}% | {'稀釋幻覺' if r.Dilution_Illusion else '股數驗證通過'} |")
-    lines.append(f"| EBITDA -15% 雙殺 Max Drawdown | {r.EBITDA_Drawdown_15_pct:.1f}% | 倍數打到自身近10年低分位。|")
-    lines.append(f"| EBITDA -30% 雙殺 Max Drawdown | {r.EBITDA_Drawdown_30_pct:.1f}% | 壓力情境底線。|")
+    lines.append("| 構面 | 分數/數值 |")
+    lines.append("|---|---:|")
+    lines.append(f"| 價值分數 | {r.Value_Score:.2f} |")
+    lines.append(f"| 品質分數 | {r.Quality_Score:.2f} |")
+    lines.append(f"| 市場預期分數 | {r.Expectations_Score:.2f} |")
+    lines.append(f"| 風險扣分 | -{r.Risk_Penalty:.2f} |")
+    lines.append(f"| Real FCF Yield | {r.Real_FCF_Yield_pct:.2f}% |")
+    lines.append(f"| EV/EBITDA 10Y 分位 | {r.EV_EBITDA_10Y_Percentile if math.isfinite(r.EV_EBITDA_10Y_Percentile) else 'N/A'} |")
+    lines.append(f"| ICR | {r.ICR:.2f}x |")
+    lines.append(f"| 市場隱含 3Y EBITDA CAGR | {r.Implied_EBITDA_CAGR_3Y_pct if math.isfinite(r.Implied_EBITDA_CAGR_3Y_pct) else 'N/A'}% |")
+    lines.append(f"| 12M 動能（僅輔助） | {r.Momentum_12M_pct if math.isfinite(r.Momentum_12M_pct) else 'N/A'}% |")
     lines.append("")
-    lines.append("## 3. **【第二階段：進攻預期差與物理限制】**")
+    lines.append("### 下檔與論點驗證")
     lines.append("")
-    lines.append("| 指標 | 數值 | 判讀 |")
-    lines.append("|---|---:|---|")
-    lines.append(f"| EV/EBITDA | {r.EV_EBITDA_x:.2f}x | 10年分位：{r.EV_EBITDA_10Y_Percentile}% |")
-    lines.append(f"| P/E | {r.PE_x if math.isfinite(r.PE_x) else 'N/A'} | 10年分位：{r.PE_10Y_Percentile}% |")
-    lines.append(f"| 最新三季營收變化 | {r.Rev_3Q_Change_pct:.2f}% | {r.GM_Diagnosis} |")
-    lines.append(f"| 最新毛利率 / 三季毛利變化 | {r.GM_Latest_pct:.2f}% / {r.GM_3Q_Change_pp:.2f}pp | 毛利是價值陷阱的第一刀。|")
-    lines.append(f"| 反推市場隱含 3Y EBITDA CAGR | {r.Implied_EBITDA_CAGR_3Y_pct:.2f}% | 需和產業特定需求/產能/資金/法規瓶頸對齊。|")
-    lines.append(f"| 物理限制對齊 | - | {r.Physical_Check} |")
-    lines.append("")
-    lines.append("## 4. **【第三階段：動態博弈與催化劑定時】**")
-    lines.append("")
-    lines.append("| 指標 | 數值 | 判讀 |")
-    lines.append("|---|---:|---|")
-    lines.append(f"| Short Interest % Float | {r.ShortInterest_pctFloat if math.isfinite(r.ShortInterest_pctFloat) else 'N/A'} | {squeeze_note} |")
-    lines.append(f"| Days to Cover | {r.DaysToCover if math.isfinite(r.DaysToCover) else 'N/A'} | 流動性擠壓測試。|")
-    lines.append(f"| DSI 最新值 | {r.DSI_Latest if math.isfinite(r.DSI_Latest) else 'N/A'} | {'連續兩季下滑，有拐點' if r.DSI_2Q_Down else '未確認庫存拐點'} |")
-    lines.append(f"| 未來30天事件 | - | {catalyst_note} |")
-    lines.append(f"| 最終操盤工具 | - | {r.Trade_Tool} |")
+    lines.append(f"- EBITDA -30% 壓力情境：{r.EBITDA_Drawdown_30_pct:.1f}%")
+    lines.append(f"- 毛利診斷：{r.GM_Diagnosis}")
+    lines.append(f"- 股數變化：{r.Share_Count_Change_pct if math.isfinite(r.Share_Count_Change_pct) else 'N/A'}%；稀釋幻覺={r.Dilution_Illusion}")
+    lines.append(f"- 軋空風險：{r.Squeeze_Risk}（只作風險旗標，不作做空或期權訊號）")
+    lines.append(f"- 數據品質：{r.Data_Quality_Flags}")
+    lines.append(f"- 產業物理限制：{r.Physical_Check}")
+    lines.append(f"- 近期事件：{r.Catalysts_30D}")
     lines.append("")
     return "\n".join(lines)
-
 
 
 
 def build_agent_payload(results: List[ModeCResult]) -> dict:
     payload = {
         "generated_at": datetime.utcnow().replace(tzinfo=timezone.utc).isoformat(),
-        "mission": "Mode C 三階段雙殺模型：Web Agent 對齊最新財報 footnotes、產業特定物理/需求/資金/法規限制、Short Interest 官方數據與催化劑。",
-        "hard_screen_passed": [r.Ticker for r in results if r.Status == "Pass"],
+        "mission": "70% ETF 核心 + 最多 30% 主動選股的長期價值研究。只做多、不使用槓桿、期權或放空；模型只產生研究候選，不是自動買入訊號。",
+        "portfolio_limits": {
+            "active_sleeve_pct_total": ACTIVE_SLEEVE_LIMIT_PCT,
+            "starter_weight_pct_total": STARTER_WEIGHT_PCT_TOTAL,
+            "max_position_weight_pct_total": MAX_POSITION_WEIGHT_PCT_TOTAL,
+            "max_sector_weight_pct_total": MAX_SECTOR_WEIGHT_PCT_TOTAL,
+            "max_names": TARGET_SHORTLIST_SIZE,
+            "max_names_per_sector": MAX_PER_SECTOR,
+        },
+        "research_shortlist": [r.Ticker for r in results if r.Long_Term_Eligible],
         "tasks": [],
     }
     for r in results:
-        if r.Status != "Pass":
+        if not r.Long_Term_Eligible:
             continue
         payload["tasks"].append(
             {
                 "ticker": r.Ticker,
-                "verdict_before_web": r.Verdict,
                 "sector": r.Sector,
                 "industry": r.Industry,
-                "physical_check": r.Physical_Check,
-                "must_verify": r.Agent_Tasks,
+                "long_term_score": r.Long_Term_Score,
+                "research_action": r.Research_Action,
+                "suggested_starter_weight_pct_total": r.Suggested_Starter_Weight_pct_Total,
+                "must_verify": r.Agent_Tasks + [
+                    "寫出三句話投資論點與可反證條件",
+                    "建立基準/樂觀/悲觀三情境估值區間",
+                    "檢查既有 ETF 的個股與產業重疊",
+                    "確認管理層資本配置與股數稀釋紀錄",
+                ],
                 "numbers_to_challenge": {
+                    "Value_Score": r.Value_Score,
+                    "Quality_Score": r.Quality_Score,
+                    "Expectations_Score": r.Expectations_Score,
+                    "Risk_Penalty": r.Risk_Penalty,
                     "Real_FCF_Yield_pct": r.Real_FCF_Yield_pct,
-                    "EV_EBITDA_x": r.EV_EBITDA_x,
+                    "EV_EBITDA_10Y_Percentile": r.EV_EBITDA_10Y_Percentile,
                     "Implied_EBITDA_CAGR_3Y_pct": r.Implied_EBITDA_CAGR_3Y_pct,
-                    "ShortInterest_pctFloat": r.ShortInterest_pctFloat,
-                    "DaysToCover": r.DaysToCover,
-                    "DSI_Latest": r.DSI_Latest,
+                    "EBITDA_Drawdown_30_pct": r.EBITDA_Drawdown_30_pct,
                 },
             }
         )
     return payload
-
 
 
 
@@ -1505,7 +1639,7 @@ def send_email_report(markdown: str, csv_path: str, receiver_email: str) -> None
         logger.warning("未設定 EMAIL_SENDER / EMAIL_PASSWORD，略過寄信。")
         return
     msg = EmailMessage()
-    msg["Subject"] = f"[Mode C 三階段雙殺] 投資決策書 - {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+    msg["Subject"] = f"[Mode C 長期價值] 研究名單 - {datetime.now().strftime('%Y-%m-%d %H:%M')}"
     msg["From"] = sender_email
     msg["To"] = receiver_email
     msg.set_content(markdown)
@@ -1520,14 +1654,13 @@ def send_email_report(markdown: str, csv_path: str, receiver_email: str) -> None
 
 
 # ==============================================================================
-# 主程式：多因子綜合 Alpha 篩選矩陣 ( Top 30 精華池 )
+# 主程式：長期價值多因子研究漏斗（產業分散後最多 12 檔）
 # ==============================================================================
 def main() -> None:
     user_email = os.environ.get("USER_EMAIL", "a7924177@gmail.com")
     input_file = os.environ.get("QUALIFIED_UNIVERSE", QUALIFIED_UNIVERSE)
     if not os.path.exists(input_file):
         raise FileNotFoundError(f"找不到 {input_file}，請準備欄位 Ticker, CIK 的初選清單。")
-
 
     df = pd.read_csv(input_file)
     if "Ticker" not in df.columns or "CIK" not in df.columns:
@@ -1536,62 +1669,59 @@ def main() -> None:
     df["CIK"] = df["CIK"].astype(str).str.replace(".0", "", regex=False).str.zfill(10)
     raw_tickers = list(dict.fromkeys(df["Ticker"].tolist()))
 
-    # 名單由本機人工更新；雲端只做便宜的完整性驗證，不重跑全市場獵人。
+    # 名單由本機人工更新；GitHub Actions 不重跑耗時的全市場獵人。
     pre_fetch_all_market_data(raw_tickers + ["SPY", "QQQ", "^TNX"], period="10y")
     pre_fetch_all_info(raw_tickers)
     universe = prepare_uploaded_universe(df)
 
-    logger.info(f"開始 Mode-C 買方硬核清算：驗證後 {len(universe)} 檔 / 上傳 {len(raw_tickers)} 檔")
+    logger.info(f"開始長期價值清算：驗證後 {len(universe)} 檔 / 上傳 {len(raw_tickers)} 檔")
     max_workers = int(os.environ.get("MODE_C_WORKERS", "3"))
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as ex:
         results = list(ex.map(lambda kv: run_mode_c_pipeline(kv[0], kv[1], user_email), universe.items()))
 
+    shortlist = select_diversified_shortlist(results)
+    eligible_count = sum(1 for r in results if r.Long_Term_Eligible)
+    logger.info(
+        f"長期價值篩選完成：合格 {eligible_count} 檔，產業分散後研究名單 {len(shortlist)} 檔；"
+        f"每產業最多 {MAX_PER_SECTOR} 檔。"
+    )
 
-    # 1. 提取所有硬指標過關 (Status == "Pass") 的初始底池
-    pass_results = [r for r in results if r.Status == "Pass"]
-    
-    # 2. 多因子排序：缺值一律受罰，0th percentile 保留為最便宜而不是誤判成 99。
-    scored_pool = [(composite_score_for_result(r), r) for r in pass_results]
-
-    # 【核心改動】：由從小到大排序，精準割取前 30 檔「黃金標的」保留在 JSON/Markdown
-    scored_pool.sort(key=lambda x: x[0])
-    top_30 = [item[1] for item in scored_pool[:30]]
-    
-    logger.info(f"🏆 Alpha 終極篩選完畢！已從 {len(pass_results)} 檔候選標的中精煉出前 30 檔重倉標的。")
-
-
-    # 輸出結構化 CSV 總表 (保留全市場數據供覆核)
+    # 全量結果保留，方便檢查落選原因。
     rows = [asdict(r) for r in results]
     for row in rows:
         row["Agent_Tasks"] = " | ".join(row.get("Agent_Tasks", []))
     out_df = pd.DataFrame(rows)
     out_df.to_csv(OUTPUT_CSV, index=False, encoding="utf-8-sig")
 
+    # 另存真正需要深入研究的 8–12 檔候選；不足時不拿低品質公司硬湊數。
+    shortlist_rows = [asdict(r) for r in shortlist]
+    for row in shortlist_rows:
+        row["Agent_Tasks"] = " | ".join(row.get("Agent_Tasks", []))
+    shortlist_df = pd.DataFrame(shortlist_rows) if shortlist_rows else out_df.iloc[0:0].copy()
+    shortlist_df.to_csv(OUTPUT_SHORTLIST_CSV, index=False, encoding="utf-8-sig")
 
-    # 產生 Top 30 投資決策書報告
-    report = f"# Mode C 三階段雙殺模型 — 今日高信念黃金決策書 (Top 30 精華池)\n\n"
+    report = "# Mode C 長期價值研究名單（70% ETF 核心 + 最多 30% 主動選股）\n\n"
     report += f"清算時間：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
-    report += f"**機構配置矩陣：市值防線 >= 5B | 流動性 >= 15M | 權重：60%歷史估值分位 + 40%隱含增長預期差**\n\n"
-    for r in top_30:
+    report += (
+        f"**紀律：只做多、不使用槓桿/期權/放空；主動部位上限 {ACTIVE_SLEEVE_LIMIT_PCT:.0f}%；"
+        f"單一公司上限 {MAX_POSITION_WEIGHT_PCT_TOTAL:.1f}%；單一產業上限 {MAX_SECTOR_WEIGHT_PCT_TOTAL:.1f}%；"
+        "模型是研究漏斗，不是自動買入訊號。**\n\n"
+    )
+    if not shortlist:
+        report += "本次沒有公司同時通過品質、估值、預期與下檔風險門檻；保留現金或 ETF，不硬湊個股。\n"
+    for r in shortlist:
         report += render_stock_report(r) + "\n---\n\n"
     Path(OUTPUT_MD).write_text(report, encoding="utf-8")
 
-
-    # 打包 Top 30 任務 Payload 丟給下一個 Layer 的 AI Agent
-    payload = build_agent_payload(top_30)
+    payload = build_agent_payload(shortlist)
     Path(OUTPUT_JSON).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-
-
     save_json_cache(CACHE_FILE_SHARES, _VECTOR_CACHE)
 
-
-    logger.info(f"完成。Pass={len(pass_results)} / Total={len(out_df)}")
-    logger.info(f"已成功導出 Top 30 任務包至 {OUTPUT_JSON}。")
-
+    logger.info(f"完成。Eligible={eligible_count} / Shortlist={len(shortlist)} / Total={len(out_df)}")
+    logger.info(f"已輸出 {OUTPUT_SHORTLIST_CSV}、{OUTPUT_MD} 與 {OUTPUT_JSON}。")
 
     if os.environ.get("SEND_EMAIL", "0") == "1":
-        send_email_report(report, OUTPUT_CSV, user_email)
-
+        send_email_report(report, OUTPUT_SHORTLIST_CSV, user_email)
 
 
 
