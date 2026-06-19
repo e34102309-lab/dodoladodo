@@ -4,10 +4,13 @@ import unittest
 import pandas as pd
 
 from AQR_ModeC_Agent_V12 import (
+    STARTER_WEIGHT_PCT_TOTAL,
     ModeCResult,
     SECDataDistiller,
+    apply_long_term_framework,
     common_equity_rejection_reason,
     composite_score_for_result,
+    select_diversified_shortlist,
 )
 
 
@@ -78,6 +81,63 @@ class ModeCCoreTests(unittest.TestCase):
             composite_score_for_result(missing),
             composite_score_for_result(complete),
         )
+
+    def _good_candidate(self, ticker="GOOD", sector="Technology"):
+        return ModeCResult(
+            Ticker=ticker,
+            Status="Pass",
+            Sector=sector,
+            Real_FCF_Yield_pct=8.0,
+            ICR=10.0,
+            Share_Count_Change_pct=-1.0,
+            Dilution_Illusion=False,
+            EV_EBITDA_10Y_Percentile=10.0,
+            EBITDA_Drawdown_30_pct=-20.0,
+            GM_Diagnosis="中性：三季趨勢未給出明確逆風訊號",
+            Implied_EBITDA_CAGR_3Y_pct=10.0,
+            Momentum_12M_pct=15.0,
+            Data_Quality_Flags="OK",
+        )
+
+    def test_quality_and_value_raise_long_term_score(self):
+        good = apply_long_term_framework(self._good_candidate())
+        weak = self._good_candidate(ticker="WEAK")
+        weak.Real_FCF_Yield_pct = 1.0
+        weak.ICR = 1.5
+        weak.Share_Count_Change_pct = 3.0
+        weak.EV_EBITDA_10Y_Percentile = 85.0
+        weak.EBITDA_Drawdown_30_pct = -65.0
+        weak.GM_Diagnosis = "結構性價值陷阱：營收未崩但毛利連續失血"
+        weak = apply_long_term_framework(weak)
+        self.assertGreater(good.Long_Term_Score, weak.Long_Term_Score)
+        self.assertTrue(good.Long_Term_Eligible)
+        self.assertFalse(weak.Long_Term_Eligible)
+        self.assertEqual(good.Suggested_Starter_Weight_pct_Total, STARTER_WEIGHT_PCT_TOTAL)
+
+    def test_dilution_illusion_is_never_eligible(self):
+        candidate = self._good_candidate()
+        candidate.Dilution_Illusion = True
+        candidate = apply_long_term_framework(candidate)
+        self.assertFalse(candidate.Long_Term_Eligible)
+        self.assertEqual(candidate.Suggested_Starter_Weight_pct_Total, 0.0)
+
+    def test_shortlist_enforces_sector_cap(self):
+        results = []
+        for idx in range(5):
+            r = self._good_candidate(ticker=f"TECH{idx}", sector="Technology")
+            r.Long_Term_Eligible = True
+            r.Long_Term_Score = 95.0 - idx
+            results.append(r)
+        for idx in range(3):
+            r = self._good_candidate(ticker=f"HLTH{idx}", sector="Healthcare")
+            r.Long_Term_Eligible = True
+            r.Long_Term_Score = 85.0 - idx
+            results.append(r)
+
+        shortlist = select_diversified_shortlist(results, target_size=4, max_per_sector=2)
+        self.assertEqual(len(shortlist), 4)
+        self.assertLessEqual(sum(r.Sector == "Technology" for r in shortlist), 2)
+        self.assertLessEqual(sum(r.Sector == "Healthcare" for r in shortlist), 2)
 
 
 if __name__ == "__main__":
