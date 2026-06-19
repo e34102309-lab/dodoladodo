@@ -69,13 +69,35 @@ jobs:
           SEND_EMAIL: "0"
         run: python AQR_ModeC_Agent_V12.py
 
+      - name: Calculate ISO Week Cache Key
+        id: ai-week
+        shell: bash
+        run: echo "week=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore Weekly AI Report History
+        uses: actions/cache/restore@v4
+        with:
+          path: .mode_c_state
+          key: mode-c-ai-${{ steps.ai-week.outputs.week }}-${{ github.run_id }}
+          restore-keys: |
+            mode-c-ai-${{ steps.ai-week.outputs.week }}-
+
       - name: Run AI Evidence Review
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           USER_EMAIL: ${{ secrets.USER_EMAIL }}
           EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+          GEMINI_REPORT_LIMIT: "5"
+          MODE_C_STATE_DIR: .mode_c_state
         run: python run_mode_c_ai_agent.py
+
+      - name: Save Weekly AI Report History
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: .mode_c_state
+          key: mode-c-ai-${{ steps.ai-week.outputs.week }}-${{ github.run_id }}
 
       - name: Upload Final Artifacts
         uses: actions/upload-artifact@v4

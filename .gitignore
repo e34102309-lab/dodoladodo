@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# Local market-hunter cache and resumable state
+.hunter_cache/
+hunter_checkpoint.jsonl
+hunter_audit.csv
+hunter_audit.partial.csv
+qualified_universe.partial.csv
+
+# AI weekly rotation state is persisted by GitHub Actions cache
+.mode_c_state/
+
+# Local secrets
+.env
