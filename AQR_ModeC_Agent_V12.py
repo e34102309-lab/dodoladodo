@@ -72,7 +72,7 @@ SEC_TIMEOUT = 15
 
 
 # ==============================================================================
-# 70% ETF 核心 + 30% 主動選股：長期價值投資框架
+# QQQ 40% + VOO 30% + 最多 30% 主動選股：長期價值投資框架
 # ==============================================================================
 MIN_LIQUIDITY_USD = 15_000_000
 MIN_MARKET_CAP_B = 5.0
@@ -87,6 +87,12 @@ STARTER_WEIGHT_PCT_TOTAL = 1.5
 MAX_POSITION_WEIGHT_PCT_TOTAL = 3.0
 MAX_SECTOR_WEIGHT_PCT_TOTAL = 9.0
 MIN_LONG_TERM_SCORE = 60.0
+RESEARCH_PRIORITY_SCORE = 70.0
+SMALL_POSITION_SCORE = 75.0
+HIGH_PRIORITY_SCORE = 80.0
+ETF_TOP10_MIN_BUY_SCORE = 80.0
+STARTER_WEIGHT_MIN_PCT_TOTAL = 1.0
+MODEL_EXCLUDED_SECTORS = {"Financial Services", "Financials"}
 
 
 # ==============================================================================
@@ -554,16 +560,25 @@ class SECDataDistiller:
         return s[~s.index.duplicated(keep="last")]
 
 
-    def get_shares_now_and_1y(self, df: pd.DataFrame) -> Tuple[float, float]:
+    def get_shares_now_1y_3y(self, df: pd.DataFrame) -> Tuple[float, float, float]:
         if df.empty:
-            return 0.0, 0.0
+            return 0.0, 0.0, 0.0
         d = df.sort_values("end")
         latest = d.iloc[-1]
-        one_year_ago = pd.Timestamp(latest["end"]) - pd.Timedelta(days=365)
-        old = d[d["end"] <= one_year_ago]
+        latest_end = pd.Timestamp(latest["end"])
+        one_year_ago = latest_end - pd.Timedelta(days=365)
+        three_years_ago = latest_end - pd.Timedelta(days=365 * 3)
+        old_1y = d[d["end"] <= one_year_ago]
+        old_3y = d[d["end"] <= three_years_ago]
         now = float(latest["val"]) / 1e9
-        old_val = float(old.iloc[-1]["val"]) / 1e9 if not old.empty else 0.0
-        return now, old_val
+        one_year_val = float(old_1y.iloc[-1]["val"]) / 1e9 if not old_1y.empty else 0.0
+        three_year_val = float(old_3y.iloc[-1]["val"]) / 1e9 if not old_3y.empty else 0.0
+        return now, one_year_val, three_year_val
+
+
+    def get_shares_now_and_1y(self, df: pd.DataFrame) -> Tuple[float, float]:
+        now, one_year_val, _ = self.get_shares_now_1y_3y(df)
+        return now, one_year_val
 
 
     def shares_asof(self, df: pd.DataFrame, date_like: pd.Timestamp, fallback: float = 0.0) -> float:
@@ -630,6 +645,85 @@ def safe_div(n: float, d: float, default: float = np.nan) -> float:
         return n / d
     except Exception:
         return default
+
+
+
+def annual_values_by_year(sec: SECDataDistiller, df: pd.DataFrame) -> Dict[int, float]:
+    """Return one latest annual XBRL value per fiscal year."""
+    annual = sec._annual_facts(df)
+    if annual.empty:
+        return {}
+    values: Dict[int, float] = {}
+    for _, row in annual.sort_values(["end", "filed"] if "filed" in annual.columns else ["end"]).iterrows():
+        try:
+            year = int(row["fy"]) if pd.notna(row.get("fy")) else int(pd.Timestamp(row["end"]).year)
+            value = float(row["val"])
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if math.isfinite(value):
+            values[year] = value
+    return values
+
+
+def calculate_fcf_stability(
+    sec: SECDataDistiller,
+    df_ocf: pd.DataFrame,
+    df_capex: pd.DataFrame,
+    df_sbc: pd.DataFrame,
+    df_rev: pd.DataFrame,
+    df_net_income: pd.DataFrame,
+) -> Dict[str, float]:
+    """Calculate 3Y OCF and up to 5Y Real FCF stability without extra requests."""
+    ocf = annual_values_by_year(sec, df_ocf)
+    capex = annual_values_by_year(sec, df_capex)
+    sbc = annual_values_by_year(sec, df_sbc)
+    revenue = annual_values_by_year(sec, df_rev)
+    net_income = annual_values_by_year(sec, df_net_income)
+    years = sorted(set(ocf) & set(capex) & set(revenue) & set(net_income))[-5:]
+    real_fcf_values: List[float] = []
+    margins: List[float] = []
+    ocf_values: List[float] = []
+    ni_values: List[float] = []
+    for year in years:
+        real_fcf = ocf[year] - abs(capex[year]) - abs(sbc.get(year, 0.0))
+        real_fcf_values.append(real_fcf)
+        ocf_values.append(ocf[year])
+        ni_values.append(net_income[year])
+        if revenue[year] > 0:
+            margins.append(real_fcf / revenue[year])
+
+    latest_three = sorted(ocf)[-3:]
+    ocf_3y = sum(ocf[year] for year in latest_three) if latest_three else np.nan
+    total_ni = sum(ni_values)
+    return {
+        "years_available": float(len(years)),
+        "positive_years": float(sum(1 for value in real_fcf_values if value > 0)),
+        "margin_std_pct": float(np.std(margins) * 100) if len(margins) >= 2 else np.nan,
+        "ocf_to_net_income": safe_div(sum(ocf_values), total_ni) if total_ni > 0 else np.nan,
+        "real_fcf_to_net_income": safe_div(sum(real_fcf_values), total_ni) if total_ni > 0 else np.nan,
+        "ocf_3y_cumulative_b": ocf_3y / 1e9 if math.isfinite(ocf_3y) else np.nan,
+        "ocf_3y_years": float(len(latest_three)),
+    }
+
+
+def calculate_capital_allocation_score(
+    real_buyback_b: float,
+    issuance_b: float,
+    share_change_1y_pct: float,
+    share_change_3y_pct: float,
+) -> float:
+    """Reward buybacks that actually reduce shares and penalize persistent dilution."""
+    score = 60.0
+    if math.isfinite(share_change_3y_pct):
+        if share_change_3y_pct <= -3.0:
+            score += 20.0
+        elif share_change_3y_pct > 3.0:
+            score -= 35.0
+    if real_buyback_b > 0 and math.isfinite(share_change_1y_pct):
+        score += 15.0 if share_change_1y_pct < 0 else -20.0
+    if issuance_b > max(real_buyback_b, 0.0):
+        score -= 15.0
+    return round(max(0.0, min(100.0, score)), 2)
 
 
 
@@ -1084,14 +1178,14 @@ def _bounded_score(value: float, low: float, high: float, missing: float = 0.0) 
 def _expectations_score(implied_cagr: float) -> float:
     if not math.isfinite(implied_cagr):
         return 20.0
-    if 0.0 <= implied_cagr <= 15.0:
+    if -10.0 <= implied_cagr <= 15.0:
         return 100.0
-    if -5.0 <= implied_cagr < 0.0 or 15.0 < implied_cagr <= 20.0:
-        return 75.0
-    if -10.0 <= implied_cagr < -5.0 or 20.0 < implied_cagr <= 25.0:
-        return 40.0
+    if 15.0 < implied_cagr <= 25.0:
+        return 65.0
     if 25.0 < implied_cagr <= 30.0:
-        return 20.0
+        return 25.0
+    if implied_cagr < -10.0:
+        return 35.0
     return 0.0
 
 
@@ -1114,13 +1208,18 @@ def calculate_long_term_scores(r: "ModeCResult") -> Dict[str, float]:
         trend_score = 0.0
     else:
         trend_score = 25.0
-    if r.Dilution_Illusion:
-        shareholder_score = 0.0
-    elif math.isfinite(r.Share_Count_Change_pct):
-        shareholder_score = 100.0 if r.Share_Count_Change_pct <= 0.0 else 65.0 if r.Share_Count_Change_pct <= 1.0 else 25.0
+    roic_score = _bounded_score(r.ROIC_pct, 5.0, 20.0, missing=35.0)
+    if r.Real_FCF_Years_Available >= 3:
+        positive_score = safe_div(r.Real_FCF_Positive_Years_5Y, r.Real_FCF_Years_Available, 0.0) * 100.0
     else:
-        shareholder_score = 40.0
-    quality_score = icr_score * 0.35 + fcf_quality * 0.25 + trend_score * 0.25 + shareholder_score * 0.15
+        positive_score = 40.0
+    if math.isfinite(r.Real_FCF_Margin_Std_5Y_pct):
+        margin_stability = 100.0 if r.Real_FCF_Margin_Std_5Y_pct <= 5.0 else 75.0 if r.Real_FCF_Margin_Std_5Y_pct <= 10.0 else 40.0 if r.Real_FCF_Margin_Std_5Y_pct <= 20.0 else 10.0
+    else:
+        margin_stability = 40.0
+    conversion_score = _bounded_score(r.OCF_to_NetIncome_5Y, 0.5, 1.2, missing=40.0)
+    stability_score = positive_score * 0.55 + margin_stability * 0.25 + conversion_score * 0.20
+    quality_score = icr_score * 0.25 + fcf_quality * 0.20 + trend_score * 0.20 + roic_score * 0.20 + stability_score * 0.15
 
     expectations_score = _expectations_score(r.Implied_EBITDA_CAGR_3Y_pct)
     momentum_score = _bounded_score(r.Momentum_12M_pct, -30.0, 30.0, missing=50.0)
@@ -1138,7 +1237,11 @@ def calculate_long_term_scores(r: "ModeCResult") -> Dict[str, float]:
     else:
         risk_penalty += 10.0
     if r.Dilution_Illusion:
-        risk_penalty += 20.0
+        risk_penalty += 8.0
+    if r.Persistent_Dilution:
+        risk_penalty += 25.0
+    if math.isfinite(r.OCF_3Y_Cumulative_B) and r.OCF_3Y_Cumulative_B <= 0:
+        risk_penalty += 15.0
     if "結構性價值陷阱" in r.GM_Diagnosis:
         risk_penalty += 25.0
     if "雙重惡化" in r.GM_Diagnosis:
@@ -1148,7 +1251,14 @@ def calculate_long_term_scores(r: "ModeCResult") -> Dict[str, float]:
     if r.Data_Quality_Flags and r.Data_Quality_Flags != "OK":
         risk_penalty += 5.0
 
-    long_term_score = value_score * 0.35 + quality_score * 0.35 + expectations_score * 0.20 + momentum_score * 0.10 - risk_penalty
+    long_term_score = (
+        quality_score * 0.35
+        + value_score * 0.30
+        + expectations_score * 0.20
+        + momentum_score * 0.10
+        + r.Capital_Allocation_Score * 0.05
+        - risk_penalty
+    )
     return {
         "value_score": round(value_score, 2),
         "quality_score": round(quality_score, 2),
@@ -1166,31 +1276,43 @@ def apply_long_term_framework(r: "ModeCResult") -> "ModeCResult":
     r.Risk_Penalty = scores["risk_penalty"]
     r.Long_Term_Score = scores["long_term_score"]
 
-    cagr_ok = math.isfinite(r.Implied_EBITDA_CAGR_3Y_pct) and -10.0 <= r.Implied_EBITDA_CAGR_3Y_pct <= 30.0
+    cagr_ok = math.isfinite(r.Implied_EBITDA_CAGR_3Y_pct) and r.Implied_EBITDA_CAGR_3Y_pct <= 30.0
     drawdown_ok = math.isfinite(r.EBITDA_Drawdown_30_pct) and r.EBITDA_Drawdown_30_pct > -75.0
     trend_ok = not any(x in r.GM_Diagnosis for x in ["結構性價值陷阱", "雙重惡化", "資料不足"])
+    fcf_history_ok = r.Real_FCF_Years_Available < 5 or r.Real_FCF_Positive_Years_5Y >= 3
+    ocf_history_ok = not (r.OCF_3Y_Years >= 3 and math.isfinite(r.OCF_3Y_Cumulative_B) and r.OCF_3Y_Cumulative_B <= 0)
     r.Long_Term_Eligible = bool(
         r.Status == "Pass"
         and r.Long_Term_Score >= MIN_LONG_TERM_SCORE
         and math.isfinite(r.EV_EBITDA_10Y_Percentile)
         and r.Real_FCF_Yield_pct >= 2.0
         and (math.isinf(r.ICR) or r.ICR >= ICR_WARNING)
-        and not r.Dilution_Illusion
+        and not r.Persistent_Dilution
         and cagr_ok
         and drawdown_ok
         and trend_ok
+        and fcf_history_ok
+        and ocf_history_ok
     )
 
-    if r.Long_Term_Eligible and r.Long_Term_Score >= 70.0:
-        r.Verdict = "研究優先：品質與估值同時達標"
-        r.Research_Action = "完成投資論點、熊市情境、失效條件與 ETF 重疊檢查後，可考慮 1.5% 總資產起始部位"
+    if r.Long_Term_Eligible and r.Long_Term_Score >= HIGH_PRIORITY_SCORE:
+        r.Verdict = "高優先研究：品質、估值與資本配置達標"
+        r.Research_Action = "完成 AI 九項覆核；若屬 QQQ/VOO 前十大亦達 80 分，可考慮 1.5% 總資產起始部位"
         r.Suggested_Starter_Weight_pct_Total = STARTER_WEIGHT_PCT_TOTAL
+    elif r.Long_Term_Eligible and r.Long_Term_Score >= SMALL_POSITION_SCORE:
+        r.Verdict = "可考慮小部位：仍需完成論點與 ETF 重疊覆核"
+        r.Research_Action = "完成研究後可考慮 1.0% 總資產起始部位；若為 QQQ/VOO 前十大則須等分數達 80"
+        r.Suggested_Starter_Weight_pct_Total = STARTER_WEIGHT_MIN_PCT_TOTAL
+    elif r.Long_Term_Eligible and r.Long_Term_Score >= RESEARCH_PRIORITY_SCORE:
+        r.Verdict = "優先研究：尚未達買入分數"
+        r.Research_Action = "先完成研究與財報驗證，不建立部位"
+        r.Suggested_Starter_Weight_pct_Total = 0.0
     elif r.Long_Term_Eligible:
-        r.Verdict = "研究候選：達標但安全邊際普通"
-        r.Research_Action = "先列入觀察；只有在估值改善或研究信心提高時才建立小部位"
+        r.Verdict = "研究候選：60 分以上不等於可買"
+        r.Research_Action = "列入觀察；等待品質、估值或證據改善至 75 分以上"
         r.Suggested_Starter_Weight_pct_Total = 0.0
     elif r.Status == "Pass":
-        r.Verdict = "觀察：未達長期持有門檻"
+        r.Verdict = "觀察：未達長期研究門檻"
         r.Research_Action = "不自動買入；等待品質、估值或下檔風險改善"
         r.Suggested_Starter_Weight_pct_Total = 0.0
     else:
@@ -1244,7 +1366,19 @@ class ModeCResult:
     ICR: float = np.nan
     Real_Buyback_B: float = np.nan
     Share_Count_Change_pct: float = np.nan
+    Share_Count_Change_3Y_pct: float = np.nan
     Dilution_Illusion: bool = False
+    Persistent_Dilution: bool = False
+    ROIC_pct: float = np.nan
+    ROCE_pct: float = np.nan
+    OCF_3Y_Cumulative_B: float = np.nan
+    OCF_3Y_Years: float = 0.0
+    Real_FCF_Positive_Years_5Y: float = 0.0
+    Real_FCF_Years_Available: float = 0.0
+    Real_FCF_Margin_Std_5Y_pct: float = np.nan
+    OCF_to_NetIncome_5Y: float = np.nan
+    Real_FCF_to_NetIncome_5Y: float = np.nan
+    Capital_Allocation_Score: float = 50.0
     EBITDA_B: float = np.nan
     EV_EBITDA_x: float = np.nan
     PE_x: float = np.nan
@@ -1298,6 +1432,14 @@ def run_mode_c_pipeline(ticker: str, cik: str, email: str) -> ModeCResult:
         rejection_reason = common_equity_rejection_reason(ticker, info)
         if rejection_reason:
             return ModeCResult(Ticker=ticker, Status=f"Fail: 名單驗證 ({rejection_reason})")
+        sector = str(info.get("sector") or "").strip()
+        if sector in MODEL_EXCLUDED_SECTORS:
+            return ModeCResult(
+                Ticker=ticker,
+                Status="Fail: 金融股財務結構不適用本模型，需建立銀行/保險/券商專用模型",
+                Sector=sector,
+                Industry=str(info.get("industry") or ""),
+            )
         price = float(info.get("currentPrice") or info.get("regularMarketPrice") or pm["last_close"] or 0.0)
         if price <= 0:
             return ModeCResult(Ticker=ticker, Status="Fail: 價格失真")
@@ -1317,6 +1459,7 @@ def run_mode_c_pipeline(ticker: str, cik: str, email: str) -> ModeCResult:
         df_debt_total = sec.fetch_concept(cik, "DebtTotal")
         df_debt_current = sec.fetch_concept(cik, "DebtCurrent")
         df_cash = sec.fetch_concept(cik, "Cash")
+        df_equity = sec.fetch_concept(cik, "Equity")
         df_net_income = sec.fetch_concept(cik, "NetIncome")
         df_buyback = sec.fetch_concept(cik, "Buyback")
         df_issuance = sec.fetch_concept(cik, "StockIssuance")
@@ -1344,6 +1487,9 @@ def run_mode_c_pipeline(ticker: str, cik: str, email: str) -> ModeCResult:
         buyback_ttm, _, _ = sec.ttm_flow(df_buyback, signed=False)
         issuance_ttm, _, _ = sec.ttm_flow(df_issuance, signed=False)
         tax_ttm, _, _ = sec.ttm_flow(df_tax) if not df_tax.empty else (0.0, "", {}) # 補齊：計算稅務 TTM
+        fcf_stability = calculate_fcf_stability(
+            sec, df_ocf, df_capex, df_sbc, df_rev, df_net_income
+        )
 
 
         if capex_ttm <= 0:
@@ -1352,7 +1498,7 @@ def run_mode_c_pipeline(ticker: str, cik: str, email: str) -> ModeCResult:
             sbc_ttm = abs(float(info.get("shareBasedCompensation") or 0.0)) / 1e9
 
 
-        shares_sec_now, shares_1y_ago = sec.get_shares_now_and_1y(df_shares)
+        shares_sec_now, shares_1y_ago, shares_3y_ago = sec.get_shares_now_1y_3y(df_shares)
         shares_now = get_robust_shares(ticker, df_shares, sec, info)
         mcap = price * shares_now if shares_now > 0 else float(info.get("marketCap") or 0.0) / 1e9
         if mcap <= 0 or mcap < MIN_MARKET_CAP_B:
@@ -1366,7 +1512,17 @@ def run_mode_c_pipeline(ticker: str, cik: str, email: str) -> ModeCResult:
         else:
             total_debt = debt_total
         cash = sec.latest_balance(df_cash)
+        equity = sec.latest_balance(df_equity)
         ev = max(mcap + total_debt - cash, 0.01)
+        pretax_proxy = net_income_ttm + tax_ttm
+        effective_tax_rate = (
+            max(0.0, min(0.35, safe_div(tax_ttm, pretax_proxy, 0.21)))
+            if pretax_proxy > 0 and tax_ttm >= 0
+            else 0.21
+        )
+        invested_capital = equity + total_debt - cash
+        roic = safe_div(ebit_ttm * (1.0 - effective_tax_rate), invested_capital) * 100 if invested_capital > 0 else np.nan
+        roce = safe_div(ebit_ttm, invested_capital) * 100 if invested_capital > 0 else np.nan
 
         dynamic_capex = abs(capex_ttm)
         real_fcf = ocf_ttm - dynamic_capex - sbc_ttm
@@ -1385,14 +1541,25 @@ def run_mode_c_pipeline(ticker: str, cik: str, email: str) -> ModeCResult:
 
         real_buyback = buyback_ttm - issuance_ttm
         share_change_pct = safe_div(shares_sec_now, shares_1y_ago) * 100 - 100 if shares_sec_now > 0 and shares_1y_ago > 0 else np.nan
+        share_change_3y_pct = safe_div(shares_sec_now, shares_3y_ago) * 100 - 100 if shares_sec_now > 0 and shares_3y_ago > 0 else np.nan
         dilution_illusion = bool(
             (math.isfinite(share_change_pct) and share_change_pct > 0.5)
             or (real_buyback > 0 and math.isfinite(share_change_pct) and share_change_pct >= 0)
         )
+        persistent_dilution = bool(
+            math.isfinite(share_change_3y_pct) and share_change_3y_pct > 3.0
+        )
+        capital_allocation_score = calculate_capital_allocation_score(
+            real_buyback, issuance_ttm, share_change_pct, share_change_3y_pct
+        )
 
         flags = []
         if not math.isfinite(share_change_pct):
-            flags.append("股數歷史不足：無法驗證實質回購")
+            flags.append("一年股數歷史不足：無法驗證實質回購")
+        if not math.isfinite(share_change_3y_pct):
+            flags.append("三年股數歷史不足：無法判定持續稀釋")
+        if not math.isfinite(roic):
+            flags.append("權益或投入資本資料不足：ROIC/ROCE 待查")
         rev_q = sec.quarterly_series(df_rev)
         if len(rev_q) >= 8:
             rev_ttm_now = rev_q.tail(4).sum()
@@ -1404,7 +1571,9 @@ def run_mode_c_pipeline(ticker: str, cik: str, email: str) -> ModeCResult:
         if icr < ICR_WARNING:
             flags.append(f"財務脆弱：ICR<{ICR_WARNING}")
         if dilution_illusion:
-            flags.append("稀釋幻覺：公司回購現金為正，但流通股數未下降或仍增加")
+            flags.append("單年稀釋警示：回購未有效降低股數，本項扣分但不單獨排除")
+        if persistent_dilution:
+            flags.append("持續稀釋：近三年流通股數累計增加超過3%，排除")
 
 
         # 三點勾稽僅在各組成資料存在時執行，避免把缺值當成零。
@@ -1493,6 +1662,12 @@ def run_mode_c_pipeline(ticker: str, cik: str, email: str) -> ModeCResult:
             status = "Fail: ICR < 1.0，財務韌性不足"
         elif real_fcf <= 0:
             status = "Fail: Real FCF 非正值"
+        elif fcf_stability["ocf_3y_years"] >= 3 and fcf_stability["ocf_3y_cumulative_b"] <= 0:
+            status = "Fail: 近三年累計 OCF 非正值"
+        elif fcf_stability["years_available"] >= 5 and fcf_stability["positive_years"] < 3:
+            status = "Fail: 近五年 Real FCF 正值不足三年"
+        elif persistent_dilution:
+            status = "Fail: 近三年股數持續明顯稀釋"
         elif "雙重惡化" in gm_diag:
             status = "Fail: 營收與毛利同步惡化"
 
@@ -1512,7 +1687,19 @@ def run_mode_c_pipeline(ticker: str, cik: str, email: str) -> ModeCResult:
             ICR=round(icr, 2),
             Real_Buyback_B=round(real_buyback, 3),
             Share_Count_Change_pct=round(share_change_pct, 2) if math.isfinite(share_change_pct) else np.nan,
+            Share_Count_Change_3Y_pct=round(share_change_3y_pct, 2) if math.isfinite(share_change_3y_pct) else np.nan,
             Dilution_Illusion=dilution_illusion,
+            Persistent_Dilution=persistent_dilution,
+            ROIC_pct=round(roic, 2) if math.isfinite(roic) else np.nan,
+            ROCE_pct=round(roce, 2) if math.isfinite(roce) else np.nan,
+            OCF_3Y_Cumulative_B=round(fcf_stability["ocf_3y_cumulative_b"], 3) if math.isfinite(fcf_stability["ocf_3y_cumulative_b"]) else np.nan,
+            OCF_3Y_Years=fcf_stability["ocf_3y_years"],
+            Real_FCF_Positive_Years_5Y=fcf_stability["positive_years"],
+            Real_FCF_Years_Available=fcf_stability["years_available"],
+            Real_FCF_Margin_Std_5Y_pct=round(fcf_stability["margin_std_pct"], 2) if math.isfinite(fcf_stability["margin_std_pct"]) else np.nan,
+            OCF_to_NetIncome_5Y=round(fcf_stability["ocf_to_net_income"], 2) if math.isfinite(fcf_stability["ocf_to_net_income"]) else np.nan,
+            Real_FCF_to_NetIncome_5Y=round(fcf_stability["real_fcf_to_net_income"], 2) if math.isfinite(fcf_stability["real_fcf_to_net_income"]) else np.nan,
+            Capital_Allocation_Score=capital_allocation_score,
             EBITDA_B=round(ebitda, 3),
             EV_EBITDA_x=round(ev_ebitda, 2),
             PE_x=round(pe, 2) if math.isfinite(pe) else np.nan,
@@ -1556,17 +1743,21 @@ def render_stock_report(r: ModeCResult) -> str:
     lines.append(f"- 研究動作：{r.Research_Action}")
     lines.append(f"- 建議起始權重：{r.Suggested_Starter_Weight_pct_Total:.1f}% 總資產；單一公司上限 {MAX_POSITION_WEIGHT_PCT_TOTAL:.1f}%")
     lines.append("")
-    lines.append("### 四構面評分")
+    lines.append("### 五構面評分")
     lines.append("")
     lines.append("| 構面 | 分數/數值 |")
     lines.append("|---|---:|")
     lines.append(f"| 價值分數 | {r.Value_Score:.2f} |")
     lines.append(f"| 品質分數 | {r.Quality_Score:.2f} |")
     lines.append(f"| 市場預期分數 | {r.Expectations_Score:.2f} |")
+    lines.append(f"| 資本配置分數 | {r.Capital_Allocation_Score:.2f} |")
     lines.append(f"| 風險扣分 | -{r.Risk_Penalty:.2f} |")
     lines.append(f"| Real FCF Yield | {r.Real_FCF_Yield_pct:.2f}% |")
     lines.append(f"| EV/EBITDA 10Y 分位 | {r.EV_EBITDA_10Y_Percentile if math.isfinite(r.EV_EBITDA_10Y_Percentile) else 'N/A'} |")
     lines.append(f"| ICR | {r.ICR:.2f}x |")
+    lines.append(f"| ROIC / ROCE | {r.ROIC_pct if math.isfinite(r.ROIC_pct) else 'N/A'}% / {r.ROCE_pct if math.isfinite(r.ROCE_pct) else 'N/A'}% |")
+    lines.append(f"| 5Y Real FCF 正值年數 | {r.Real_FCF_Positive_Years_5Y:.0f} / {r.Real_FCF_Years_Available:.0f} |")
+    lines.append(f"| 5Y OCF / Net Income | {r.OCF_to_NetIncome_5Y if math.isfinite(r.OCF_to_NetIncome_5Y) else 'N/A'}x |")
     lines.append(f"| 市場隱含 3Y EBITDA CAGR | {r.Implied_EBITDA_CAGR_3Y_pct if math.isfinite(r.Implied_EBITDA_CAGR_3Y_pct) else 'N/A'}% |")
     lines.append(f"| 12M 動能（僅輔助） | {r.Momentum_12M_pct if math.isfinite(r.Momentum_12M_pct) else 'N/A'}% |")
     lines.append("")
@@ -1574,7 +1765,9 @@ def render_stock_report(r: ModeCResult) -> str:
     lines.append("")
     lines.append(f"- EBITDA -30% 壓力情境：{r.EBITDA_Drawdown_30_pct:.1f}%")
     lines.append(f"- 毛利診斷：{r.GM_Diagnosis}")
-    lines.append(f"- 股數變化：{r.Share_Count_Change_pct if math.isfinite(r.Share_Count_Change_pct) else 'N/A'}%；稀釋幻覺={r.Dilution_Illusion}")
+    lines.append(f"- 股數變化：1Y={r.Share_Count_Change_pct if math.isfinite(r.Share_Count_Change_pct) else 'N/A'}%；3Y={r.Share_Count_Change_3Y_pct if math.isfinite(r.Share_Count_Change_3Y_pct) else 'N/A'}%；單年警示={r.Dilution_Illusion}；持續稀釋={r.Persistent_Dilution}")
+    lines.append(f"- 加碼紀律：至少等一次財報，確認 thesis、Real FCF、股數與估值未惡化後才可加碼")
+    lines.append(f"- 強制檢討：分數跌破60、Real FCF轉負、ICR<3、連兩季營收與毛利惡化、明顯稀釋或 thesis 被證偽")
     lines.append(f"- 軋空風險：{r.Squeeze_Risk}（只作風險旗標，不作做空或期權訊號）")
     lines.append(f"- 數據品質：{r.Data_Quality_Flags}")
     lines.append(f"- 產業物理限制：{r.Physical_Check}")
@@ -1587,10 +1780,12 @@ def render_stock_report(r: ModeCResult) -> str:
 def build_agent_payload(results: List[ModeCResult]) -> dict:
     payload = {
         "generated_at": datetime.utcnow().replace(tzinfo=timezone.utc).isoformat(),
-        "mission": "70% ETF 核心 + 最多 30% 主動選股的長期價值研究。只做多、不使用槓桿、期權或放空；模型只產生研究候選，不是自動買入訊號。",
+        "mission": "QQQ 40% + VOO 30% + 最多 30% 主動選股的長期價值研究。只做多、不使用槓桿、期權或放空；模型只產生研究候選，不是自動買入訊號。",
         "portfolio_limits": {
-            "active_sleeve_pct_total": ACTIVE_SLEEVE_LIMIT_PCT,
-            "starter_weight_pct_total": STARTER_WEIGHT_PCT_TOTAL,
+            "qqq_target_pct_total": 40.0,
+            "voo_target_pct_total": 30.0,
+            "active_sleeve_range_pct_total": [0.0, ACTIVE_SLEEVE_LIMIT_PCT],
+            "starter_weight_range_pct_total": [STARTER_WEIGHT_MIN_PCT_TOTAL, STARTER_WEIGHT_PCT_TOTAL],
             "max_position_weight_pct_total": MAX_POSITION_WEIGHT_PCT_TOTAL,
             "max_sector_weight_pct_total": MAX_SECTOR_WEIGHT_PCT_TOTAL,
             "max_names": TARGET_SHORTLIST_SIZE,
@@ -1610,17 +1805,35 @@ def build_agent_payload(results: List[ModeCResult]) -> dict:
                 "long_term_score": r.Long_Term_Score,
                 "research_action": r.Research_Action,
                 "suggested_starter_weight_pct_total": r.Suggested_Starter_Weight_pct_Total,
+                "buy_thresholds": {
+                    "normal_stock": SMALL_POSITION_SCORE,
+                    "qqq_or_voo_top_10": ETF_TOP10_MIN_BUY_SCORE,
+                },
                 "must_verify": r.Agent_Tasks + [
-                    "寫出三句話投資論點與可反證條件",
-                    "建立基準/樂觀/悲觀三情境估值區間",
-                    "檢查既有 ETF 的個股與產業重疊",
-                    "確認管理層資本配置與股數稀釋紀錄",
+                    "1. 用三句話寫出投資論點",
+                    "2. 寫出最強反方論點",
+                    "3. 明確列出 thesis 失效條件",
+                    "4. 建立悲觀/基準/樂觀三情境",
+                    "5. 查核最新 10-K/10-Q 與法說警訊",
+                    "6. 查核一年及三年股數稀釋",
+                    "7. 評估回購、增發、併購、股息與再投資等資本配置",
+                    "8. 以最新資料查核是否為 QQQ/VOO 成分及前十大持股",
+                    "9. 若已透過 ETF 持有，說明為何仍值得主動加碼；理由不足則降級",
+                    "若 ETF 重疊高，另加 5-10 分決策門檻或降低主動部位，不得假裝已反映在 Quant 分數",
+                    "加碼前至少等待一次財報，確認 thesis、Real FCF、股數與估值未惡化",
+                    "檢查強制賣出/檢討條件：分數<60、Real FCF轉負、ICR<3、雙重惡化、稀釋、資本配置失控或 thesis 被證偽",
+                    "檢查估值退出條件：EV/EBITDA 歷史90分位以上、隱含 EBITDA CAGR>30% 或 FCF Yield 過低",
                 ],
                 "numbers_to_challenge": {
                     "Value_Score": r.Value_Score,
                     "Quality_Score": r.Quality_Score,
                     "Expectations_Score": r.Expectations_Score,
                     "Risk_Penalty": r.Risk_Penalty,
+                    "Capital_Allocation_Score": r.Capital_Allocation_Score,
+                    "ROIC_pct": r.ROIC_pct,
+                    "ROCE_pct": r.ROCE_pct,
+                    "Real_FCF_Positive_Years_5Y": r.Real_FCF_Positive_Years_5Y,
+                    "Share_Count_Change_3Y_pct": r.Share_Count_Change_3Y_pct,
                     "Real_FCF_Yield_pct": r.Real_FCF_Yield_pct,
                     "EV_EBITDA_10Y_Percentile": r.EV_EBITDA_10Y_Percentile,
                     "Implied_EBITDA_CAGR_3Y_pct": r.Implied_EBITDA_CAGR_3Y_pct,
@@ -1700,7 +1913,7 @@ def main() -> None:
     shortlist_df = pd.DataFrame(shortlist_rows) if shortlist_rows else out_df.iloc[0:0].copy()
     shortlist_df.to_csv(OUTPUT_SHORTLIST_CSV, index=False, encoding="utf-8-sig")
 
-    report = "# Mode C 長期價值研究名單（70% ETF 核心 + 最多 30% 主動選股）\n\n"
+    report = "# Mode C 長期價值研究名單（QQQ 40% + VOO 30% + 最多 30% 主動選股）\n\n"
     report += f"清算時間：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
     report += (
         f"**紀律：只做多、不使用槓桿/期權/放空；主動部位上限 {ACTIVE_SLEEVE_LIMIT_PCT:.0f}%；"

@@ -90,7 +90,19 @@ class ModeCCoreTests(unittest.TestCase):
             Real_FCF_Yield_pct=8.0,
             ICR=10.0,
             Share_Count_Change_pct=-1.0,
+            Share_Count_Change_3Y_pct=-3.0,
             Dilution_Illusion=False,
+            Persistent_Dilution=False,
+            ROIC_pct=18.0,
+            ROCE_pct=22.0,
+            OCF_3Y_Cumulative_B=5.0,
+            OCF_3Y_Years=3.0,
+            Real_FCF_Positive_Years_5Y=5.0,
+            Real_FCF_Years_Available=5.0,
+            Real_FCF_Margin_Std_5Y_pct=3.0,
+            OCF_to_NetIncome_5Y=1.1,
+            Real_FCF_to_NetIncome_5Y=0.8,
+            Capital_Allocation_Score=85.0,
             EV_EBITDA_10Y_Percentile=10.0,
             EBITDA_Drawdown_30_pct=-20.0,
             GM_Diagnosis="中性：三季趨勢未給出明確逆風訊號",
@@ -114,12 +126,21 @@ class ModeCCoreTests(unittest.TestCase):
         self.assertFalse(weak.Long_Term_Eligible)
         self.assertEqual(good.Suggested_Starter_Weight_pct_Total, STARTER_WEIGHT_PCT_TOTAL)
 
-    def test_dilution_illusion_is_never_eligible(self):
-        candidate = self._good_candidate()
-        candidate.Dilution_Illusion = True
-        candidate = apply_long_term_framework(candidate)
-        self.assertFalse(candidate.Long_Term_Eligible)
-        self.assertEqual(candidate.Suggested_Starter_Weight_pct_Total, 0.0)
+    def test_single_year_dilution_warns_but_persistent_dilution_excludes(self):
+        clean = apply_long_term_framework(self._good_candidate())
+
+        warning = self._good_candidate(ticker="WARN")
+        warning.Dilution_Illusion = True
+        warning = apply_long_term_framework(warning)
+        self.assertTrue(warning.Long_Term_Eligible)
+        self.assertLess(warning.Long_Term_Score, clean.Long_Term_Score)
+
+        persistent = self._good_candidate(ticker="DILUTE")
+        persistent.Persistent_Dilution = True
+        persistent.Share_Count_Change_3Y_pct = 5.0
+        persistent = apply_long_term_framework(persistent)
+        self.assertFalse(persistent.Long_Term_Eligible)
+        self.assertEqual(persistent.Suggested_Starter_Weight_pct_Total, 0.0)
 
     def test_shortlist_enforces_sector_cap(self):
         results = []

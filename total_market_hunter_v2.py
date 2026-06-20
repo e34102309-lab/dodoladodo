@@ -41,8 +41,11 @@ from urllib3.util.retry import Retry
 # Default screening policy
 # ==============================================================================
 MIN_MCAP_B = 5.0
-MIN_GROSS_MARGIN = 0.25
-MAX_DEBT_EBITDA = 4.0
+STANDARD_GROSS_MARGIN = 0.25
+MIN_GROSS_MARGIN_FLOOR = 0.15
+MIN_INDUSTRY_SAMPLE = 5
+DEBT_EBITDA_WARNING = 4.0
+MAX_DEBT_EBITDA = 5.0
 MAX_PPE_REV_RATIO = 1.0
 MIN_INSTITUTIONAL_OWN = 0.40
 
@@ -154,7 +157,10 @@ class RequestTimeoutStop(RuntimeError):
 @dataclass(frozen=True)
 class HunterConfig:
     min_mcap_b: float = MIN_MCAP_B
-    min_gross_margin: float = MIN_GROSS_MARGIN
+    standard_gross_margin: float = STANDARD_GROSS_MARGIN
+    min_gross_margin_floor: float = MIN_GROSS_MARGIN_FLOOR
+    min_industry_sample: int = MIN_INDUSTRY_SAMPLE
+    debt_ebitda_warning: float = DEBT_EBITDA_WARNING
     max_debt_ebitda: float = MAX_DEBT_EBITDA
     require_institutional_ownership: bool = DEFAULT_REQUIRE_INSTITUTIONAL_OWNERSHIP
     min_institutional_own: float = MIN_INSTITUTIONAL_OWN
@@ -823,14 +829,18 @@ def evaluate_candidate(
     gross_margin = first_number(merged, "grossMargins", "grossMargin")
     if gross_margin is None or not 0 <= gross_margin <= 1:
         return make_result(candidate, config, "Review: 毛利率資料缺失或失真")
-    if gross_margin < config.min_gross_margin:
+    if gross_margin < config.min_gross_margin_floor:
         return make_result(
             candidate,
             config,
             (
-                f"Drop: 毛利率<{config.min_gross_margin * 100:.0f}% "
+                f"Drop: 毛利率低於最低底線 {config.min_gross_margin_floor * 100:.0f}% "
                 f"({gross_margin * 100:.1f}%)"
             ),
+            Sector=sector,
+            Industry=industry,
+            MarketCap_B=round(market_cap_b, 3),
+            GrossMargin=round(gross_margin * 100, 2),
         )
 
     ebitda = first_number(merged, "ebitda")
@@ -852,7 +862,19 @@ def evaluate_candidate(
                 f"Drop: 負債/EBITDA>{config.max_debt_ebitda:.1f} "
                 f"({debt_ebitda:.1f}x)"
             ),
+            Sector=sector,
+            Industry=industry,
+            MarketCap_B=round(market_cap_b, 3),
+            GrossMargin=round(gross_margin * 100, 2),
+            Debt_EBITDA=round(debt_ebitda, 3),
         )
+    leverage_warning = debt_ebitda > config.debt_ebitda_warning
+    total_cash = first_number(merged, "totalCash", "cash")
+    net_cash = (
+        total_cash is not None
+        and total_cash >= 0
+        and total_cash > total_debt
+    )
 
     institutional_own = first_number(merged, "heldPercentInstitutions")
     if config.require_institutional_ownership:
@@ -891,10 +913,13 @@ def evaluate_candidate(
                 ),
             )
 
+    needs_peer_margin_check = gross_margin < config.standard_gross_margin
     return make_result(
         candidate,
         config,
-        "Pass",
+        "PeerCheck: 毛利率低於25%，等待同業中位數比較"
+        if needs_peer_margin_check
+        else "Pass",
         Sector=sector,
         Industry=industry,
         MarketCap_B=round(market_cap_b, 3),
@@ -906,6 +931,13 @@ def evaluate_candidate(
             else None
         ),
         Debt_EBITDA=round(debt_ebitda, 3),
+        LeverageWarning=leverage_warning,
+        NetCash=net_cash,
+        GrossMarginRule=(
+            "絕對毛利率>=25%"
+            if not needs_peer_margin_check
+            else "等待同業中位數"
+        ),
         PPE_Revenue=round(ppe_revenue, 3) if ppe_revenue is not None else None,
         InfoFromCache=used_info_cache,
     )
@@ -933,8 +965,46 @@ def rows_for_candidates(
     ]
 
 
+def apply_peer_margin_rules(
+    rows: List[dict],
+    min_sample: int = MIN_INDUSTRY_SAMPLE,
+) -> List[dict]:
+    """Resolve sub-25% margins only after enough same-industry peers exist."""
+    adjusted = [dict(row) for row in rows]
+    industry_margins: Dict[str, List[float]] = {}
+    for row in adjusted:
+        industry = str(row.get("Industry") or "").strip()
+        try:
+            margin = float(row.get("GrossMargin"))
+        except (TypeError, ValueError):
+            continue
+        if industry and math.isfinite(margin):
+            industry_margins.setdefault(industry, []).append(margin)
+
+    for row in adjusted:
+        if not str(row.get("Status") or "").startswith("PeerCheck:"):
+            continue
+        industry = str(row.get("Industry") or "").strip()
+        peers = industry_margins.get(industry, [])
+        if len(peers) < max(1, min_sample):
+            row["Status"] = "Review: 同業毛利率樣本不足"
+            row["GrossMarginRule"] = f"同業樣本不足({len(peers)})"
+            continue
+        median_margin = float(pd.Series(peers).median())
+        row["IndustryMedianGrossMargin"] = round(median_margin, 2)
+        own_margin = float(row.get("GrossMargin"))
+        if own_margin >= median_margin:
+            row["Status"] = "Pass"
+            row["GrossMarginRule"] = "低於25%但高於同業中位數"
+        else:
+            row["Status"] = "Drop: 毛利率低於25%且低於同業中位數"
+            row["GrossMarginRule"] = "未通過同業比較"
+    return adjusted
+
+
 def qualified_rows(rows: List[dict]) -> List[dict]:
-    passes = [row for row in rows if row.get("Status") == "Pass"]
+    resolved_rows = apply_peer_margin_rules(rows)
+    passes = [row for row in resolved_rows if row.get("Status") == "Pass"]
     passes.sort(key=lambda row: float(row.get("MarketCap_B") or 0), reverse=True)
     seen_ciks = set()
     output = []
@@ -948,18 +1018,20 @@ def qualified_rows(rows: List[dict]) -> List[dict]:
 
 
 def write_partial_outputs(output_dir: Path, rows: List[dict]) -> None:
-    atomic_write_csv(output_dir / "hunter_audit.partial.csv", rows)
+    resolved_rows = apply_peer_margin_rules(rows)
+    atomic_write_csv(output_dir / "hunter_audit.partial.csv", resolved_rows)
     atomic_write_csv(
         output_dir / "qualified_universe.partial.csv",
-        qualified_rows(rows),
+        qualified_rows(resolved_rows),
     )
 
 
 def write_complete_outputs(output_dir: Path, rows: List[dict]) -> None:
-    atomic_write_csv(output_dir / "hunter_audit.csv", rows)
+    resolved_rows = apply_peer_margin_rules(rows)
+    atomic_write_csv(output_dir / "hunter_audit.csv", resolved_rows)
     atomic_write_csv(
         output_dir / "qualified_universe.csv",
-        qualified_rows(rows),
+        qualified_rows(resolved_rows),
     )
     for partial_name in (
         "hunter_audit.partial.csv",
@@ -1224,7 +1296,7 @@ def run(args: argparse.Namespace) -> int:
             "最後一次完整 qualified_universe.csv 保持不變。"
         )
 
-    summarize_reasons(rows)
+    summarize_reasons(apply_peer_margin_rules(rows))
     return 0 if complete else 5
 
 
