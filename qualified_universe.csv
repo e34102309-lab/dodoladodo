@@ -1,602 +1,439 @@
-﻿Ticker,CIK,Sector,Industry,MarketCap_B,GrossMargin,InstOwn,Status
-NVDA,1045810,Technology,Semiconductors,5181.1,71.1,69.7,Pass
-GOOGL,1652044,Communication Services,Internet Content & Information,4231.44,59.7,80.6,Pass
-AAPL,320193,Technology,Consumer Electronics,3974.33,47.3,65.2,Pass
-MSFT,789019,Technology,Software - Infrastructure,3190.35,68.6,75.9,Pass
-AMZN,1018724,Consumer Cyclical,Internet Retail,2792.88,50.3,67.0,Pass
-AVGO,1730168,Technology,Semiconductors,1893.06,76.7,79.4,Pass
-META,1326801,Communication Services,Internet Content & Information,1704.15,82.0,78.3,Pass
-USB-PA,36104,Unknown,,1314.41,0.0,0.0,Pass
-LLY,59478,Healthcare,Drug Manufacturers - General,780.79,83.0,84.7,Pass
-SPY,884394,Unknown,,653.18,0.0,0.0,Pass
-MU,723125,Technology,Semiconductors,568.71,58.4,82.3,Pass
-JNJ,200406,Healthcare,Drug Manufacturers - General,548.34,68.0,76.0,Pass
-ASMLF,937966,Technology,Semiconductor Equipment & Materials,541.44,52.6,44.6,Pass
-AMD,2488,Technology,Semiconductors,526.97,52.5,72.1,Pass
-TSMWF,1046179,Technology,Semiconductors,447.07,61.9,41.5,Pass
-INTC,50863,Technology,Semiconductors,424.8,37.2,61.7,Pass
-NFLX,1065280,Communication Services,Entertainment,388.53,49.0,84.1,Pass
-CAT,18230,Industrials,Farm & Heavy Construction Machinery,380.54,28.8,73.0,Pass
-ABBV,1551152,Healthcare,Drug Manufacturers - General,349.67,71.6,76.3,Pass
-PG,80424,Consumer Defensive,Household & Personal Products,347.36,51.0,70.1,Pass
-CSCO,858877,Technology,Communication Equipment,343.09,64.8,83.4,Pass
-PLTR,1321655,Technology,Software - Infrastructure,338.43,82.4,61.4,Pass
-KO,21344,Consumer Defensive,Beverages - Non-Alcoholic,337.04,61.7,66.6,Pass
-HD,354950,Consumer Cyclical,Home Improvement Retail,327.75,33.3,74.3,Pass
-LRCX,707549,Technology,Semiconductor Equipment & Materials,314.18,50.0,88.6,Pass
-AMAT,6951,Technology,Semiconductor Equipment & Materials,302.45,48.7,85.4,Pass
-AZN,901832,Healthcare,Drug Manufacturers - General,289.41,81.7,58.4,Pass
-NVSEF,1114448,Healthcare,Drug Manufacturers - General,276.67,75.6,44.0,Pass
-MRK,310158,Healthcare,Drug Manufacturers - General,271.76,77.2,81.3,Pass
-QQQ,1067839,Unknown,,258.48,0.0,0.0,Pass
-TXN,97476,Technology,Semiconductors,241.17,57.3,90.9,Pass
-KLAC,319201,Technology,Semiconductor Equipment & Materials,237.68,61.6,93.6,Pass
-PEP,77476,Consumer Defensive,Beverages - Non-Alcoholic,213.64,54.4,79.6,Pass
-ARM,1973239,Technology,Semiconductors,210.97,97.5,95.0,Pass
-ANET,1596532,Technology,Computer Hardware,208.13,64.1,70.8,Pass
-MCD,63908,Consumer Cyclical,Restaurants,207.84,57.4,75.5,Pass
-TMUS,1283699,Communication Services,Telecom Services,202.25,63.2,42.3,Pass
-VZ,732712,Communication Services,Telecom Services,197.27,58.9,69.4,Pass
-ADI,6281,Technology,Semiconductors,187.11,62.8,93.3,Pass
-AMGN,318154,Healthcare,Drug Manufacturers - General,183.05,70.8,85.2,Pass
-T,732717,Communication Services,Telecom Services,181.07,59.4,68.1,Pass
-DIS,1744489,Communication Services,Entertainment,179.76,37.3,77.2,Pass
-ABLZF,1091587,Industrials,Electrical Equipment & Parts,178.23,40.4,56.8,Pass
-APH,820313,Technology,Electronic Components,176.69,37.2,99.5,Pass
-TMO,97745,Healthcare,Diagnostics & Research,174.74,40.9,95.2,Pass
-TJX,109198,Consumer Cyclical,Apparel Retail,174.57,31.0,93.0,Pass
-ISRG,1035267,Healthcare,Medical Instruments & Supplies,165.27,66.3,89.4,Pass
-ABT,1800,Healthcare,Medical Devices,163.1,56.5,82.0,Pass
-GILD,882095,Healthcare,Drug Manufacturers - General,160.44,78.8,92.4,Pass
-ETN,1551182,Industrials,Specialty Industrial Machinery,160.27,37.8,85.3,Pass
-QCOM,804328,Technology,Semiconductors,160.21,55.1,81.5,Pass
-UNP,100885,Industrials,Railroads,158.96,56.5,88.9,Pass
-SHOP,1594805,Technology,Software - Application,158.79,48.1,74.0,Pass
-UBER,1543151,Technology,Software - Application,152.53,38.5,86.5,Pass
-APP,1751008,Communication Services,Advertising Agencies,150.99,87.9,81.3,Pass
-PFE,78003,Healthcare,Drug Manufacturers - General,150.63,75.8,67.8,Pass
-CRM,1108524,Technology,Software - Application,148.33,77.7,95.7,Pass
-SNDK,2023554,Technology,Computer Hardware,147.95,34.8,82.8,Pass
-PANW,1327567,Technology,Software - Infrastructure,146.78,73.5,74.7,Pass
-HTHIF,47710,Industrials,Conglomerates,145.39,30.0,49.0,Pass
-BKNG,1075531,Consumer Cyclical,Travel Services,134.92,87.4,97.9,Pass
-LOW,60667,Consumer Cyclical,Home Improvement Retail,134.59,33.5,80.7,Pass
-MRVL,1835632,Technology,Semiconductors,133.99,51.0,83.7,Pass
-WDC,106040,Technology,Computer Hardware,133.68,42.7,103.9,Pass
-TBB,732717,Unknown,,132.31,0.0,0.0,Pass
-GLW,24741,Technology,Electronic Components,131.16,36.0,74.7,Pass
-STX,1137789,Technology,Computer Hardware,129.72,38.8,87.6,Pass
-ADTTF,1158838,Technology,Semiconductor Equipment & Materials,126.85,64.3,64.9,Pass
-DHR,313616,Healthcare,Diagnostics & Research,126.68,59.0,84.3,Pass
-UNLYF,217410,Consumer Defensive,Household & Personal Products,125.77,46.9,54.0,Pass
-KXIAY,2053383,Technology,Semiconductors,123.29,25.8,0.0,Pass
-SYK,310764,Healthcare,Medical Devices,123.1,65.0,81.8,Pass
-NCRRP,70866,Unknown,,121.64,0.0,0.0,Pass
-PH,76334,Industrials,Specialty Industrial Machinery,121.45,37.4,90.6,Pass
-SNEJF,313838,Technology,Consumer Electronics,120.47,29.5,47.3,Pass
-BMY,14272,Healthcare,Drug Manufacturers - General,118.95,72.6,83.0,Pass
-VRT,1674101,Industrials,Electrical Equipment & Parts,117.16,37.2,80.3,Pass
-CRWD,1535527,Technology,Software - Infrastructure,115.39,74.8,75.4,Pass
-SNYNF,1121404,Healthcare,Drug Manufacturers - General,113.87,72.4,40.1,Pass
-INTU,896878,Technology,Software - Application,111.42,80.9,90.7,Pass
-GLD,1222333,Unknown,,109.82,0.0,0.0,Pass
-VRTX,875320,Healthcare,Biotechnology,109.41,53.7,97.2,Pass
-ACN,1467373,Technology,Information Technology Services,109.39,32.0,82.8,Pass
-GLAXF,1131399,Healthcare,Drug Manufacturers - General,109.02,72.6,46.6,Pass
-TT,1466258,Industrials,Building Products & Equipment,106.3,36.2,89.7,Pass
-MDT,1613103,Healthcare,Medical Devices,105.15,65.2,88.1,Pass
-CMCSA,1166691,Communication Services,Telecom Services,98.74,70.1,89.5,Pass
-ADBE,796343,Technology,Software - Application,98.3,89.4,87.9,Pass
-HCA,860730,Healthcare,Medical Care Facilities,96.1,41.6,78.3,Pass
-MAR,1048286,Consumer Cyclical,Lodging,94.95,79.1,65.6,Pass
-NOW,1373715,Technology,Software - Application,93.32,76.6,91.0,Pass
-FDX,1048911,Industrials,Integrated Freight & Logistics,93.11,27.6,80.3,Pass
-WM,823768,Industrials,Waste Management,91.7,40.4,83.6,Pass
-MELI,1099590,Consumer Cyclical,Internet Retail,90.85,50.7,82.9,Pass
-CDNS,813672,Technology,Software - Application,89.82,86.1,89.7,Pass
-SPOT,1639920,Communication Services,Internet Content & Information,89.39,32.0,68.6,Pass
-CMI,26172,Industrials,Specialty Industrial Machinery,88.82,25.8,87.4,Pass
-BSX,885725,Healthcare,Medical Devices,86.87,68.6,95.3,Pass
-JCI,833444,Industrials,Building Products & Equipment,86.66,36.5,94.8,Pass
-CSX,277948,Industrials,Railroads,84.04,46.8,80.3,Pass
-IAU,1278680,Unknown,,83.88,0.0,0.0,Pass
-IFNNF,1107457,Technology,Semiconductors,83.48,41.2,55.1,Pass
-ABNB,1559720,Consumer Cyclical,Travel Services,82.66,83.0,88.0,Pass
-ADP,8670,Technology,Software - Application,80.19,48.4,86.4,Pass
-ELV,1156039,Healthcare,Healthcare Plans,78.77,25.9,94.8,Pass
-CP,16875,Industrials,Railroads,77.84,53.8,73.6,Pass
-EMR,32604,Industrials,Specialty Industrial Machinery,77.79,52.8,84.3,Pass
-ITW,49826,Industrials,Specialty Industrial Machinery,77.37,44.1,85.8,Pass
-REGN,872589,Healthcare,Biotechnology,76.72,44.6,91.6,Pass
-MMM,66740,Industrials,Conglomerates,76.16,39.7,76.8,Pass
-MNST,865752,Consumer Defensive,Beverages - Non-Alcoholic,75.48,55.8,69.0,Pass
-DASH,1792789,Consumer Cyclical,Internet Retail,74.94,51.8,98.6,Pass
-MPWR,1280452,Technology,Semiconductors,73.88,55.2,101.4,Pass
-HLT,1585689,Consumer Cyclical,Lodging,73.6,79.0,101.2,Pass
-NET,1477333,Technology,Software - Infrastructure,73.39,74.5,89.7,Pass
-ROST,745732,Consumer Cyclical,Apparel Retail,72.94,32.6,93.8,Pass
-MSI,68505,Technology,Communication Equipment,72.26,51.8,88.1,Pass
-NSC,702165,Industrials,Railroads,71.13,45.9,78.2,Pass
-CNI,16868,Industrials,Railroads,70.24,56.7,74.1,Pass
-CTAS,723254,Industrials,Specialty Business Services,69.7,50.4,67.7,Pass
-RCL,884887,Consumer Cyclical,Travel Services,69.23,50.6,89.5,Pass
-CL,21665,Consumer Defensive,Household & Personal Products,68.73,60.1,86.2,Pass
-CIEN,936395,Technology,Communication Equipment,66.98,42.1,98.7,Pass
-NKE,320187,Consumer Cyclical,Footwear & Accessories,66.68,40.9,82.8,Pass
-RLXXF,929869,Industrials,Specialty Business Services,64.32,66.3,58.1,Pass
-RSG,1060391,Industrials,Waste Management,64.31,43.0,96.4,Pass
-FTNT,1262039,Technology,Software - Infrastructure,63.43,80.5,71.4,Pass
-CCZ,1166691,Unknown,,61.13,0.0,0.0,Pass
-FIX,1035983,Industrials,Engineering & Construction,60.52,25.1,96.6,Pass
-URI,1067701,Industrials,Rental & Leasing Services,60.31,38.4,93.6,Pass
-TEL,1385157,Technology,Electronic Components,59.63,36.1,94.2,Pass
-TER,97210,Technology,Semiconductor Equipment & Materials,59.51,58.2,97.8,Pass
-JHPCY,2071868,Healthcare,Drug Manufacturers - Specialty & Generic,58.64,86.3,0.0,Pass
-NXPI,1413447,Technology,Semiconductors,58.18,55.4,99.1,Pass
-TGT,27419,Consumer Defensive,Discount Stores,57.74,27.9,86.1,Pass
-KEYS,1601046,Technology,Scientific & Technical Instruments,56.99,61.9,93.9,Pass
-COHR,820318,Technology,Scientific & Technical Instruments,56.99,36.4,87.7,Pass
-GWW,277135,Industrials,Industrial Distribution,54.91,39.1,76.3,Pass
-FREJO,1026214,Unknown,,53.15,0.0,0.0,Pass
-SE,1703399,Consumer Cyclical,Internet Retail,52.58,44.7,71.0,Pass
-AME,1037868,Industrials,Specialty Industrial Machinery,52.44,36.4,92.3,Pass
-FERG,2011641,Industrials,Industrial Distribution,51.84,30.6,97.0,Pass
-CARR,1783180,Industrials,Building Products & Equipment,51.8,26.1,90.5,Pass
-FAST,815556,Industrials,Industrial Distribution,51.29,44.9,88.0,Pass
-EA,712515,Communication Services,Electronic Gaming & Multimedia,50.68,78.3,95.1,Pass
-DISPF,1671750,Technology,Semiconductor Equipment & Materials,50.16,70.2,40.5,Pass
-ADSK,769397,Technology,Software - Application,49.55,92.3,96.1,Pass
-GDERF,2021390,Healthcare,Drug Manufacturers - Specialty & Generic,49.45,68.9,42.6,Pass
-SNOW,1640147,Technology,Software - Application,49.28,67.2,77.5,Pass
-ZTS,1555280,Healthcare,Drug Manufacturers - Specialty & Generic,49.24,71.9,100.9,Pass
-ARGX,1697862,Healthcare,Biotechnology,48.44,57.2,49.0,Pass
-GRMN,1121788,Technology,Scientific & Technical Instruments,47.8,58.7,57.2,Pass
-EW,1099800,Healthcare,Medical Devices,47.44,77.9,92.9,Pass
-IDXX,874716,Healthcare,Diagnostics & Research,45.25,61.8,96.7,Pass
-CODGF,1012037,Industrials,Building Products & Equipment,45.17,27.8,49.5,Pass
-ROK,1024478,Industrials,Specialty Industrial Machinery,45.12,48.5,88.0,Pass
-EBAY,1065088,Consumer Cyclical,Internet Retail,44.96,71.4,94.9,Pass
-WAB,943452,Industrials,Railroads,44.66,35.2,96.3,Pass
-DGEAF,835403,Consumer Defensive,Beverages - Wineries & Distilleries,44.34,60.0,68.0,Pass
-CMG,1058090,Consumer Cyclical,Restaurants,42.81,40.1,90.8,Pass
-PRYMF,1437672,Industrials,Electrical Equipment & Parts,42.62,38.8,63.7,Pass
-BDX,10795,Healthcare,Medical Instruments & Supplies,42.53,46.8,96.5,Pass
-HLNCF,1900304,Healthcare,Drug Manufacturers - Specialty & Generic,41.78,64.8,61.2,Pass
-WCN,1318220,Industrials,Waste Management,41.55,42.5,90.2,Pass
-GBTC,1588489,Unknown,,41.09,0.0,0.0,Pass
-DIA,1041130,Unknown,,39.92,0.0,0.0,Pass
-DKILF,1446519,Industrials,Building Products & Equipment,38.9,34.6,55.3,Pass
-FMX,1061736,Consumer Defensive,Beverages - Brewers,38.73,40.6,47.5,Pass
-HSY,47111,Consumer Defensive,Confectioners,38.09,33.5,88.6,Pass
-ALC,1167379,Healthcare,Medical Instruments & Supplies,37.69,55.7,67.6,Pass
-ERIXF,717826,Technology,Communication Equipment,37.61,48.0,64.8,Pass
-TEVA,818686,Healthcare,Drug Manufacturers - Specialty & Generic,36.82,51.8,60.1,Pass
-ON,1097864,Technology,Semiconductors,36.7,38.3,111.1,Pass
-MDY,936958,Unknown,,36.47,0.0,0.0,Pass
-ROP,882835,Technology,Software - Application,36.45,69.4,103.7,Pass
-CCL,815097,Consumer Cyclical,Travel Services,36.43,56.0,71.0,Pass
-LVS,1300514,Consumer Cyclical,Resorts & Casinos,35.95,80.1,42.2,Pass
-VIK,1745201,Consumer Cyclical,Travel Services,35.48,44.5,99.7,Pass
-ADYYF,1788707,Technology,Software - Infrastructure,34.69,68.1,85.0,Pass
-CUKPF,1125259,Consumer Cyclical,Travel Services,34.65,56.0,47.8,Pass
-NBIS,1513845,Communication Services,Internet Content & Information,34.29,68.6,48.8,Pass
-DLMAF,2073893,Consumer Defensive,Discount Stores,33.73,45.0,44.0,Pass
-KVUE,1944048,Consumer Defensive,Household & Personal Products,33.68,58.4,95.7,Pass
-DLMAY,2073893,Consumer Defensive,Discount Stores,33.55,45.0,0.0,Pass
-ALL-PB,899051,Unknown,,33.41,0.0,0.0,Pass
-FISV,798354,Unknown,,32.94,0.0,0.0,Pass
-KMB,55785,Consumer Defensive,Household & Personal Products,32.67,37.3,89.3,Pass
-PAYX,723531,Technology,Software - Application,32.6,67.2,84.6,Pass
-A,1090872,Healthcare,Diagnostics & Research,32.46,52.3,92.9,Pass
-CPRT,900075,Industrials,Specialty Business Services,32.12,47.3,86.0,Pass
-IR,1699150,Industrials,Specialty Industrial Machinery,31.77,43.6,96.7,Pass
-RMD,943819,Healthcare,Medical Instruments & Supplies,31.63,61.5,68.4,Pass
-ALAB,1736297,Technology,Semiconductors,31.4,75.7,79.5,Pass
-GEHC,1932393,Healthcare,Medical Devices,31.26,40.0,93.1,Pass
-WDAY,1327811,Technology,Software - Application,31.15,75.7,97.1,Pass
-CRDO,1807794,Technology,Semiconductors,30.6,67.8,78.0,Pass
-DOV,29905,Industrials,Specialty Industrial Machinery,30.18,40.0,92.4,Pass
-TDY,1094285,Technology,Scientific & Technical Instruments,29.74,42.9,98.0,Pass
-OTIS,1781335,Industrials,Specialty Industrial Machinery,29.68,30.5,94.0,Pass
-EXPE,1324424,Consumer Cyclical,Travel Services,29.67,90.1,102.9,Pass
-FNGD,927971,Unknown,,29.62,0.0,0.0,Pass
-WAT,1000697,Healthcare,Diagnostics & Research,29.52,59.3,63.4,Pass
-TPR,1116132,Consumer Cyclical,Luxury Goods,29.44,76.0,98.2,Pass
-HUBB,48898,Industrials,Electrical Equipment & Parts,28.96,35.5,100.0,Pass
-Q,2058873,Technology,Semiconductor Equipment & Materials,28.85,46.2,75.0,Pass
-NTRA,1604821,Healthcare,Diagnostics & Research,28.58,64.7,94.1,Pass
-RDDT,1713445,Communication Services,Internet Content & Information,28.47,91.2,97.5,Pass
-XYL,1524472,Industrials,Specialty Industrial Machinery,28.19,38.5,97.4,Pass
-BIIB,875045,Healthcare,Drug Manufacturers - General,26.91,78.9,98.2,Pass
-FOXA,1754301,Communication Services,Entertainment,26.86,35.4,122.6,Pass
-ZM,1585521,Technology,Software - Application,26.86,77.4,78.5,Pass
-ROL,84839,Consumer Cyclical,Personal Services,26.84,52.6,60.0,Pass
-STZ,16918,Consumer Defensive,Beverages - Brewers,26.76,51.7,79.6,Pass
-CTSH,1058290,Technology,Information Technology Services,26.36,33.7,105.8,Pass
-VEEV,1393052,Healthcare,Health Information Services,26.05,75.5,89.5,Pass
-MTD,1037646,Healthcare,Diagnostics & Research,25.56,59.4,103.1,Pass
-LSRCF,1822989,Technology,Semiconductor Equipment & Materials,25.1,60.0,52.1,Pass
-UTHR,1082554,Healthcare,Drug Manufacturers - Specialty & Generic,24.94,87.9,97.8,Pass
-VRSN,1014473,Technology,Software - Infrastructure,24.61,88.3,90.9,Pass
-FICO,814547,Technology,Software - Application,23.97,82.9,91.1,Pass
-PHM,822416,Consumer Cyclical,Residential Construction,23.8,26.1,95.7,Pass
-IBIDF,1654508,Technology,Electronic Components,23.79,32.0,69.3,Pass
-ULTA,1403568,Consumer Cyclical,Specialty Retail,23.54,43.0,102.0,Pass
-P,1474432,Technology,Computer Hardware,23.44,70.4,86.2,Pass
-VRSK,1442145,Industrials,Consulting Services,23.14,69.9,103.0,Pass
-CHD,313927,Consumer Defensive,Household & Personal Products,23.0,45.1,93.3,Pass
-DXCM,1093557,Healthcare,Medical Devices,22.89,60.1,100.7,Pass
-SLV,1330568,Unknown,,22.6,0.0,0.0,Pass
-NVT,1720635,Industrials,Electrical Equipment & Parts,22.36,37.7,95.7,Pass
-WSM,719955,Consumer Cyclical,Specialty Retail,22.3,46.2,97.9,Pass
-RL,1037038,Consumer Cyclical,Apparel Manufacturing,22.25,69.6,103.5,Pass
-ZS,1713683,Technology,Software - Infrastructure,21.88,76.6,58.2,Pass
-DGX,1022079,Healthcare,Diagnostics & Research,21.59,33.3,99.2,Pass
-STE,1757898,Healthcare,Medical Devices,21.57,44.3,98.6,Pass
-TWLO,1447669,Technology,Software - Infrastructure,21.55,48.9,94.2,Pass
-NTAP,1002047,Technology,Software - Infrastructure,21.45,70.5,102.4,Pass
-LH,920148,Healthcare,Diagnostics & Research,21.39,28.8,100.6,Pass
-CRS,17843,Industrials,Metal Fabrication,21.33,28.9,100.1,Pass
-FSLR,1274494,Technology,Solar,21.05,40.6,99.0,Pass
-VLTO,1967680,Industrials,Pollution & Treatment Controls,21.02,59.9,98.6,Pass
-APG,1796209,Industrials,Engineering & Construction,21.01,31.4,83.6,Pass
-MDB,1441816,Technology,Software - Infrastructure,20.75,71.7,94.1,Pass
-EFX,33185,Industrials,Consulting Services,20.71,56.1,100.1,Pass
-WST,105770,Healthcare,Medical Instruments & Supplies,20.64,36.3,99.1,Pass
-DKS,1089063,Consumer Cyclical,Specialty Retail,20.36,34.2,104.4,Pass
-ASBHY,2055337,Unknown,,20.03,0.0,0.0,Pass
-MTSI,1493594,Technology,Semiconductors,19.92,55.2,97.1,Pass
-LNTCY,2098381,Unknown,,19.8,0.0,0.0,Pass
-RBA,1046102,Industrials,Specialty Business Services,19.59,46.6,99.7,Pass
-SNA,91440,Industrials,Tools & Accessories,19.56,51.6,96.3,Pass
-INCY,879169,Healthcare,Biotechnology,19.45,52.9,104.5,Pass
-SGIOF,1281721,Healthcare,Drug Manufacturers - Specialty & Generic,19.44,84.5,56.4,Pass
-DLTR,935703,Consumer Defensive,Discount Stores,19.38,36.7,109.8,Pass
-ILMN,1110803,Healthcare,Diagnostics & Research,19.28,68.2,106.9,Pass
-ITT,216228,Industrials,Specialty Industrial Machinery,19.19,35.4,94.3,Pass
-VTTGF,1729514,Industrials,Specialty Industrial Machinery,19.17,61.0,47.8,Pass
-FTV,1659166,Technology,Scientific & Technical Instruments,19.02,63.5,108.7,Pass
-RBC,1324948,Industrials,Tools & Accessories,18.79,44.5,100.6,Pass
-TSCO,916365,Consumer Cyclical,Specialty Retail,18.73,36.4,99.3,Pass
-MONRF,1605755,Consumer Cyclical,Apparel Manufacturing,18.72,78.1,54.5,Pass
-BR,1383312,Technology,Information Technology Services,18.54,31.2,95.3,Pass
-TEAM,1650372,Technology,Software - Application,18.39,84.1,95.1,Pass
-IP,51434,Consumer Cyclical,Packaging & Containers,18.01,29.7,102.3,Pass
-WSO,105016,Industrials,Industrial Distribution,17.83,28.0,110.7,Pass
-ULS,1901440,Industrials,Specialty Business Services,17.76,49.5,113.9,Pass
-NXT,1852131,Technology,Solar,17.3,32.4,109.8,Pass
-VTRS,1792044,Healthcare,Drug Manufacturers - Specialty & Generic,17.26,39.5,86.0,Pass
-LII,1069202,Industrials,Building Products & Equipment,17.25,33.4,79.0,Pass
-FFIV,1048695,Technology,Software - Infrastructure,17.17,81.4,109.5,Pass
-IOT,1642896,Technology,Software - Infrastructure,17.03,76.8,94.3,Pass
-TOST,1650164,Technology,Software - Infrastructure,16.81,26.0,88.8,Pass
-LULU,1397187,Consumer Cyclical,Apparel Retail,16.7,56.6,83.2,Pass
-SSNC,1402436,Technology,Software - Application,16.69,48.0,87.2,Pass
-USO,1327068,Unknown,,16.63,0.0,0.0,Pass
-ROKU,1428439,Communication Services,Entertainment,16.58,43.8,86.1,Pass
-CLH,822818,Industrials,Waste Management,16.32,31.3,98.1,Pass
-PTC,857005,Technology,Software - Application,16.32,84.2,102.3,Pass
-KSPI,1985487,Technology,Software - Infrastructure,16.31,70.1,48.1,Pass
-SN,1957132,Consumer Cyclical,"Furnishings, Fixtures & Appliances",16.22,49.0,60.8,Pass
-ZBH,1136869,Healthcare,Medical Devices,16.03,70.0,104.8,Pass
-NVMI,1109345,Technology,Semiconductor Equipment & Materials,15.86,57.4,77.3,Pass
-NDSN,72331,Industrials,Specialty Industrial Machinery,15.72,55.3,77.6,Pass
-LSCC,855658,Technology,Semiconductors,15.59,68.2,114.7,Pass
-THC,70318,Healthcare,Medical Care Facilities,15.55,41.4,98.8,Pass
-TRMB,864749,Technology,Scientific & Technical Instruments,15.47,71.1,101.3,Pass
-IEX,832101,Industrials,Specialty Industrial Machinery,15.27,44.5,108.0,Pass
-DECK,910521,Consumer Cyclical,Footwear & Accessories,15.07,57.5,99.2,Pass
-MAS,62996,Industrials,Building Products & Equipment,15.0,35.7,105.9,Pass
-MLI,89439,Industrials,Metal Fabrication,15.0,29.7,94.1,Pass
-WMG,1319161,Communication Services,Entertainment,14.91,45.9,105.4,Pass
-TYL,860731,Technology,Software - Application,14.63,46.5,102.7,Pass
-CHKP,1015922,Technology,Software - Infrastructure,14.52,87.9,79.5,Pass
-TME,1744676,Communication Services,Internet Content & Information,14.48,44.2,66.8,Pass
-CSL,790051,Industrials,Building Products & Equipment,14.45,35.6,105.3,Pass
-NWSA,1564708,Communication Services,Entertainment,14.34,56.7,110.0,Pass
-LECO,59527,Industrials,Tools & Accessories,14.25,36.3,81.2,Pass
-LOGI,1032975,Technology,Computer Hardware,14.17,43.1,66.2,Pass
-ONTO,704532,Technology,Semiconductor Equipment & Materials,14.05,54.6,98.8,Pass
-AEIS,927003,Industrials,Electrical Equipment & Parts,14.04,38.5,110.2,Pass
-TKO,1973266,Communication Services,Entertainment,13.84,59.8,101.8,Pass
-TIGO,912958,Communication Services,Telecom Services,13.75,77.5,44.9,Pass
-ASND,1612042,Healthcare,Biotechnology,13.72,86.8,107.9,Pass
-TOL,794170,Consumer Cyclical,Residential Construction,13.61,25.4,91.8,Pass
-SITM,1451809,Technology,Semiconductors,13.61,53.6,92.2,Pass
-PNR,77360,Industrials,Specialty Industrial Machinery,13.53,40.9,98.6,Pass
-HAS,46080,Consumer Cyclical,Leisure,13.52,63.8,95.0,Pass
-OKTA,1660134,Technology,Software - Infrastructure,13.48,77.4,91.6,Pass
-BAWAY,1968385,Unknown,,13.39,0.0,0.0,Pass
-COKE,317540,Consumer Defensive,Beverages - Non-Alcoholic,13.38,39.7,68.2,Pass
-GGG,42888,Industrials,Specialty Industrial Machinery,13.34,52.3,92.3,Pass
-SNNUF,845982,Healthcare,Medical Devices,13.27,68.3,71.1,Pass
-RYKKF,1592049,Consumer Cyclical,Department Stores,12.93,47.5,73.0,Pass
-NBIX,914475,Healthcare,Drug Manufacturers - Specialty & Generic,12.89,62.7,101.2,Pass
-FIVE,1177609,Consumer Cyclical,Specialty Retail,12.85,36.0,104.8,Pass
-AVY,8818,Consumer Cyclical,Packaging & Containers,12.81,28.8,98.4,Pass
-JAZZ,1232524,Healthcare,Biotechnology,12.8,91.7,102.4,Pass
-PEN,1321732,Healthcare,Medical Devices,12.79,67.1,95.5,Pass
-TMTNF,2072098,Industrials,Industrial Distribution,12.75,25.4,43.1,Pass
-PINS,1506293,Communication Services,Internet Content & Information,12.74,80.1,114.5,Pass
-DPLMF,1529906,Industrials,Industrial Distribution,12.74,46.7,82.8,Pass
-GNRC,1474735,Industrials,Specialty Industrial Machinery,12.74,38.3,97.4,Pass
-BF-B,14693,Consumer Defensive,Beverages - Wineries & Distilleries,12.72,59.3,77.0,Pass
-NYT,71691,Communication Services,Publishing,12.71,50.3,101.7,Pass
-ALGN,1097149,Healthcare,Medical Instruments & Supplies,12.7,69.8,97.2,Pass
-PODD,1145197,Healthcare,Medical Devices,12.67,71.6,104.8,Pass
-COO,711404,Healthcare,Medical Instruments & Supplies,12.31,65.4,105.8,Pass
-GMED,1237831,Healthcare,Medical Devices,12.31,68.1,102.8,Pass
-DINRF,1544379,Technology,Semiconductor Equipment & Materials,12.24,37.5,58.9,Pass
-BLD,1633931,Industrials,Engineering & Construction,12.19,29.4,110.4,Pass
-SWK,93556,Industrials,Tools & Accessories,12.16,30.6,94.4,Pass
-RMBS,917273,Technology,Semiconductors,12.03,80.4,95.3,Pass
-SCI,89089,Consumer Cyclical,Personal Services,12.02,26.5,91.0,Pass
-IESC,1048268,Industrials,Engineering & Construction,11.98,25.8,97.2,Pass
-ALLE,1579241,Industrials,Security & Protection Services,11.85,45.0,98.2,Pass
-ONON,1858985,Consumer Cyclical,Footwear & Accessories,11.73,62.8,73.5,Pass
-MEDP,1668397,Healthcare,Diagnostics & Research,11.7,71.9,86.7,Pass
-CLX,21076,Consumer Defensive,Household & Personal Products,11.68,44.2,85.3,Pass
-WMS,1604028,Industrials,Building Products & Equipment,11.64,38.7,97.2,Pass
-U,1810806,Technology,Software - Application,11.58,74.3,80.6,Pass
-EXEL,939767,Healthcare,Biotechnology,11.41,96.4,105.8,Pass
-BLMOY,2109234,Industrials,Building Products & Equipment,11.35,60.4,0.0,Pass
-GDDY,1609711,Technology,Software - Infrastructure,11.32,63.6,104.7,Pass
-VICR,751978,Technology,Electronic Components,11.28,54.5,62.6,Pass
-PMDIY,2013003,Healthcare,Health Information Services,11.26,99.9,0.0,Pass
-AIT,109563,Industrials,Industrial Distribution,11.24,30.4,97.0,Pass
-RBRK,1943896,Technology,Software - Infrastructure,11.23,80.1,74.1,Pass
-TTD,1671933,Communication Services,Advertising Agencies,11.06,78.6,84.1,Pass
-JKHY,779152,Technology,Information Technology Services,11.06,43.8,104.6,Pass
-FLS,30625,Industrials,Specialty Industrial Machinery,10.87,34.6,102.0,Pass
-SPXC,88205,Industrials,Building Products & Equipment,10.86,40.6,95.9,Pass
-DT,1773383,Technology,Software - Application,10.85,81.7,101.0,Pass
-ZBRA,877212,Technology,Communication Equipment,10.78,48.1,100.0,Pass
-CHWY,1766502,Consumer Cyclical,Internet Retail,10.66,29.8,96.6,Pass
-BLBLF,1723690,Communication Services,Internet Content & Information,10.66,36.6,44.7,Pass
-CAVA,1639438,Consumer Cyclical,Restaurants,10.6,37.4,95.3,Pass
-FORM,1039399,Technology,Semiconductor Equipment & Materials,10.46,39.2,97.8,Pass
-BMRN,1048477,Healthcare,Biotechnology,10.3,52.8,100.8,Pass
-CR,1944013,Industrials,Specialty Industrial Machinery,10.27,39.8,77.5,Pass
-STN,1131383,Industrials,Engineering & Construction,10.25,54.3,79.7,Pass
-DCI,29644,Industrials,Specialty Industrial Machinery,10.18,34.6,90.7,Pass
-IT,749251,Technology,Information Technology Services,10.13,68.4,108.9,Pass
-EHC,785161,Healthcare,Medical Care Facilities,10.11,43.2,101.3,Pass
-SNAP,1564408,Communication Services,Internet Content & Information,10.05,55.0,53.7,Pass
-CART,1579091,Consumer Cyclical,Internet Retail,10.0,73.7,83.8,Pass
-OC,1370946,Industrials,Building Products & Equipment,9.97,28.5,103.2,Pass
-GTLS,892553,Industrials,Specialty Industrial Machinery,9.96,33.7,99.8,Pass
-WTS,795403,Industrials,Specialty Industrial Machinery,9.95,49.5,100.4,Pass
-UHS,352915,Healthcare,Medical Care Facilities,9.92,44.2,97.3,Pass
-KOKSF,2033019,Technology,Semiconductor Equipment & Materials,9.91,41.2,51.3,Pass
-ARWR,879407,Healthcare,Biotechnology,9.82,100.0,84.5,Pass
-BSY,1031308,Technology,Software - Application,9.8,81.5,50.4,Pass
-LFUS,889331,Technology,Electronic Components,9.8,38.0,105.3,Pass
-VMI,102729,Industrials,Conglomerates,9.72,30.4,94.7,Pass
-CNM,1856525,Industrials,Industrial Distribution,9.68,26.9,115.1,Pass
-BLHWF,2109234,Industrials,Building Products & Equipment,9.57,60.4,50.2,Pass
-BLDR,1316835,Industrials,Building Products & Equipment,9.47,30.4,97.4,Pass
-MASI,937556,Healthcare,Medical Devices,9.35,61.8,108.3,Pass
-POWL,80420,Industrials,Electrical Equipment & Parts,9.31,30.2,96.9,Pass
-TTC,737758,Industrials,Tools & Accessories,9.23,33.2,93.2,Pass
-SWKS,4127,Technology,Semiconductors,9.17,41.1,107.0,Pass
-DDS,28917,Consumer Cyclical,Department Stores,9.1,40.3,67.7,Pass
-GWKSY,2062522,Consumer Cyclical,Leisure,9.09,72.2,0.0,Pass
-IDCC,1405495,Technology,Software - Application,9.09,88.9,105.4,Pass
-PSORF,938323,Communication Services,Publishing,9.06,52.0,76.8,Pass
-FIG,1579878,Technology,Software - Application,9.05,82.4,71.1,Pass
-YMM,1838413,Technology,Software - Application,9.05,85.6,84.1,Pass
-INPOF,1848826,Industrials,Integrated Freight & Logistics,9.0,25.3,40.5,Pass
-CGNX,851205,Technology,Scientific & Technical Instruments,8.98,66.9,102.5,Pass
-GAP,39911,Consumer Cyclical,Apparel Retail,8.93,40.8,63.8,Pass
-GMWKF,2062522,Consumer Cyclical,Leisure,8.92,72.2,70.2,Pass
-DOCU,1261333,Technology,Software - Application,8.89,79.6,88.6,Pass
-BZLFF,1072397,Consumer Defensive,Food Distribution,8.86,28.9,74.4,Pass
-AOS,91142,Industrials,Specialty Industrial Machinery,8.83,38.8,93.0,Pass
-SMTC,88941,Technology,Semiconductors,8.79,52.5,112.9,Pass
-MTCH,891103,Communication Services,Internet Content & Information,8.74,72.9,110.5,Pass
-ZWS,1439288,Industrials,Pollution & Treatment Controls,8.73,45.4,92.3,Pass
-HSIC,1000228,Healthcare,Medical Distribution,8.73,31.1,106.6,Pass
-AYI,1144215,Industrials,Electrical Equipment & Parts,8.64,48.5,99.1,Pass
-LEVI,94845,Consumer Cyclical,Apparel Manufacturing,8.58,61.7,95.1,Pass
-CAMT,1109138,Technology,Semiconductor Equipment & Materials,8.4,51.2,53.8,Pass
-CELH,1341766,Consumer Defensive,Beverages - Non-Alcoholic,8.38,51.2,64.7,Pass
-PCOR,1611052,Technology,Software - Application,8.37,79.6,94.7,Pass
-TECH,842023,Healthcare,Biotechnology,8.37,66.6,113.0,Pass
-AGCO,880266,Industrials,Farm & Heavy Construction Machinery,8.35,25.5,94.2,Pass
-MANH,1056696,Technology,Software - Application,8.3,56.0,107.2,Pass
-CHYM,1795586,Technology,Software - Application,8.3,88.0,95.4,Pass
-CRUS,772406,Technology,Semiconductors,8.29,52.9,101.9,Pass
-CRL,1100682,Healthcare,Diagnostics & Research,8.23,35.0,109.5,Pass
-ESE,866706,Technology,Scientific & Technical Instruments,8.21,41.9,99.3,Pass
-ATR,896622,Healthcare,Medical Instruments & Supplies,8.1,37.2,96.0,Pass
-TAP,24545,Consumer Defensive,Beverages - Brewers,8.01,38.4,98.2,Pass
-ICLR,1060955,Healthcare,Diagnostics & Research,7.97,28.2,107.6,Pass
-POOL,945841,Industrials,Industrial Distribution,7.94,29.7,94.3,Pass
-KRYS,1711279,Healthcare,Biotechnology,7.93,94.1,98.6,Pass
-IBP,1580905,Consumer Cyclical,Residential Construction,7.92,34.0,101.5,Pass
-QRVO,1604778,Technology,Semiconductors,7.87,44.7,93.4,Pass
-ENS,1289308,Industrials,Electrical Equipment & Parts,7.59,29.8,101.4,Pass
-HALO,1159036,Healthcare,Biotechnology,7.57,77.8,107.9,Pass
-BIO,12208,Healthcare,Medical Devices,7.54,52.0,91.3,Pass
-GS-PC,886982,Unknown,,7.51,0.0,0.0,Pass
-TKR,98362,Industrials,Tools & Accessories,7.46,30.4,95.4,Pass
-VFC,103379,Consumer Cyclical,Apparel Manufacturing,7.32,50.8,90.8,Pass
-LTMGF,2041918,Consumer Cyclical,Gambling,7.29,37.0,55.6,Pass
-AWI,7431,Industrials,Building Products & Equipment,7.25,40.6,103.6,Pass
-AAON,824142,Industrials,Building Products & Equipment,7.21,26.7,91.7,Pass
-ELSSF,2127861,Industrials,Specialty Business Services,7.2,33.6,54.5,Pass
-BIRK,1977102,Consumer Cyclical,Footwear & Accessories,7.19,58.7,94.9,Pass
-RKWAF,1969729,Unknown,,7.18,0.0,0.0,Pass
-TOKCF,2066601,Technology,Electronic Components,7.16,31.5,41.5,Pass
-SLAB,1038074,Technology,Semiconductors,7.11,58.2,105.1,Pass
-BROS,1866581,Consumer Cyclical,Restaurants,7.05,25.9,91.8,Pass
-RCWLY,1969729,Unknown,,7.03,0.0,0.0,Pass
-QGEN,1015820,Healthcare,Diagnostics & Research,7.01,66.4,75.5,Pass
-DOX,1062579,Technology,Software - Infrastructure,6.91,37.6,101.4,Pass
-HQY,1428336,Healthcare,Health Information Services,6.86,69.5,109.7,Pass
-FSS,277509,Industrials,Pollution & Treatment Controls,6.8,28.9,103.1,Pass
-PAYC,1590955,Technology,Software - Application,6.77,87.2,108.5,Pass
-SFM,1575515,Consumer Defensive,Grocery Stores,6.69,39.0,104.3,Pass
-MIDD,769520,Industrials,Specialty Industrial Machinery,6.61,39.1,111.6,Pass
-TAL,1499620,Consumer Defensive,Education & Training Services,6.55,55.4,59.8,Pass
-BYD,906553,Consumer Cyclical,Resorts & Casinos,6.54,59.0,74.0,Pass
-TKMTY,2044863,Industrials,Railroads,6.53,33.6,0.0,Pass
-MHK,851968,Consumer Cyclical,"Furnishings, Fixtures & Appliances",6.51,25.2,88.6,Pass
-SAIL,2030781,Technology,Software - Infrastructure,6.5,64.5,100.8,Pass
-MSA,66570,Industrials,Security & Protection Services,6.49,46.5,94.0,Pass
-PTGX,1377121,Healthcare,Biotechnology,6.46,100.0,113.8,Pass
-GTES,1718512,Industrials,Specialty Industrial Machinery,6.4,40.5,108.1,Pass
-SITE,1650729,Industrials,Industrial Distribution,6.36,34.8,114.1,Pass
-BZ,1842827,Communication Services,Internet Content & Information,6.27,85.1,82.0,Pass
-URBN,912615,Consumer Cyclical,Apparel Retail,6.26,36.0,81.1,Pass
-CMSA,811156,Unknown,,6.18,0.0,0.0,Pass
-NPO,1164863,Industrials,Specialty Industrial Machinery,6.12,42.8,103.3,Pass
-DSGX,1050140,Technology,Software - Application,6.1,77.1,87.9,Pass
-KVYO,1835830,Technology,Software - Application,6.08,74.7,98.0,Pass
-ST,1477294,Technology,Scientific & Technical Instruments,6.06,29.3,111.0,Pass
-ESAB,1877322,Industrials,Metal Fabrication,6.06,36.9,98.1,Pass
-EPAM,1352010,Technology,Information Technology Services,6.02,28.9,113.9,Pass
-DLB,1308547,Industrials,Specialty Business Services,6.01,87.9,98.6,Pass
-PEGA,1013857,Technology,Software - Application,6.01,75.0,61.7,Pass
-APPF,1433195,Technology,Software - Application,5.97,63.7,88.9,Pass
-NICE,1003935,Technology,Software - Application,5.96,66.4,56.6,Pass
-PNDZF,1505880,Consumer Cyclical,Luxury Goods,5.85,79.3,51.8,Pass
-HRIBF,2088827,Technology,Scientific & Technical Instruments,5.84,43.9,49.6,Pass
-PTCT,1070081,Healthcare,Biotechnology,5.83,71.0,113.3,Pass
-ADT,1703056,Industrials,Security & Protection Services,5.8,80.8,106.4,Pass
-TTAN,1638826,Technology,Software - Application,5.78,70.5,94.8,Pass
-G,1398659,Technology,Information Technology Services,5.76,36.0,106.8,Pass
-MSM,1003078,Industrials,Industrial Distribution,5.74,40.8,88.4,Pass
-GOLF,1672013,Consumer Cyclical,Leisure,5.7,47.7,59.0,Pass
-ALKS,1520262,Healthcare,Drug Manufacturers - Specialty & Generic,5.69,86.7,110.6,Pass
-CHE,19584,Healthcare,Medical Care Facilities,5.65,32.4,98.0,Pass
-PCTY,1591698,Technology,Software - Application,5.56,69.1,81.5,Pass
-PATH,1734722,Technology,Software - Infrastructure,5.53,83.2,80.6,Pass
-FROG,1800667,Technology,Software - Application,5.51,76.8,88.6,Pass
-FCN,887936,Industrials,Consulting Services,5.5,32.1,105.6,Pass
-CHH,1046311,Consumer Cyclical,Lodging,5.49,90.7,72.1,Pass
-LNTH,1521036,Healthcare,Drug Manufacturers - Specialty & Generic,5.44,61.1,109.5,Pass
-LYFT,1759509,Technology,Software - Application,5.43,33.9,105.0,Pass
-SBBTF,1451561,Communication Services,Internet Content & Information,5.42,61.8,80.9,Pass
-YOU,1856314,Technology,Software - Application,5.42,64.4,95.2,Pass
-OLLI,1639300,Consumer Defensive,Discount Stores,5.41,40.5,110.1,Pass
-GLBE,1835963,Consumer Cyclical,Internet Retail,5.36,45.3,70.6,Pass
-UNMA,5513,Unknown,,5.34,0.0,0.0,Pass
-FND,1507079,Consumer Cyclical,Home Improvement Retail,5.34,44.8,116.6,Pass
-RTMVF,1516536,Communication Services,Internet Content & Information,5.33,100.0,90.3,Pass
-ATDRF,1647435,Communication Services,Internet Content & Information,5.22,78.7,77.1,Pass
-BC,14930,Consumer Cyclical,Recreational Vehicles,5.2,25.8,104.4,Pass
-ATAT,1853717,Consumer Cyclical,Lodging,5.16,44.8,80.4,Pass
-BOOT,1610250,Consumer Cyclical,Apparel Retail,5.14,38.3,121.3,Pass
-CROX,1334036,Consumer Cyclical,Footwear & Accessories,5.13,58.3,100.6,Pass
-GHC,104889,Consumer Defensive,Education & Training Services,5.12,29.9,83.2,Pass
-M,794367,Consumer Cyclical,Department Stores,5.12,40.3,92.7,Pass
-SIMO,1329394,Technology,Semiconductors,5.07,48.3,81.8,Pass
-JSM,1593538,Unknown,,5.05,0.0,0.0,Pass
-VNT,1786842,Technology,Scientific & Technical Instruments,5.01,47.2,104.7,Pass
-CORT,1088856,Healthcare,Biotechnology,5.0,98.3,71.9,Pass
-S,1583708,Technology,Software - Infrastructure,4.99,74.1,82.5,Pass
-BDC,913142,Technology,Communication Equipment,4.98,38.0,104.7,Pass
-DUOL,1562088,Technology,Software - Application,4.97,72.2,94.3,Pass
-FBIN,1519751,Industrials,Building Products & Equipment,4.96,45.3,103.9,Pass
-CWST,911177,Industrials,Waste Management,4.95,33.8,125.4,Pass
-PCG-PC,1004980,Unknown,,4.93,0.0,0.0,Pass
-ESTC,1707753,Technology,Software - Application,4.91,76.1,92.3,Pass
-RAL,2041385,Technology,Electronic Components,4.9,50.3,103.8,Pass
-CSW,1624794,Industrials,Specialty Industrial Machinery,4.87,42.7,106.0,Pass
-WAY,1990354,Healthcare,Health Information Services,4.84,68.3,107.7,Pass
-YMATF,2108185,Industrials,Specialty Industrial Machinery,4.83,46.3,54.3,Pass
-IPGP,1111928,Technology,Semiconductor Equipment & Materials,4.77,38.0,72.2,Pass
-OSIS,1039065,Technology,Electronic Components,4.73,33.0,121.1,Pass
-EXLS,1297989,Technology,Information Technology Services,4.68,38.4,99.4,Pass
-MXL,1288469,Technology,Semiconductors,4.66,57.2,82.4,Pass
-UNF,717954,Industrials,Specialty Business Services,4.66,36.7,101.2,Pass
-DOCS,1516513,Healthcare,Health Information Services,4.63,89.7,93.0,Pass
-PCG-PI,1004980,Unknown,,4.63,0.0,0.0,Pass
-NOVT,1076930,Technology,Scientific & Technical Instruments,4.59,44.4,116.2,Pass
-FELE,38725,Industrials,Specialty Industrial Machinery,4.55,35.5,89.0,Pass
-RELY,1782170,Technology,Software - Infrastructure,4.55,60.2,80.4,Pass
-MTN,812011,Consumer Cyclical,Resorts & Casinos,4.51,44.2,120.9,Pass
-LAUR,912766,Consumer Defensive,Education & Training Services,4.48,38.6,97.7,Pass
-SKY,90896,Consumer Cyclical,Residential Construction,4.47,26.6,115.2,Pass
-MSUXF,1710864,Industrials,Tools & Accessories,4.47,46.3,64.1,Pass
-MAT,63276,Consumer Cyclical,Leisure,4.47,48.9,109.0,Pass
-LOPE,1434588,Consumer Defensive,Education & Training Services,4.46,53.2,105.7,Pass
-GAB-PG,794685,Unknown,,4.46,0.0,0.0,Pass
-DIOD,29002,Technology,Semiconductors,4.45,31.2,98.9,Pass
-ACIW,935036,Technology,Software - Infrastructure,4.45,49.0,104.5,Pass
-ZETA,1851003,Technology,Software - Infrastructure,4.43,60.6,81.7,Pass
-STVN,1849853,Healthcare,Medical Instruments & Supplies,4.43,29.2,107.6,Pass
-MWA,1350593,Industrials,Specialty Industrial Machinery,4.4,37.0,102.5,Pass
-BJGPY,2098425,Technology,Software - Application,4.35,35.5,0.0,Pass
-FTDR,1727263,Consumer Cyclical,Personal Services,4.35,55.3,107.9,Pass
-KLIC,56978,Technology,Semiconductor Equipment & Materials,4.34,48.3,90.6,Pass
-BFAM,1437578,Consumer Cyclical,Personal Services,4.31,25.4,118.6,Pass
-GFF,50725,Industrials,Building Products & Equipment,4.29,41.8,79.1,Pass
-OLED,1005284,Technology,Electronic Components,4.27,74.9,87.5,Pass
-TREX,1069878,Industrials,Building Products & Equipment,4.26,39.2,103.8,Pass
-KNSA,1730430,Healthcare,Drug Manufacturers - Specialty & Generic,4.14,54.7,102.6,Pass
-ACLS,1113232,Technology,Semiconductor Equipment & Materials,4.12,44.9,106.6,Pass
-IFHLY,2035057,Technology,Scientific & Technical Instruments,4.12,44.9,0.0,Pass
-IRTC,1388658,Healthcare,Medical Devices,4.12,70.6,112.4,Pass
-NAVN,1639723,Technology,Software - Application,4.05,71.3,67.4,Pass
-KTB,1760965,Consumer Cyclical,Apparel Manufacturing,4.01,46.6,99.0,Pass
-DLO,1846832,Technology,Software - Infrastructure,4.01,36.8,61.6,Pass
-NTSK,2063196,Technology,Software - Infrastructure,4.0,68.1,79.3,Pass
-HRB,12659,Consumer Cyclical,Personal Services,3.99,44.2,96.4,Pass
-MMSI,856982,Healthcare,Medical Instruments & Supplies,3.98,48.7,107.8,Pass
-LRN,1157408,Consumer Defensive,Education & Training Services,3.94,39.3,110.4,Pass
-PBI-PB,78814,Unknown,,3.91,0.0,0.0,Pass
-CVSA,730464,Consumer Defensive,Education & Training Services,3.9,57.4,101.1,Pass
-NEXHY,1985406,Unknown,,3.89,0.0,0.0,Pass
-DTW,936340,Unknown,,3.89,0.0,0.0,Pass
-ACAD,1070494,Healthcare,Biotechnology,3.88,61.0,99.9,Pass
-BRC,746598,Industrials,Security & Protection Services,3.88,51.1,86.0,Pass
-BBWI,701985,Consumer Cyclical,Specialty Retail,3.87,43.8,102.2,Pass
-FSLY,1517413,Technology,Software - Application,3.85,57.1,79.1,Pass
-ANF,1018840,Consumer Cyclical,Apparel Retail,3.83,61.5,105.0,Pass
-GTLB,1653482,Technology,Software - Infrastructure,3.82,87.4,89.1,Pass
-BULL,1866364,Technology,Software - Application,3.78,77.2,49.1,Pass
-TVTX,1438533,Healthcare,Biotechnology,3.78,55.9,115.8,Pass
-OTTR,1466593,Industrials,Conglomerates,3.75,43.2,76.3,Pass
-BILL,1786352,Technology,Software - Application,3.73,83.6,111.2,Pass
-LASR,1124796,Technology,Semiconductors,3.71,29.8,84.9,Pass
-DAVE,1841408,Technology,Software - Application,3.69,70.2,91.0,Pass
-POWI,833640,Technology,Semiconductors,3.68,54.5,109.7,Pass
-KAI,886346,Industrials,Specialty Industrial Machinery,3.66,45.4,116.8,Pass
-SRAD,1836470,Technology,Software - Application,3.66,26.3,91.3,Pass
-CPRX,1369568,Healthcare,Biotechnology,3.6,83.0,89.2,Pass
-PPENF,1469395,Industrials,Conglomerates,3.6,31.3,47.4,Pass
-MMS,1032220,Industrials,Specialty Business Services,3.57,25.1,109.5,Pass
-LION,2052959,Unknown,,3.55,0.0,0.0,Pass
-HPHTY,1600928,Technology,Electronic Components,3.55,47.2,0.0,Pass
-SIG,832988,Consumer Cyclical,Luxury Goods,3.54,39.5,116.5,Pass
-HNGE,1673743,Healthcare,Health Information Services,3.52,79.8,100.6,Pass
-ASO,1817358,Consumer Cyclical,Specialty Retail,3.51,34.8,120.3,Pass
-ZLDPF,2068427,Healthcare,Biotechnology,3.5,100.0,52.8,Pass
-TMDX,1756262,Healthcare,Medical Devices,3.5,59.9,111.7,Pass
-BMI,9092,Technology,Scientific & Technical Instruments,3.46,41.4,104.8,Pass
-BHFAL,1685040,Unknown,,3.45,0.0,0.0,Pass
-HAYW,1834622,Industrials,Electrical Equipment & Parts,3.44,48.0,107.3,Pass
-RNG,1384905,Technology,Software - Application,3.39,71.2,108.1,Pass
-BOX,1372612,Technology,Software - Infrastructure,3.39,69.5,105.8,Pass
-DBC,1328237,Unknown,,3.38,0.0,0.0,Pass
-HPHTF,1600928,Technology,Electronic Components,3.37,47.2,47.0,Pass
-LIVN,1639691,Healthcare,Medical Devices,3.35,68.0,108.3,Pass
-ADEA,1803696,Technology,Software - Application,3.35,100.0,97.6,Pass
-CARG,1494259,Consumer Cyclical,Auto & Truck Dealerships,3.33,92.8,111.5,Pass
-DRRKF,1705969,Industrials,Building Products & Equipment,3.3,40.8,45.1,Pass
-NIQ,2054696,Unknown,,3.26,0.0,0.0,Pass
-SXI,310354,Industrials,Specialty Industrial Machinery,3.26,41.0,105.2,Pass
-EXPO,851520,Industrials,Engineering & Construction,3.25,36.3,98.4,Pass
-BELFB,729580,Technology,Electronic Components,3.19,39.1,100.6,Pass
-IFCNF,2035057,Technology,Scientific & Technical Instruments,3.19,44.9,44.5,Pass
-LOIMF,1454147,Industrials,Security & Protection Services,3.17,28.8,69.9,Pass
-CLBT,1854587,Technology,Software - Infrastructure,3.16,84.2,53.4,Pass
-COLM,1050797,Consumer Cyclical,Apparel Manufacturing,3.12,50.5,56.0,Pass
-HOVNP,357294,Unknown,,3.09,0.0,0.0,Pass
-WK,1445305,Technology,Software - Application,3.08,78.5,94.9,Pass
-GRBK,1373670,Consumer Cyclical,Residential Construction,3.03,30.5,80.4,Pass
-BB,1070235,Technology,Software - Infrastructure,3.02,76.2,48.8,Pass
-QLYS,1107843,Technology,Software - Infrastructure,3.02,82.8,105.0,Pass
-MANU,1549107,Communication Services,Entertainment,3.01,87.5,50.3,Pass
+﻿Ticker,CIK,Name,SECExchange,Sector,Industry,MarketCap_B,OperatingCashFlow_B,GrossMargin,InstitutionalOwnership,Debt_EBITDA,PPE_Revenue,InfoFromCache,Status,ConfigSignature,EvaluatedAt
+NVDA,0001045810,NVIDIA CORP,NASDAQ,Technology,Semiconductors,5103.123,125.648,74.14,70.88,0.077,,True,Pass,4146d044989af6d3,2026-06-20T02:50:11.574421+00:00
+GOOGL,0001652044,Alphabet Inc.,NASDAQ,Communication Services,Internet Content & Information,4490.913,174.353,60.37,80.76,0.594,,True,Pass,4146d044989af6d3,2026-06-20T02:50:11.586421+00:00
+AAPL,0000320193,Apple Inc.,NASDAQ,Technology,Consumer Electronics,4376.979,140.222,47.86,65.83,0.53,,True,Pass,4146d044989af6d3,2026-06-20T02:50:11.596421+00:00
+MSFT,0000789019,MICROSOFT CORP,NASDAQ,Technology,Software - Infrastructure,2818.348,170.141,68.31,75.78,0.68,,True,Pass,4146d044989af6d3,2026-06-20T02:50:11.607423+00:00
+AMZN,0001018724,AMAZON COM INC,NASDAQ,Consumer Cyclical,Internet Retail,2628.93,148.531,50.6,68.02,1.511,,True,Pass,4146d044989af6d3,2026-06-20T02:50:11.617421+00:00
+TSM,0001046179,TAIWAN SEMICONDUCTOR MANUFACTURING CO LTD,NYSE,Technology,Semiconductors,2396.773,2348.378,61.87,15.64,0.383,,True,Pass,4146d044989af6d3,2026-06-20T02:50:11.638421+00:00
+AVGO,0001730168,Broadcom Inc.,NASDAQ,Technology,Semiconductors,1957.031,33.622,76.28,79.91,1.542,,True,Pass,4146d044989af6d3,2026-06-20T02:50:11.649421+00:00
+META,0001326801,"Meta Platforms, Inc.",NASDAQ,Communication Services,Internet Content & Information,1465.229,124.0,81.94,79.34,0.794,,True,Pass,4146d044989af6d3,2026-06-20T02:50:11.670422+00:00
+MU,0000723125,MICRON TECHNOLOGY INC,NASDAQ,Technology,Semiconductors,1278.839,30.653,58.44,81.6,0.293,,True,Pass,4146d044989af6d3,2026-06-20T02:50:11.680420+00:00
+LLY,0000059478,ELI LILLY & Co,NYSE,Healthcare,Drug Manufacturers - General,979.64,20.48,82.83,85.35,1.198,,True,Pass,4146d044989af6d3,2026-06-20T02:50:11.691424+00:00
+AMD,0000002488,ADVANCED MICRO DEVICES INC,NASDAQ,Technology,Semiconductors,876.236,9.725,53.06,72.16,0.521,,True,Pass,4146d044989af6d3,2026-06-20T02:50:11.714420+00:00
+ASML,0000937966,ASML HOLDING NV,NASDAQ,Technology,Semiconductor Equipment & Materials,743.733,10.532,52.6,19.59,0.213,,True,Pass,4146d044989af6d3,2026-06-20T02:50:11.736422+00:00
+INTC,0000050863,INTEL CORP,NASDAQ,Technology,Semiconductors,673.434,9.98,37.2,64.05,3.177,,True,Pass,4146d044989af6d3,2026-06-20T02:50:11.747421+00:00
+JNJ,0000200406,JOHNSON & JOHNSON,NYSE,Healthcare,Drug Manufacturers - General,549.784,22.87,68.04,76.85,1.602,,True,Pass,4146d044989af6d3,2026-06-20T02:50:11.779422+00:00
+AMAT,0000006951,APPLIED MATERIALS INC /DE,NASDAQ,Technology,Semiconductor Equipment & Materials,489.96,7.993,48.96,85.14,0.784,,True,Pass,4146d044989af6d3,2026-06-20T02:50:11.803421+00:00
+LRCX,0000707549,LAM RESEARCH CORP,NASDAQ,Technology,Semiconductor Equipment & Materials,486.522,6.955,49.98,88.07,0.476,,True,Pass,4146d044989af6d3,2026-06-20T02:50:11.815421+00:00
+CSCO,0000858877,"CISCO SYSTEMS, INC.",NASDAQ,Technology,Communication Equipment,471.159,13.025,64.3,82.88,1.94,,True,Pass,4146d044989af6d3,2026-06-20T02:50:11.827421+00:00
+ARM,0001973239,ARM HOLDINGS PLC /UK,NASDAQ,Technology,Semiconductors,469.378,1.524,97.54,95.41,0.461,,True,Pass,4146d044989af6d3,2026-06-20T02:50:11.838421+00:00
+CAT,0000018230,CATERPILLAR INC,NYSE,Industrials,Farm & Heavy Construction Machinery,454.061,12.32,28.6,72.89,2.958,,True,Pass,4146d044989af6d3,2026-06-20T02:50:11.858421+00:00
+ABBV,0001551152,AbbVie Inc.,NYSE,Healthcare,Drug Manufacturers - General,382.493,21.224,72.03,76.86,2.437,,True,Pass,4146d044989af6d3,2026-06-20T02:50:11.901422+00:00
+PG,0000080424,PROCTER & GAMBLE Co,NYSE,Consumer Defensive,Household & Personal Products,350.175,19.41,50.98,71.91,1.479,,True,Pass,4146d044989af6d3,2026-06-20T02:50:11.943423+00:00
+KO,0000021344,COCA COLA CO,NYSE,Consumer Defensive,Beverages - Non-Alcoholic,341.574,14.631,61.74,68.27,2.671,,True,Pass,4146d044989af6d3,2026-06-20T02:50:11.966422+00:00
+KLAC,0000319201,KLA CORP,NASDAQ,Technology,Semiconductor Equipment & Materials,339.057,4.402,61.45,93.79,1.05,,True,Pass,4146d044989af6d3,2026-06-20T02:50:11.977421+00:00
+HD,0000354950,"HOME DEPOT, INC.",NYSE,Consumer Cyclical,Home Improvement Retail,333.316,18.032,33.13,76.1,2.555,,True,Pass,4146d044989af6d3,2026-06-20T02:50:11.988423+00:00
+NFLX,0001065280,NETFLIX INC,NASDAQ,Communication Services,Entertainment,325.832,12.65,49.03,85.11,1.172,,True,Pass,4146d044989af6d3,2026-06-20T02:50:11.999422+00:00
+SNDK,0002023554,Sandisk Corp,NASDAQ,Technology,Computer Hardware,323.539,4.639,56.04,80.85,0.037,,True,Pass,4146d044989af6d3,2026-06-20T02:50:12.020422+00:00
+PLTR,0001321655,Palantir Technologies Inc.,NASDAQ,Technology,Software - Infrastructure,307.983,2.723,84.07,62.4,0.105,,True,Pass,4146d044989af6d3,2026-06-20T02:50:12.040420+00:00
+TXN,0000097476,TEXAS INSTRUMENTS INC,NASDAQ,Technology,Semiconductors,293.833,7.824,57.32,92.62,1.621,,True,Pass,4146d044989af6d3,2026-06-20T02:50:12.060423+00:00
+MRK,0000310158,"Merck & Co., Inc.",NYSE,Healthcare,Drug Manufacturers - General,281.239,17.89,76.73,82.33,1.664,,True,Pass,4146d044989af6d3,2026-06-20T02:50:12.071423+00:00
+NVS,0001114448,NOVARTIS AG,NYSE,Healthcare,Drug Manufacturers - General,280.642,19.175,75.55,7.7,2.05,,True,Pass,4146d044989af6d3,2026-06-20T02:50:12.082421+00:00
+MRVL,0001835632,"Marvell Technology, Inc.",NASDAQ,Technology,Semiconductors,271.695,2.056,51.5,85.59,1.946,,True,Pass,4146d044989af6d3,2026-06-20T02:50:12.112422+00:00
+AZN,0000901832,ASTRAZENECA PLC,NYSE,Healthcare,Drug Manufacturers - General,271.292,14.221,81.5,68.77,1.699,,True,Pass,4146d044989af6d3,2026-06-20T02:50:12.127420+00:00
+WDC,0000106040,WESTERN DIGITAL CORP,NASDAQ,Technology,Computer Hardware,257.212,3.286,45.43,,0.439,,True,Pass,4146d044989af6d3,2026-06-20T02:50:12.148421+00:00
+BABA,0001577552,Alibaba Group Holding Ltd,NYSE,Consumer Cyclical,Internet Retail,256.947,76.213,39.81,11.45,2.559,,True,Pass,4146d044989af6d3,2026-06-20T02:50:12.158422+00:00
+STX,0001137789,Seagate Technology Holdings plc,NASDAQ,Technology,Computer Hardware,242.142,2.877,41.57,88.25,1.189,,True,Pass,4146d044989af6d3,2026-06-20T02:50:12.199422+00:00
+QCOM,0000804328,QUALCOMM INC/DE,NASDAQ,Technology,Semiconductors,238.32,14.285,54.8,84.82,1.175,,True,Pass,4146d044989af6d3,2026-06-20T02:50:12.210420+00:00
+PANW,0001327567,Palo Alto Networks Inc,NASDAQ,Technology,Software - Infrastructure,234.541,4.217,71.96,83.27,1.436,,True,Pass,4146d044989af6d3,2026-06-20T02:50:12.241420+00:00
+ANET,0001596532,"Arista Networks, Inc.",NYSE,Technology,Computer Hardware,213.643,5.424,63.54,72.88,0.0,,True,Pass,4146d044989af6d3,2026-06-20T02:50:12.293422+00:00
+ADI,0000006281,ANALOG DEVICES INC,NASDAQ,Technology,Semiconductors,211.62,5.106,64.49,93.54,1.416,,True,Pass,4146d044989af6d3,2026-06-20T02:50:12.304421+00:00
+APH,0000820313,AMPHENOL CORP /DE/,NYSE,Technology,Electronic Components,201.709,5.731,37.92,97.89,2.294,,True,Pass,4146d044989af6d3,2026-06-20T02:50:12.324422+00:00
+MCD,0000063908,MCDONALDS CORP,NYSE,Consumer Cyclical,Restaurants,197.954,10.535,57.35,77.19,3.692,,True,Pass,4146d044989af6d3,2026-06-20T02:50:12.334421+00:00
+TMUS,0001283699,"T-Mobile US, Inc.",NASDAQ,Communication Services,Telecom Services,196.604,28.325,63.28,43.86,3.604,,True,Pass,4146d044989af6d3,2026-06-20T02:50:12.355424+00:00
+PEP,0000077476,PEPSICO INC,NASDAQ,Consumer Defensive,Beverages - Non-Alcoholic,194.133,13.101,54.38,80.91,2.82,,True,Pass,4146d044989af6d3,2026-06-20T02:50:12.365420+00:00
+NVO,0000353278,NOVO NORDISK A S,NYSE,Healthcare,Drug Manufacturers - General,191.242,118.456,83.2,9.81,0.842,,True,Pass,4146d044989af6d3,2026-06-20T02:50:12.390422+00:00
+VZ,0000732712,VERIZON COMMUNICATIONS INC,NYSE,Communication Services,Telecom Services,189.445,37.339,58.91,70.38,3.932,,True,Pass,4146d044989af6d3,2026-06-20T02:50:12.400425+00:00
+SAP,0001000184,SAP SE,NYSE,Technology,Software - Application,182.994,8.889,73.72,7.81,0.678,,True,Pass,4146d044989af6d3,2026-06-20T02:50:12.411421+00:00
+AMGN,0000318154,AMGEN INC,NASDAQ,Healthcare,Drug Manufacturers - General,182.206,10.756,71.44,85.45,3.388,,True,Pass,4146d044989af6d3,2026-06-20T02:50:12.421421+00:00
+TJX,0000109198,TJX COMPANIES INC /DE/,NYSE,Consumer Cyclical,Apparel Retail,180.962,7.599,31.35,94.01,1.605,,True,Pass,4146d044989af6d3,2026-06-20T02:50:12.431421+00:00
+DIS,0001744489,Walt Disney Co,NYSE,Communication Services,Entertainment,180.406,15.792,37.16,78.31,2.402,,True,Pass,4146d044989af6d3,2026-06-20T02:50:12.451421+00:00
+TMO,0000097745,THERMO FISHER SCIENTIFIC INC.,NYSE,Healthcare,Diagnostics & Research,172.659,8.287,40.93,94.25,3.821,,True,Pass,4146d044989af6d3,2026-06-20T02:50:12.491422+00:00
+GLW,0000024741,CORNING INC /NY,NYSE,Technology,Electronic Components,167.756,2.906,36.38,73.76,2.54,,True,Pass,4146d044989af6d3,2026-06-20T02:50:12.501421+00:00
+ETN,0001551182,Eaton Corp plc,NYSE,Industrials,Specialty Industrial Machinery,163.773,4.741,37.1,88.01,3.442,,True,Pass,4146d044989af6d3,2026-06-20T02:50:12.521421+00:00
+APP,0001751008,AppLovin Corp,NASDAQ,Communication Services,Advertising Agencies,157.794,4.439,88.37,75.06,0.79,,True,Pass,4146d044989af6d3,2026-06-20T02:50:12.597424+00:00
+ABT,0000001800,ABBOTT LABORATORIES,NYSE,Healthcare,Medical Devices,153.994,9.464,56.5,82.67,2.907,,True,Pass,4146d044989af6d3,2026-06-20T02:50:12.622422+00:00
+GILD,0000882095,"GILEAD SCIENCES, INC.",NASDAQ,Healthcare,Drug Manufacturers - General,153.657,10.806,79.37,92.25,1.505,,True,Pass,4146d044989af6d3,2026-06-20T02:50:12.635423+00:00
+T,0000732717,AT&T INC.,NYSE,Communication Services,Telecom Services,152.933,38.792,59.41,69.3,3.597,,True,Pass,4146d044989af6d3,2026-06-20T02:50:12.647422+00:00
+UNP,0000100885,UNION PACIFIC CORP,NYSE,Industrials,Railroads,152.513,9.52,56.53,90.85,2.503,,True,Pass,4146d044989af6d3,2026-06-20T02:50:12.668422+00:00
+UBER,0001543151,"Uber Technologies, Inc",NYSE,Technology,Software - Application,145.83,10.126,39.63,86.17,1.769,,True,Pass,4146d044989af6d3,2026-06-20T02:50:12.707425+00:00
+ISRG,0001035267,INTUITIVE SURGICAL INC,NASDAQ,Healthcare,Medical Instruments & Supplies,144.066,3.361,66.29,89.28,0.0,,True,Pass,4146d044989af6d3,2026-06-20T02:50:12.734424+00:00
+PFE,0000078003,PFIZER INC,NYSE,Healthcare,Drug Manufacturers - General,143.683,11.984,74.8,69.38,2.542,,True,Pass,4146d044989af6d3,2026-06-20T02:50:12.749422+00:00
+SHOP,0001594805,SHOPIFY INC.,NASDAQ,Technology,Software - Application,141.25,2.147,47.97,73.85,0.083,,True,Pass,4146d044989af6d3,2026-06-20T02:50:12.764422+00:00
+BKNG,0001075531,Booking Holdings Inc.,NASDAQ,Consumer Cyclical,Travel Services,133.109,9.341,86.99,97.25,1.848,,True,Pass,4146d044989af6d3,2026-06-20T02:50:12.793422+00:00
+VRT,0001674101,Vertiv Holdings Co,NYSE,Industrials,Electrical Equipment & Parts,127.927,2.577,37.15,85.81,1.37,,True,Pass,4146d044989af6d3,2026-06-20T02:50:12.850423+00:00
+UL,0000217410,UNILEVER PLC,NYSE,Consumer Defensive,Household & Personal Products,126.462,8.35,46.95,11.47,2.607,,True,Pass,4146d044989af6d3,2026-06-20T02:50:12.875421+00:00
+DHR,0000313616,DANAHER CORP /DE/,NYSE,Healthcare,Diagnostics & Research,125.396,6.439,58.99,84.74,2.481,,True,Pass,4146d044989af6d3,2026-06-20T02:50:12.938423+00:00
+LOW,0000060667,LOWES COMPANIES INC,NYSE,Consumer Cyclical,Home Improvement Retail,124.589,9.835,33.29,81.26,3.378,,True,Pass,4146d044989af6d3,2026-06-20T02:50:12.952423+00:00
+CRM,0001108524,"Salesforce, Inc.",NYSE,Technology,Software - Application,124.308,15.221,77.64,94.25,3.3,,True,Pass,4146d044989af6d3,2026-06-20T02:50:12.965421+00:00
+PH,0000076334,Parker-Hannifin Corp,NYSE,Industrials,Specialty Industrial Machinery,120.194,4.095,37.44,91.18,1.749,,True,Pass,4146d044989af6d3,2026-06-20T02:50:12.991423+00:00
+SONY,0000313838,Sony Group Corp,NYSE,Technology,Consumer Electronics,119.741,1945.617,30.8,8.21,0.62,,True,Pass,4146d044989af6d3,2026-06-20T02:50:13.013423+00:00
+SYK,0000310764,STRYKER CORP,NYSE,Healthcare,Medical Devices,117.998,5.375,64.7,82.37,2.202,,True,Pass,4146d044989af6d3,2026-06-20T02:50:13.066421+00:00
+VRTX,0000875320,VERTEX PHARMACEUTICALS INC / MA,NASDAQ,Healthcare,Biotechnology,114.626,4.241,54.39,98.02,0.399,,True,Pass,4146d044989af6d3,2026-06-20T02:50:13.121421+00:00
+PDD,0001737806,PDD Holdings Inc.,NASDAQ,Consumer Cyclical,Internet Retail,113.245,107.867,55.98,31.78,0.053,,True,Pass,4146d044989af6d3,2026-06-20T02:50:13.134423+00:00
+BMY,0000014272,BRISTOL MYERS SQUIBB CO,NYSE,Healthcare,Drug Manufacturers - General,110.272,13.306,71.98,83.79,2.447,,True,Pass,4146d044989af6d3,2026-06-20T02:50:13.176422+00:00
+TT,0001466258,Trane Technologies plc,NYSE,Industrials,Building Products & Equipment,106.858,3.481,35.92,91.61,1.09,,True,Pass,4146d044989af6d3,2026-06-20T02:50:13.219423+00:00
+CDNS,0000813672,CADENCE DESIGN SYSTEMS INC,NASDAQ,Technology,Software - Application,106.848,1.598,86.08,91.13,1.531,,True,Pass,4146d044989af6d3,2026-06-20T02:50:13.235423+00:00
+FTNT,0001262039,"Fortinet, Inc.",NASDAQ,Technology,Software - Infrastructure,106.036,2.804,80.3,72.52,0.24,,True,Pass,4146d044989af6d3,2026-06-20T02:50:13.267422+00:00
+MAR,0001048286,MARRIOTT INTERNATIONAL INC /MD/,NASDAQ,Consumer Cyclical,Lodging,104.473,3.423,79.04,64.23,3.676,,True,Pass,4146d044989af6d3,2026-06-20T02:50:13.317422+00:00
+MDT,0001613103,Medtronic plc,NYSE,Healthcare,Medical Devices,101.863,7.33,65.38,89.46,2.785,,True,Pass,4146d044989af6d3,2026-06-20T02:50:13.348423+00:00
+GSK,0001131399,GSK plc,NYSE,Healthcare,Drug Manufacturers - General,101.536,7.737,72.87,18.85,1.672,,True,Pass,4146d044989af6d3,2026-06-20T02:50:13.365422+00:00
+SNY,0001121404,Sanofi,NASDAQ,Healthcare,Drug Manufacturers - General,101.448,10.34,72.36,8.9,1.561,,True,Pass,4146d044989af6d3,2026-06-20T02:50:13.386423+00:00
+CMI,0000026172,CUMMINS INC,NYSE,Industrials,Specialty Industrial Machinery,98.919,3.933,25.85,87.95,1.647,,True,Pass,4146d044989af6d3,2026-06-20T02:50:13.440424+00:00
+NOW,0001373715,"ServiceNow, Inc.",NYSE,Technology,Software - Application,98.016,5.437,76.56,88.48,0.842,,True,Pass,4146d044989af6d3,2026-06-20T02:50:13.472423+00:00
+SPOT,0001639920,Spotify Technology S.A.,NYSE,Communication Services,Internet Content & Information,96.247,3.23,32.32,68.93,0.195,,True,Pass,4146d044989af6d3,2026-06-20T02:50:13.517421+00:00
+MNST,0000865752,Monster Beverage Corp,NASDAQ,Consumer Defensive,Beverages - Non-Alcoholic,89.331,2.196,55.47,70.95,0.033,,True,Pass,4146d044989af6d3,2026-06-20T02:50:13.589420+00:00
+JCI,0000833444,Johnson Controls International plc,NYSE,Industrials,Building Products & Equipment,88.357,1.738,36.56,93.81,2.204,,True,Pass,4146d044989af6d3,2026-06-20T02:50:13.641422+00:00
+ADP,0000008670,AUTOMATIC DATA PROCESSING INC,NASDAQ,Technology,Software - Application,87.306,5.452,48.5,90.4,0.694,,True,Pass,4146d044989af6d3,2026-06-20T02:50:13.668423+00:00
+WM,0000823768,WASTE MANAGEMENT INC,NYSE,Industrials,Waste Management,86.178,6.336,40.61,86.23,2.988,,True,Pass,4146d044989af6d3,2026-06-20T02:50:13.701421+00:00
+CSX,0000277948,CSX CORP,NASDAQ,Industrials,Railroads,84.787,4.63,46.82,82.04,2.933,,True,Pass,4146d044989af6d3,2026-06-20T02:50:13.732421+00:00
+ABNB,0001559720,"Airbnb, Inc.",NASDAQ,Consumer Cyclical,Travel Services,84.521,4.565,82.91,88.57,0.968,,True,Pass,4146d044989af6d3,2026-06-20T02:50:13.743421+00:00
+EMR,0000032604,EMERSON ELECTRIC CO,NYSE,Industrials,Specialty Industrial Machinery,84.385,3.558,52.67,85.09,2.393,,True,Pass,4146d044989af6d3,2026-06-20T02:50:13.753421+00:00
+ELV,0001156039,"Elevance Health, Inc.",NYSE,Healthcare,Healthcare Plans,84.368,7.605,25.89,93.44,3.728,,True,Pass,4146d044989af6d3,2026-06-20T02:50:13.764423+00:00
+RCL,0000884887,ROYAL CARIBBEAN CRUISES LTD,NYSE,Consumer Cyclical,Travel Services,83.814,6.672,50.91,90.34,3.157,,True,Pass,4146d044989af6d3,2026-06-20T02:50:13.774421+00:00
+MMM,0000066740,3M CO,NYSE,Industrials,Conglomerates,83.764,2.959,39.71,77.52,2.104,,True,Pass,4146d044989af6d3,2026-06-20T02:50:13.785421+00:00
+HCA,0000860730,"HCA Healthcare, Inc.",NYSE,Healthcare,Medical Care Facilities,83.228,12.999,41.61,78.32,3.202,,True,Pass,4146d044989af6d3,2026-06-20T02:50:13.805421+00:00
+MELI,0001099590,MERCADOLIBRE INC,NASDAQ,Consumer Cyclical,Internet Retail,82.898,13.16,49.47,83.14,3.14,,True,Pass,4146d044989af6d3,2026-06-20T02:50:13.816421+00:00
+CMCSA,0001166691,COMCAST CORP,NASDAQ,Communication Services,Telecom Services,80.125,32.24,70.13,93.67,2.675,,True,Pass,4146d044989af6d3,2026-06-20T02:50:13.867422+00:00
+AMX,0001129137,AMERICA MOVIL SAB DE CV/,NYSE,Communication Services,Telecom Services,79.475,277.332,43.36,6.27,1.984,,True,Pass,4146d044989af6d3,2026-06-20T02:50:13.889424+00:00
+NXPI,0001413447,NXP Semiconductors N.V.,NASDAQ,Technology,Semiconductors,79.092,3.048,55.63,,2.818,,True,Pass,4146d044989af6d3,2026-06-20T02:50:13.959421+00:00
+ACN,0001467373,Accenture plc,NYSE,Technology,Information Technology Services,78.763,13.08,32.03,85.2,0.655,,True,Pass,4146d044989af6d3,2026-06-20T02:50:13.982424+00:00
+FDX,0001048911,FEDEX CORP,NYSE,Industrials,Integrated Freight & Logistics,77.834,8.179,27.55,81.51,3.635,,True,Pass,4146d044989af6d3,2026-06-20T02:50:14.014420+00:00
+NTES,0001110646,"NetEase, Inc.",NASDAQ,Communication Services,Electronic Gaming & Multimedia,77.738,52.366,65.69,9.94,0.272,,True,Pass,4146d044989af6d3,2026-06-20T02:50:14.025422+00:00
+ADBE,0000796343,ADOBE INC.,NASDAQ,Technology,Software - Application,77.576,10.481,89.4,88.1,0.727,,True,Pass,4146d044989af6d3,2026-06-20T02:50:14.036421+00:00
+MPWR,0001280452,MONOLITHIC POWER SYSTEMS INC,NASDAQ,Technology,Semiconductors,76.825,0.832,55.17,,0.023,,True,Pass,4146d044989af6d3,2026-06-20T02:50:14.058420+00:00
+CP,0000016875,CANADIAN PACIFIC KANSAS CITY LTD/CN,NYSE,Industrials,Railroads,76.372,5.129,53.85,74.71,3.014,,True,Pass,4146d044989af6d3,2026-06-20T02:50:14.068420+00:00
+COHR,0000820318,COHERENT CORP.,NYSE,Technology,Scientific & Technical Instruments,76.215,0.14,36.99,89.51,2.607,,True,Pass,4146d044989af6d3,2026-06-20T02:50:14.078421+00:00
+ITW,0000049826,ILLINOIS TOOL WORKS INC,NYSE,Industrials,Specialty Industrial Machinery,75.979,3.157,44.12,86.49,1.935,,True,Pass,4146d044989af6d3,2026-06-20T02:50:14.089421+00:00
+DASH,0001792789,"DoorDash, Inc.",NASDAQ,Consumer Cyclical,Internet Retail,75.58,2.39,51.76,97.1,2.435,,True,Pass,4146d044989af6d3,2026-06-20T02:50:14.131421+00:00
+NOK,0000924613,NOKIA CORP,NYSE,Technology,Communication Equipment,75.308,1.964,45.36,18.11,1.311,,True,Pass,4146d044989af6d3,2026-06-20T02:50:14.141421+00:00
+ROST,0000745732,"ROSS STORES, INC.",NASDAQ,Consumer Cyclical,Apparel Retail,74.678,3.453,32.74,94.67,1.377,,True,Pass,4146d044989af6d3,2026-06-20T02:50:14.151421+00:00
+INTU,0000896878,INTUIT INC.,NASDAQ,Technology,Software - Application,73.034,7.888,80.79,92.29,1.076,,True,Pass,4146d044989af6d3,2026-06-20T02:50:14.209422+00:00
+CL,0000021665,COLGATE PALMOLIVE CO,NYSE,Consumer Defensive,Household & Personal Products,71.601,4.345,60.06,88.06,1.62,,True,Pass,4146d044989af6d3,2026-06-20T02:50:14.259421+00:00
+ALAB,0001736297,"Astera Labs, Inc.",NASDAQ,Technology,Semiconductors,71.489,0.383,75.99,73.18,0.179,,True,Pass,4146d044989af6d3,2026-06-20T02:50:14.280420+00:00
+STM,0000932787,STMicroelectronics N.V.,NYSE,Technology,Semiconductors,69.673,2.112,33.96,12.37,1.118,,True,Pass,4146d044989af6d3,2026-06-20T02:50:14.333421+00:00
+FIX,0001035983,COMFORT SYSTEMS USA INC,NYSE,Industrials,Engineering & Construction,69.221,1.663,25.13,96.41,0.175,,True,Pass,4146d044989af6d3,2026-06-20T02:50:14.366421+00:00
+CNI,0000016868,CANADIAN NATIONAL RAILWAY CO,NYSE,Industrials,Railroads,68.807,7.15,56.66,73.5,2.519,,True,Pass,4146d044989af6d3,2026-06-20T02:50:14.377423+00:00
+TER,0000097210,"TERADYNE, INC",NASDAQ,Technology,Semiconductor Equipment & Materials,68.553,0.778,58.7,96.52,0.071,,True,Pass,4146d044989af6d3,2026-06-20T02:50:14.388421+00:00
+CTAS,0000723254,CINTAS CORP,NASDAQ,Industrials,Specialty Business Services,68.363,2.207,50.36,69.38,1.005,,True,Pass,4146d044989af6d3,2026-06-20T02:50:14.409422+00:00
+URI,0001067701,"UNITED RENTALS, INC.",NYSE,Industrials,Rental & Leasing Services,67.458,5.279,38.39,96.34,3.303,,True,Pass,4146d044989af6d3,2026-06-20T02:50:14.463422+00:00
+NSC,0000702165,NORFOLK SOUTHERN CORP,NYSE,Industrials,Railroads,67.396,3.755,45.85,78.26,3.156,,True,Pass,4146d044989af6d3,2026-06-20T02:50:14.481423+00:00
+BSX,0000885725,BOSTON SCIENTIFIC CORP,NYSE,Healthcare,Medical Devices,67.317,4.341,68.94,94.95,2.005,,True,Pass,4146d044989af6d3,2026-06-20T02:50:14.491420+00:00
+NKE,0000320187,"NIKE, Inc.",NYSE,Consumer Cyclical,Footwear & Accessories,66.936,1.694,40.92,82.54,2.893,,True,Pass,4146d044989af6d3,2026-06-20T02:50:14.512422+00:00
+MSI,0000068505,"Motorola Solutions, Inc.",NYSE,Technology,Communication Equipment,65.596,2.778,51.51,90.27,2.744,,True,Pass,4146d044989af6d3,2026-06-20T02:50:14.586420+00:00
+GWW,0000277135,"W.W. GRAINGER, INC.",NYSE,Industrials,Industrial Distribution,64.465,2.108,39.15,75.96,0.901,,True,Pass,4146d044989af6d3,2026-06-20T02:50:14.629420+00:00
+REGN,0000872589,"REGENERON PHARMACEUTICALS, INC.",NASDAQ,Healthcare,Biotechnology,63.946,5.013,43.89,92.32,0.617,,True,Pass,4146d044989af6d3,2026-06-20T02:50:14.651422+00:00
+TEL,0001385157,TE Connectivity plc,NYSE,Technology,Electronic Components,63.528,4.42,36.07,97.49,1.239,,True,Pass,4146d044989af6d3,2026-06-20T02:50:14.671420+00:00
+RSG,0001060391,"REPUBLIC SERVICES, INC.",NYSE,Industrials,Waste Management,63.053,4.498,43.05,97.29,2.712,,True,Pass,4146d044989af6d3,2026-06-20T02:50:14.680422+00:00
+HPE,0001645590,Hewlett Packard Enterprise Co,NYSE,Technology,Communication Equipment,62.78,6.358,33.78,94.25,3.783,,True,Pass,4146d044989af6d3,2026-06-20T02:50:14.691425+00:00
+KEYS,0001601046,"Keysight Technologies, Inc.",NYSE,Technology,Scientific & Technical Instruments,62.15,1.489,62.14,92.97,1.932,,True,Pass,4146d044989af6d3,2026-06-20T02:50:14.722421+00:00
+CIEN,0000936395,CIENA CORP,NYSE,Technology,Communication Equipment,60.616,1.033,43.05,97.96,2.012,,True,Pass,4146d044989af6d3,2026-06-20T02:50:14.751422+00:00
+UMC,0001033767,UNITED MICROELECTRONICS CORP,NYSE,Technology,Semiconductors,60.424,98.02,29.61,7.22,0.731,,True,Pass,4146d044989af6d3,2026-06-20T02:50:14.762425+00:00
+TGT,0000027419,TARGET CORP,NYSE,Consumer Defensive,Discount Stores,59.381,7.003,28.14,87.64,2.31,,True,Pass,4146d044989af6d3,2026-06-20T02:50:14.803422+00:00
+SE,0001703399,Sea Ltd,NYSE,Consumer Cyclical,Internet Retail,55.908,5.325,44.27,70.17,1.43,,True,Pass,4146d044989af6d3,2026-06-20T02:50:14.893421+00:00
+RELX,0000929869,RELX PLC,NYSE,Industrials,Specialty Business Services,54.759,2.836,66.29,4.98,2.269,,True,Pass,4146d044989af6d3,2026-06-20T02:50:15.011421+00:00
+AME,0001037868,AMETEK INC/,NYSE,Industrials,Specialty Industrial Machinery,54.417,1.836,36.68,92.41,1.015,,True,Pass,4146d044989af6d3,2026-06-20T02:50:15.022422+00:00
+ROK,0001024478,"ROCKWELL AUTOMATION, INC",NYSE,Industrials,Specialty Industrial Machinery,52.72,1.535,48.92,90.98,2.059,,True,Pass,4146d044989af6d3,2026-06-20T02:50:15.072423+00:00
+FAST,0000815556,FASTENAL CO,NASDAQ,Industrials,Industrial Distribution,52.683,1.412,44.89,88.16,0.236,,True,Pass,4146d044989af6d3,2026-06-20T02:50:15.084421+00:00
+CRDO,0001807794,Credo Technology Group Holding Ltd,NASDAQ,Technology,Semiconductors,50.69,0.464,68.04,75.89,0.053,,True,Pass,4146d044989af6d3,2026-06-20T02:50:15.155421+00:00
+EA,0000712515,ELECTRONIC ARTS INC.,NASDAQ,Communication Services,Electronic Gaming & Multimedia,50.689,2.553,78.97,95.21,1.248,,True,Pass,4146d044989af6d3,2026-06-20T02:50:15.165422+00:00
+EW,0001099800,Edwards Lifesciences Corp,NYSE,Healthcare,Medical Devices,50.302,1.359,77.87,94.14,0.369,,True,Pass,4146d044989af6d3,2026-06-20T02:50:15.175421+00:00
+ABEV,0001565025,AMBEV S.A.,NYSE,Consumer Defensive,Beverages - Brewers,48.409,26.407,51.48,6.89,0.115,,True,Pass,4146d044989af6d3,2026-06-20T02:50:15.228421+00:00
+EBAY,0001065088,EBAY INC,NASDAQ,Consumer Cyclical,Internet Retail,48.059,2.173,71.79,96.32,2.417,,True,Pass,4146d044989af6d3,2026-06-20T02:50:15.259420+00:00
+ON,0001097864,ON SEMICONDUCTOR CORP,NASDAQ,Technology,Semiconductors,47.286,1.397,42.67,,1.585,,True,Pass,4146d044989af6d3,2026-06-20T02:50:15.308421+00:00
+GFS,0001709048,GLOBALFOUNDRIES Inc.,NASDAQ,Technology,Semiconductors,47.095,1.942,26.11,,0.848,,True,Pass,4146d044989af6d3,2026-06-20T02:50:15.318420+00:00
+WAB,0000943452,WESTINGHOUSE AIR BRAKE TECHNOLOGIES CORP,NYSE,Industrials,Railroads,46.463,1.767,35.24,96.15,2.745,,True,Pass,4146d044989af6d3,2026-06-20T02:50:15.378422+00:00
+FERG,0002011641,Ferguson Enterprises Inc. /DE/,NYSE,Industrials,Industrial Distribution,46.225,1.96,30.7,98.68,1.999,,True,Pass,4146d044989af6d3,2026-06-20T02:50:15.399422+00:00
+GRMN,0001121788,GARMIN LTD,NYSE,Technology,Scientific & Technical Instruments,45.167,1.749,59.14,58.64,0.1,,True,Pass,4146d044989af6d3,2026-06-20T02:50:15.431421+00:00
+DEO,0000835403,DIAGEO PLC,NYSE,Consumer Defensive,Beverages - Wineries & Distilleries,44.722,4.095,60.0,9.97,3.927,,True,Pass,4146d044989af6d3,2026-06-20T02:50:15.451421+00:00
+TTWO,0000946581,TAKE TWO INTERACTIVE SOFTWARE INC,NASDAQ,Communication Services,Electronic Gaming & Multimedia,44.426,0.624,57.67,93.87,3.752,,True,Pass,4146d044989af6d3,2026-06-20T02:50:15.471422+00:00
+IDXX,0000874716,IDEXX LABORATORIES INC /DE,NASDAQ,Healthcare,Diagnostics & Research,44.339,1.21,62.05,96.15,0.715,,True,Pass,4146d044989af6d3,2026-06-20T02:50:15.481423+00:00
+VIK,0001745201,Viking Holdings Ltd,NYSE,Consumer Cyclical,Travel Services,43.353,2.715,44.27,,3.252,,True,Pass,4146d044989af6d3,2026-06-20T02:50:15.511421+00:00
+FMX,0001061736,MEXICAN ECONOMIC DEVELOPMENT INC,NYSE,Consumer Defensive,Beverages - Brewers,43.086,86.669,40.66,46.78,2.442,,True,Pass,4146d044989af6d3,2026-06-20T02:50:15.539422+00:00
+CCEP,0001650107,COCA-COLA EUROPACIFIC PARTNERS plc,NASDAQ,Consumer Defensive,Beverages - Non-Alcoholic,42.918,2.953,35.58,38.51,3.152,,True,Pass,4146d044989af6d3,2026-06-20T02:50:15.559420+00:00
+INFY,0001067491,Infosys Ltd,NYSE,Technology,Information Technology Services,42.794,4.039,29.52,12.21,0.218,,True,Pass,4146d044989af6d3,2026-06-20T02:50:15.579420+00:00
+CCL,0000815097,Carnival Corp Ltd.,NYSE,Consumer Cyclical,Travel Services,42.759,6.556,55.97,73.23,3.667,,True,Pass,4146d044989af6d3,2026-06-20T02:50:15.600421+00:00
+CMG,0001058090,CHIPOTLE MEXICAN GRILL INC,NYSE,Consumer Cyclical,Restaurants,41.676,2.208,39.65,92.53,2.277,,True,Pass,4146d044989af6d3,2026-06-20T02:50:15.663422+00:00
+ADSK,0000769397,"Autodesk, Inc.",NASDAQ,Technology,Software - Application,40.924,2.781,92.43,97.29,1.273,,True,Pass,4146d044989af6d3,2026-06-20T02:50:15.673421+00:00
+BDX,0000010795,BECTON DICKINSON & CO,NYSE,Healthcare,Medical Instruments & Supplies,39.672,3.828,47.09,99.31,2.806,,True,Pass,4146d044989af6d3,2026-06-20T02:50:15.727423+00:00
+HLN,0001900304,Haleon plc,NYSE,Healthcare,Drug Manufacturers - Specialty & Generic,39.553,2.634,64.77,13.26,3.147,,True,Pass,4146d044989af6d3,2026-06-20T02:50:15.751421+00:00
+WCN,0001318220,"Waste Connections, Inc.",NYSE,Industrials,Waste Management,39.121,2.418,42.5,90.73,3.072,,True,Pass,4146d044989af6d3,2026-06-20T02:50:15.835422+00:00
+BIDU,0001329099,"Baidu, Inc.",NASDAQ,Communication Services,Internet Content & Information,38.027,5.658,42.08,21.95,3.991,,True,Pass,4146d044989af6d3,2026-06-20T02:50:15.911423+00:00
+TKO,0001973266,"TKO Group Holdings, Inc.",NYSE,Communication Services,Entertainment,37.992,1.817,59.12,,3.447,,True,Pass,4146d044989af6d3,2026-06-20T02:50:19.757421+00:00
+ALNY,0001178670,"ALNYLAM PHARMACEUTICALS, INC.",NASDAQ,Healthcare,Biotechnology,37.129,0.715,80.83,,3.681,,True,Pass,4146d044989af6d3,2026-06-20T02:50:16.002422+00:00
+TEVA,0000818686,TEVA PHARMACEUTICAL INDUSTRIES LTD,NYSE,Healthcare,Drug Manufacturers - Specialty & Generic,36.656,1.714,52.06,62.36,3.383,,True,Pass,4146d044989af6d3,2026-06-20T02:50:16.051420+00:00
+A,0001090872,"AGILENT TECHNOLOGIES, INC.",NYSE,Healthcare,Diagnostics & Research,35.886,1.452,52.64,94.04,1.758,,True,Pass,4146d044989af6d3,2026-06-20T02:50:16.148423+00:00
+UI,0001511737,Ubiquiti Inc.,NYSE,Technology,Communication Equipment,35.675,0.761,46.02,4.75,0.059,,True,Pass,4146d044989af6d3,2026-06-20T02:50:16.179421+00:00
+SUNB,0002083785,"Sunbelt Rentals Holdings, Inc.",NYSE,Industrials,Rental & Leasing Services,35.569,2.153,94.78,80.24,2.261,,True,Pass,4146d044989af6d3,2026-06-20T02:50:16.190423+00:00
+Q,0002058873,"Qnity Electronics, Inc.",NYSE,Technology,Semiconductor Equipment & Materials,35.374,1.201,46.09,76.75,3.128,,True,Pass,4146d044989af6d3,2026-06-20T02:50:16.212425+00:00
+PAYX,0000723531,PAYCHEX INC,NASDAQ,Technology,Software - Application,35.198,1.179,67.2,85.16,3.118,,True,Pass,4146d044989af6d3,2026-06-20T02:50:16.223422+00:00
+CHT,0001132924,CHUNGHWA TELECOM CO LTD,NYSE,Communication Services,Telecom Services,35.157,75.598,36.67,2.73,0.467,,True,Pass,4146d044989af6d3,2026-06-20T02:50:16.243423+00:00
+HSY,0000047111,HERSHEY CO,NYSE,Consumer Defensive,Confectioners,35.017,2.349,35.03,87.86,2.513,,True,Pass,4146d044989af6d3,2026-06-20T02:50:16.254421+00:00
+KVUE,0001944048,Kenvue Inc.,NYSE,Consumer Defensive,Household & Personal Products,34.791,2.258,58.6,95.43,2.537,,True,Pass,4146d044989af6d3,2026-06-20T02:50:16.286420+00:00
+TRI,0001075124,THOMSON REUTERS CORP /CAN/,NASDAQ,Industrials,Specialty Business Services,34.303,2.711,39.46,28.53,1.244,,True,Pass,4146d044989af6d3,2026-06-20T02:50:16.317420+00:00
+KMB,0000055785,KIMBERLY CLARK CORP,NASDAQ,Consumer Defensive,Household & Personal Products,34.044,3.195,37.15,93.03,2.121,,True,Pass,4146d044989af6d3,2026-06-20T02:50:16.378423+00:00
+RDDT,0001713445,"Reddit, Inc.",NYSE,Communication Services,Internet Content & Information,33.681,0.876,91.37,93.67,0.033,,True,Pass,4146d044989af6d3,2026-06-20T02:50:16.388422+00:00
+ROP,0000882835,ROPER TECHNOLOGIES INC,NASDAQ,Technology,Software - Application,33.328,2.604,69.4,,3.275,,True,Pass,4146d044989af6d3,2026-06-20T02:50:16.410422+00:00
+ZTS,0001555280,Zoetis Inc.,NYSE,Healthcare,Drug Manufacturers - Specialty & Generic,32.997,2.79,71.84,,2.271,,True,Pass,4146d044989af6d3,2026-06-20T02:50:16.443421+00:00
+LVS,0001300514,LAS VEGAS SANDS CORP,NYSE,Consumer Cyclical,Resorts & Casinos,32.284,3.228,80.09,42.19,3.267,,True,Pass,4146d044989af6d3,2026-06-20T02:50:16.484423+00:00
+ALC,0001167379,ALCON INC,NYSE,Healthcare,Medical Instruments & Supplies,31.544,2.305,55.78,66.92,2.323,,True,Pass,4146d044989af6d3,2026-06-20T02:50:16.556422+00:00
+NTAP,0001002047,"NetApp, Inc.",NASDAQ,Technology,Software - Infrastructure,31.29,2.067,70.74,,1.451,,True,Pass,4146d044989af6d3,2026-06-20T02:50:16.586422+00:00
+EL,0001001250,ESTEE LAUDER COMPANIES INC,NYSE,Consumer Defensive,Household & Personal Products,30.684,1.798,74.65,97.15,3.957,,True,Pass,4146d044989af6d3,2026-06-20T02:50:16.637421+00:00
+IR,0001699150,Ingersoll Rand Inc.,NYSE,Industrials,Specialty Industrial Machinery,30.489,1.299,43.22,,2.449,,True,Pass,4146d044989af6d3,2026-06-20T02:50:16.658420+00:00
+DOV,0000029905,DOVER Corp,NYSE,Industrials,Specialty Industrial Machinery,30.106,1.368,40.04,94.76,1.763,,True,Pass,4146d044989af6d3,2026-06-20T02:50:16.733421+00:00
+MTSI,0001493594,"MACOM Technology Solutions Holdings, Inc.",NASDAQ,Technology,Semiconductors,29.863,0.252,55.68,99.39,1.762,,True,Pass,4146d044989af6d3,2026-06-20T02:50:16.765421+00:00
+CRS,0000017843,CARPENTER TECHNOLOGY CORP,NYSE,Industrials,Metal Fabrication,29.139,0.623,29.74,97.89,0.913,,True,Pass,4146d044989af6d3,2026-06-20T02:50:16.797421+00:00
+BIIB,0000875045,BIOGEN INC.,NASDAQ,Healthcare,Drug Manufacturers - General,29.023,2.591,78.72,96.58,1.854,,True,Pass,4146d044989af6d3,2026-06-20T02:50:16.819421+00:00
+TPR,0001116132,"TAPESTRY, INC.",NYSE,Consumer Cyclical,Luxury Goods,28.993,1.903,76.18,97.98,1.991,,True,Pass,4146d044989af6d3,2026-06-20T02:50:16.829421+00:00
+EXPE,0001324424,"Expedia Group, Inc.",NASDAQ,Consumer Cyclical,Travel Services,28.913,4.859,90.27,,1.814,,True,Pass,4146d044989af6d3,2026-06-20T02:50:16.839420+00:00
+WDAY,0001327811,"Workday, Inc.",NASDAQ,Technology,Software - Application,28.879,3.178,75.77,,2.517,,True,Pass,4146d044989af6d3,2026-06-20T02:50:16.859423+00:00
+TDY,0001094285,TELEDYNE TECHNOLOGIES INC,NYSE,Technology,Scientific & Technical Instruments,28.705,1.183,42.87,,1.61,,True,Pass,4146d044989af6d3,2026-06-20T02:50:16.871423+00:00
+NVT,0001720635,nVent Electric plc,NYSE,Industrials,Electrical Equipment & Parts,28.628,0.49,37.01,95.88,1.837,,True,Pass,4146d044989af6d3,2026-06-20T02:50:16.883421+00:00
+TCOM,0001269238,Trip.com Group Ltd,NASDAQ,Consumer Cyclical,Travel Services,28.4,14.379,80.58,25.68,1.903,,True,Pass,4146d044989af6d3,2026-06-20T02:50:16.929422+00:00
+TWLO,0001447669,TWILIO INC,NYSE,Technology,Software - Infrastructure,28.256,0.965,48.72,94.06,2.429,,True,Pass,4146d044989af6d3,2026-06-20T02:50:16.991421+00:00
+OTIS,0001781335,Otis Worldwide Corp,NYSE,Industrials,Specialty Industrial Machinery,28.115,1.819,30.55,94.88,3.296,,True,Pass,4146d044989af6d3,2026-06-20T02:50:17.002421+00:00
+ONC,0001651308,BeOne Medicines Ltd.,NASDAQ,Healthcare,Biotechnology,28.028,1.285,88.31,32.97,1.392,,True,Pass,4146d044989af6d3,2026-06-20T02:50:17.032421+00:00
+GEHC,0001932393,GE HealthCare Technologies Inc.,NASDAQ,Healthcare,Medical Devices,28.017,2.027,39.14,93.88,3.003,,True,Pass,4146d044989af6d3,2026-06-20T02:50:17.043422+00:00
+CPRT,0000900075,COPART INC,NASDAQ,Industrials,Specialty Business Services,27.987,1.685,47.52,87.2,0.047,,True,Pass,4146d044989af6d3,2026-06-20T02:50:16.808423+00:00
+DXCM,0001093557,DEXCOM INC,NASDAQ,Healthcare,Medical Devices,27.964,1.782,61.5,,1.072,,True,Pass,4146d044989af6d3,2026-06-20T02:50:17.074423+00:00
+FSLR,0001274494,"FIRST SOLAR, INC.",NASDAQ,Technology,Solar,27.691,2.45,41.74,94.19,0.258,,True,Pass,4146d044989af6d3,2026-06-20T02:50:17.085423+00:00
+HUBB,0000048898,HUBBELL INC,NYSE,Industrials,Electrical Equipment & Parts,27.673,1.079,35.69,99.46,1.867,,True,Pass,4146d044989af6d3,2026-06-20T02:50:17.096421+00:00
+RMD,0000943819,RESMED INC,NYSE,Healthcare,Medical Instruments & Supplies,27.362,1.89,62.18,69.99,0.398,,True,Pass,4146d044989af6d3,2026-06-20T02:50:17.149420+00:00
+WSM,0000719955,WILLIAMS SONOMA INC,NYSE,Consumer Cyclical,Specialty Retail,26.719,1.352,46.06,98.96,0.905,,True,Pass,4146d044989af6d3,2026-06-20T02:50:17.222422+00:00
+XYL,0001524472,Xylem Inc.,NYSE,Industrials,Specialty Industrial Machinery,26.484,1.316,38.61,98.16,1.078,,True,Pass,4146d044989af6d3,2026-06-20T02:50:17.243423+00:00
+PHG,0000313216,KONINKLIJKE PHILIPS NV,NYSE,Healthcare,Medical Devices,26.03,2.293,45.2,5.54,3.872,,True,Pass,4146d044989af6d3,2026-06-20T02:50:17.320422+00:00
+FICO,0000814547,FAIR ISAAC CORP,NYSE,Technology,Software - Application,25.428,0.907,84.17,95.45,3.144,,True,Pass,4146d044989af6d3,2026-06-20T02:50:17.386422+00:00
+IHG,0000858446,INTERCONTINENTAL HOTELS GROUP PLC /NEW/,NYSE,Consumer Cyclical,Lodging,25.373,0.898,61.94,10.66,3.71,,True,Pass,4146d044989af6d3,2026-06-20T02:50:17.408422+00:00
+ZM,0001585521,"Zoom Communications, Inc.",NASDAQ,Technology,Software - Application,25.324,2.021,77.77,78.88,0.045,,True,Pass,4146d044989af6d3,2026-06-20T02:50:17.418423+00:00
+WIT,0001123799,WIPRO LTD,NYSE,Technology,Information Technology Services,25.074,149.316,29.15,3.52,1.186,,True,Pass,4146d044989af6d3,2026-06-20T02:50:17.454421+00:00
+VEEV,0001393052,VEEVA SYSTEMS INC,NYSE,Healthcare,Health Information Services,24.903,1.665,75.02,89.39,0.1,,True,Pass,4146d044989af6d3,2026-06-20T02:50:17.492423+00:00
+P,0001474432,"Everpure, Inc.",NYSE,Technology,Computer Hardware,24.801,0.776,70.23,84.88,2.846,,True,Pass,4146d044989af6d3,2026-06-20T02:50:17.504422+00:00
+RL,0001037038,RALPH LAUREN CORP,NYSE,Consumer Cyclical,Apparel Manufacturing,24.581,1.154,69.86,,1.979,,True,Pass,4146d044989af6d3,2026-06-20T02:50:17.528422+00:00
+ILMN,0001110803,"ILLUMINA, INC.",NASDAQ,Healthcare,Diagnostics & Research,24.5,1.128,68.29,,2.203,,True,Pass,4146d044989af6d3,2026-06-20T02:50:17.538421+00:00
+FDXF,0002082247,"FedEx Freight Holding Company, Inc.",NYSE,Industrials,Integrated Freight & Logistics,24.249,1.06,29.67,,3.456,,True,Pass,4146d044989af6d3,2026-06-20T02:50:17.620421+00:00
+STZ,0000016918,"CONSTELLATION BRANDS, INC.",NYSE,Consumer Defensive,Beverages - Brewers,24.215,2.669,51.65,88.22,3.31,,True,Pass,4146d044989af6d3,2026-06-20T02:50:17.610422+00:00
+PHM,0000822416,PULTEGROUP INC/MI/,NYSE,Consumer Cyclical,Residential Construction,24.184,1.897,26.1,96.84,0.834,,True,Pass,4146d044989af6d3,2026-06-20T02:50:17.630421+00:00
+VRSN,0001014473,VERISIGN INC/CA,NASDAQ,Technology,Software - Infrastructure,24.082,1.072,88.35,88.91,1.531,,True,Pass,4146d044989af6d3,2026-06-20T02:50:17.663422+00:00
+WST,0000105770,WEST PHARMACEUTICAL SERVICES INC,NYSE,Healthcare,Medical Instruments & Supplies,23.169,0.715,36.28,,0.369,,True,Pass,4146d044989af6d3,2026-06-20T02:50:17.754421+00:00
+MTD,0001037646,METTLER TOLEDO INTERNATIONAL INC/,NYSE,Healthcare,Diagnostics & Research,23.134,0.901,59.19,,1.83,,True,Pass,4146d044989af6d3,2026-06-20T02:50:17.765420+00:00
+KOF,0000910631,COCA COLA FEMSA SAB DE CV,NYSE,Consumer Defensive,Beverages - Non-Alcoholic,23.015,38.704,46.01,37.25,1.86,,True,Pass,4146d044989af6d3,2026-06-20T02:50:17.795421+00:00
+UTHR,0001082554,UNITED THERAPEUTICS Corp,NASDAQ,Healthcare,Drug Manufacturers - Specialty & Generic,22.776,1.563,86.58,,0.0,,True,Pass,4146d044989af6d3,2026-06-20T02:50:17.868421+00:00
+VRSK,0001442145,"Verisk Analytics, Inc.",NASDAQ,Industrials,Consulting Services,22.772,1.382,69.98,,3.067,,True,Pass,4146d044989af6d3,2026-06-20T02:50:17.880422+00:00
+CHD,0000313927,CHURCH & DWIGHT CO INC /DE/,NYSE,Consumer Defensive,Household & Personal Products,22.659,1.204,45.47,94.31,1.713,,True,Pass,4146d044989af6d3,2026-06-20T02:50:17.920422+00:00
+FOXA,0001754301,Fox Corp,NASDAQ,Communication Services,Entertainment,21.931,2.616,36.84,,2.134,,True,Pass,4146d044989af6d3,2026-06-20T02:50:18.028421+00:00
+FFIV,0001048695,"F5, INC.",NASDAQ,Technology,Software - Infrastructure,21.749,1.015,81.54,,0.288,,True,Pass,4146d044989af6d3,2026-06-20T02:50:18.060424+00:00
+ROL,0000084839,ROLLINS INC,NYSE,Consumer Cyclical,Personal Services,21.647,0.65,52.6,61.74,1.241,,True,Pass,4146d044989af6d3,2026-06-20T02:50:18.103421+00:00
+DGX,0001022079,QUEST DIAGNOSTICS INC,NYSE,Healthcare,Diagnostics & Research,21.586,1.85,33.28,97.91,2.879,,True,Pass,4146d044989af6d3,2026-06-20T02:50:18.114421+00:00
+DLTR,0000935703,"DOLLAR TREE, INC.",NASDAQ,Consumer Defensive,Discount Stores,21.456,2.615,36.99,,3.157,,True,Pass,4146d044989af6d3,2026-06-20T02:50:18.134422+00:00
+AS,0001988894,"Amer Sports, Inc.",NYSE,Consumer Cyclical,Leisure,21.429,0.738,58.23,37.63,0.955,,True,Pass,4146d044989af6d3,2026-06-20T02:50:18.145422+00:00
+LSCC,0000855658,LATTICE SEMICONDUCTOR CORP,NASDAQ,Technology,Semiconductors,21.061,0.193,68.44,,0.569,,True,Pass,4146d044989af6d3,2026-06-20T02:50:18.206422+00:00
+LH,0000920148,LABCORP HOLDINGS INC.,NYSE,Healthcare,Diagnostics & Research,20.977,1.814,28.83,,3.238,,True,Pass,4146d044989af6d3,2026-06-20T02:50:18.227421+00:00
+DKS,0001089063,"DICK'S SPORTING GOODS, INC.",NYSE,Consumer Cyclical,Specialty Retail,20.851,1.636,33.56,,3.513,,True,Pass,4146d044989af6d3,2026-06-20T02:50:18.247422+00:00
+CTSH,0001058290,COGNIZANT TECHNOLOGY SOLUTIONS CORP,NASDAQ,Technology,Information Technology Services,20.67,2.757,33.51,,0.281,,True,Pass,4146d044989af6d3,2026-06-20T02:50:18.278421+00:00
+VLTO,0001967680,Veralto Corp,NYSE,Industrials,Pollution & Treatment Controls,20.635,1.102,59.86,98.79,2.084,,True,Pass,4146d044989af6d3,2026-06-20T02:50:18.308421+00:00
+RBA,0001046102,RB GLOBAL INC.,NYSE,Industrials,Specialty Business Services,20.599,1.046,46.42,,3.462,,True,Pass,4146d044989af6d3,2026-06-20T02:50:18.319421+00:00
+ROKU,0001428439,"ROKU, INC",NASDAQ,Communication Services,Entertainment,20.482,0.544,44.19,88.18,1.299,,True,Pass,4146d044989af6d3,2026-06-20T02:50:18.339420+00:00
+OKTA,0001660134,"Okta, Inc.",NASDAQ,Technology,Software - Infrastructure,20.476,0.92,77.44,98.71,1.539,,True,Pass,4146d044989af6d3,2026-06-20T02:50:18.288422+00:00
+RBC,0001324948,RBC Bearings INC,NYSE,Industrials,Tools & Accessories,20.221,0.416,45.19,,1.736,,True,Pass,4146d044989af6d3,2026-06-20T02:50:18.421420+00:00
+SNA,0000091440,Snap-on Inc,NYSE,Industrials,Tools & Accessories,20.06,1.152,51.62,98.4,0.926,,True,Pass,4146d044989af6d3,2026-06-20T02:50:18.454422+00:00
+SN,0001957132,"SharkNinja, Inc.",NYSE,Consumer Cyclical,"Furnishings, Fixtures & Appliances",19.932,0.533,48.99,61.64,0.787,,True,Pass,4146d044989af6d3,2026-06-20T02:50:18.488421+00:00
+STE,0001757898,STERIS plc,NYSE,Healthcare,Medical Devices,19.746,1.341,44.24,,1.306,,True,Pass,4146d044989af6d3,2026-06-20T02:50:18.532422+00:00
+INCY,0000879169,INCYTE CORP,NASDAQ,Healthcare,Biotechnology,19.623,1.517,52.77,,0.025,,True,Pass,4146d044989af6d3,2026-06-20T02:50:18.543422+00:00
+ULTA,0001403568,"Ulta Beauty, Inc.",NASDAQ,Consumer Cyclical,Specialty Retail,19.609,1.545,43.19,,1.219,,True,Pass,4146d044989af6d3,2026-06-20T02:50:18.553420+00:00
+IP,0000051434,INTERNATIONAL PAPER CO /NEW/,NYSE,Consumer Cyclical,Packaging & Containers,19.497,2.597,29.69,99.38,2.435,,True,Pass,4146d044989af6d3,2026-06-20T02:50:18.585421+00:00
+SITM,0001451809,SITIME Corp,NASDAQ,Technology,Semiconductors,19.244,0.103,55.7,88.99,0.936,,True,Pass,4146d044989af6d3,2026-06-20T02:50:18.628422+00:00
+FTV,0001659166,Fortive Corp,NYSE,Technology,Scientific & Technical Instruments,18.606,1.076,63.25,,3.01,,True,Pass,4146d044989af6d3,2026-06-20T02:50:18.737422+00:00
+EFX,0000033185,EQUIFAX INC,NYSE,Industrials,Consulting Services,18.569,1.634,56.12,,2.752,,True,Pass,4146d044989af6d3,2026-06-20T02:50:18.751423+00:00
+LII,0001069202,LENNOX INTERNATIONAL INC,NYSE,Industrials,Building Products & Equipment,18.529,0.81,33.19,79.44,1.694,,True,Pass,4146d044989af6d3,2026-06-20T02:50:18.762424+00:00
+APG,0001796209,APi Group Corp,NYSE,Industrials,Engineering & Construction,18.43,0.782,31.38,83.63,2.966,,True,Pass,4146d044989af6d3,2026-06-20T02:50:18.799421+00:00
+ULS,0001901440,UL Solutions Inc.,NYSE,Industrials,Specialty Business Services,18.411,0.665,49.94,,0.761,,True,Pass,4146d044989af6d3,2026-06-20T02:50:18.812423+00:00
+NVMI,0001109345,NOVA LTD.,NASDAQ,Technology,Semiconductor Equipment & Materials,18.298,0.217,57.31,73.18,2.819,,True,Pass,4146d044989af6d3,2026-06-20T02:50:18.876423+00:00
+VTRS,0001792044,Viatris Inc,NASDAQ,Healthcare,Drug Manufacturers - Specialty & Generic,17.899,2.169,39.82,87.27,3.542,,True,Pass,4146d044989af6d3,2026-06-20T02:50:18.977421+00:00
+ZBH,0001136869,"ZIMMER BIOMET HOLDINGS, INC.",NYSE,Healthcare,Medical Devices,17.019,1.674,70.18,,2.94,,True,Pass,4146d044989af6d3,2026-06-20T02:50:19.173422+00:00
+IEX,0000832101,IDEX CORP /DE/,NYSE,Industrials,Specialty Industrial Machinery,16.648,0.678,44.44,,1.996,,True,Pass,4146d044989af6d3,2026-06-20T02:50:19.219424+00:00
+ONTO,0000704532,ONTO INNOVATION INC.,NYSE,Technology,Semiconductor Equipment & Materials,16.602,0.263,54.19,,0.0,,True,Pass,4146d044989af6d3,2026-06-20T02:50:19.231422+00:00
+WSO,0000105016,WATSCO INC,NYSE,Industrials,Industrial Distribution,16.518,0.728,28.01,,0.661,,True,Pass,4146d044989af6d3,2026-06-20T02:50:19.267421+00:00
+NDSN,0000072331,NORDSON CORP,NASDAQ,Industrials,Specialty Industrial Machinery,16.488,0.762,55.22,77.15,2.166,,True,Pass,4146d044989af6d3,2026-06-20T02:50:19.280423+00:00
+GNRC,0001474735,GENERAC HOLDINGS INC.,NYSE,Industrials,Specialty Industrial Machinery,16.433,0.499,38.14,93.65,2.642,,True,Pass,4146d044989af6d3,2026-06-20T02:50:19.311421+00:00
+NBIX,0000914475,NEUROCRINE BIOSCIENCES INC,NASDAQ,Healthcare,Drug Manufacturers - Specialty & Generic,15.916,0.864,64.37,,0.559,,True,Pass,4146d044989af6d3,2026-06-20T02:50:19.375424+00:00
+BR,0001383312,"BROADRIDGE FINANCIAL SOLUTIONS, INC.",NYSE,Technology,Information Technology Services,15.915,1.368,31.31,,1.934,,True,Pass,4146d044989af6d3,2026-06-20T02:50:19.386424+00:00
+TSCO,0000916365,TRACTOR SUPPLY CO /DE/,NASDAQ,Consumer Cyclical,Specialty Retail,15.859,1.51,36.43,95.74,3.283,,True,Pass,4146d044989af6d3,2026-06-20T02:50:19.406421+00:00
+SSNC,0001402436,SS&C Technologies Holdings Inc,NASDAQ,Technology,Software - Application,15.755,1.772,48.03,85.64,3.749,,True,Pass,4146d044989af6d3,2026-06-20T02:50:19.447422+00:00
+LOGI,0001032975,LOGITECH INTERNATIONAL S.A.,NASDAQ,Technology,Computer Hardware,15.45,1.037,43.35,66.4,0.102,,True,Pass,4146d044989af6d3,2026-06-20T02:50:19.518421+00:00
+RMBS,0000917273,RAMBUS INC,NASDAQ,Technology,Semiconductors,15.266,0.366,80.41,99.42,0.077,,True,Pass,4146d044989af6d3,2026-06-20T02:50:19.583421+00:00
+CLH,0000822818,CLEAN HARBORS INC,NYSE,Industrials,Waste Management,15.251,0.871,31.72,96.93,2.859,,True,Pass,4146d044989af6d3,2026-06-20T02:50:19.603421+00:00
+MLI,0000089439,MUELLER INDUSTRIES INC,NYSE,Industrials,Metal Fabrication,15.191,0.722,29.71,93.57,0.022,,True,Pass,4146d044989af6d3,2026-06-20T02:50:19.614423+00:00
+DECK,0000910521,DECKERS OUTDOOR CORP,NYSE,Consumer Cyclical,Footwear & Accessories,15.153,1.182,57.7,,0.28,,True,Pass,4146d044989af6d3,2026-06-20T02:50:19.654420+00:00
+PAC,0001347557,Pacific Airport Group,NYSE,Industrials,Airports & Air Services,15.132,21.345,77.46,19.82,2.946,,True,Pass,4146d044989af6d3,2026-06-20T02:50:19.674421+00:00
+VICR,0000751978,VICOR CORP,NASDAQ,Technology,Electronic Components,15.104,0.115,54.47,63.21,0.089,,True,Pass,4146d044989af6d3,2026-06-20T02:50:19.695422+00:00
+LECO,0000059527,LINCOLN ELECTRIC HOLDINGS INC,NASDAQ,Industrials,Tools & Accessories,15.079,0.578,36.14,81.56,1.62,,True,Pass,4146d044989af6d3,2026-06-20T02:50:19.716424+00:00
+MAS,0000062996,MASCO CORP /DE/,NYSE,Industrials,Building Products & Equipment,15.005,1.101,35.68,,2.28,,True,Pass,4146d044989af6d3,2026-06-20T02:50:19.736421+00:00
+AEIS,0000927003,ADVANCED ENERGY INDUSTRIES INC,NASDAQ,Industrials,Electrical Equipment & Parts,14.908,0.198,39.0,,2.316,,True,Pass,4146d044989af6d3,2026-06-20T02:50:19.747422+00:00
+THC,0000070318,TENET HEALTHCARE CORP,NYSE,Healthcare,Medical Care Facilities,14.865,4.366,41.26,98.68,2.85,,True,Pass,4146d044989af6d3,2026-06-20T02:50:19.777421+00:00
+SMTC,0000088941,SEMTECH CORP,NASDAQ,Technology,Semiconductors,14.739,0.19,52.39,,3.412,,True,Pass,4146d044989af6d3,2026-06-20T02:50:19.788423+00:00
+WMG,0001319161,Warner Music Group Corp.,NASDAQ,Communication Services,Entertainment,14.694,0.843,45.8,,3.121,,True,Pass,4146d044989af6d3,2026-06-20T02:50:19.832421+00:00
+CSL,0000790051,CARLISLE COMPANIES INC,NYSE,Industrials,Building Products & Equipment,14.606,1.055,35.57,,2.42,,True,Pass,4146d044989af6d3,2026-06-20T02:50:19.863421+00:00
+GEN,0000849399,Gen Digital Inc.,NASDAQ,Technology,Software - Infrastructure,14.567,1.545,78.46,90.71,3.458,,True,Pass,4146d044989af6d3,2026-06-20T02:50:19.892424+00:00
+TOL,0000794170,"Toll Brothers, Inc.",NYSE,Consumer Cyclical,Residential Construction,14.551,1.312,25.2,92.13,1.616,,True,Pass,4146d044989af6d3,2026-06-20T02:50:19.903421+00:00
+TOST,0001650164,"Toast, Inc.",NYSE,Technology,Software - Infrastructure,14.303,0.714,26.36,89.08,0.04,,True,Pass,4146d044989af6d3,2026-06-20T02:50:19.988422+00:00
+TME,0001744676,Tencent Music Entertainment Group,NYSE,Communication Services,Internet Content & Information,14.293,10.044,44.37,61.4,0.433,,True,Pass,4146d044989af6d3,2026-06-20T02:50:19.998421+00:00
+IESC,0001048268,"IES Holdings, Inc.",NASDAQ,Industrials,Engineering & Construction,14.194,0.355,26.08,97.04,0.224,,True,Pass,4146d044989af6d3,2026-06-20T02:50:20.019422+00:00
+JAZZ,0001232524,Jazz Pharmaceuticals plc,NASDAQ,Healthcare,Biotechnology,14.113,1.334,91.5,,2.697,,True,Pass,4146d044989af6d3,2026-06-20T02:50:20.040423+00:00
+SKM,0001015650,SK TELECOM CO LTD,NYSE,Communication Services,Telecom Services,13.901,3736.052,70.43,9.04,2.459,,True,Pass,4146d044989af6d3,2026-06-20T02:50:20.116421+00:00
+NWSA,0001564708,NEWS CORP,NASDAQ,Communication Services,Entertainment,13.761,0.997,57.17,,2.339,,True,Pass,4146d044989af6d3,2026-06-20T02:50:20.160420+00:00
+PTC,0000857005,PTC INC.,NASDAQ,Technology,Software - Application,13.254,0.939,84.71,,1.047,,True,Pass,4146d044989af6d3,2026-06-20T02:50:20.356422+00:00
+MEDP,0001668397,"Medpace Holdings, Inc.",NASDAQ,Healthcare,Diagnostics & Research,13.143,0.739,71.9,88.98,0.247,,True,Pass,4146d044989af6d3,2026-06-20T02:50:20.367422+00:00
+EXEL,0000939767,"EXELIXIS, INC.",NASDAQ,Healthcare,Biotechnology,13.048,0.925,96.44,,0.172,,True,Pass,4146d044989af6d3,2026-06-20T02:50:20.408421+00:00
+ALGN,0001097149,ALIGN TECHNOLOGY INC,NASDAQ,Healthcare,Medical Instruments & Supplies,13.04,0.692,70.15,,0.13,,True,Pass,4146d044989af6d3,2026-06-20T02:50:20.418424+00:00
+ONON,0001858985,On Holding AG,NYSE,Consumer Cyclical,Footwear & Accessories,12.96,0.401,63.88,73.1,1.159,,True,Pass,4146d044989af6d3,2026-06-20T02:50:20.470425+00:00
+COO,0000711404,"COOPER COMPANIES, INC.",NASDAQ,Healthcare,Medical Instruments & Supplies,12.854,0.953,65.55,,3.076,,True,Pass,4146d044989af6d3,2026-06-20T02:50:20.532421+00:00
+SNN,0000845982,SMITH & NEPHEW PLC,NYSE,Healthcare,Medical Devices,12.743,1.285,68.25,7.77,2.49,,True,Pass,4146d044989af6d3,2026-06-20T02:50:20.573425+00:00
+CHKP,0001015922,CHECK POINT SOFTWARE TECHNOLOGIES LTD,NASDAQ,Technology,Software - Infrastructure,12.726,1.224,87.66,78.29,2.26,,True,Pass,4146d044989af6d3,2026-06-20T02:50:20.594423+00:00
+LULU,0001397187,lululemon athletica inc.,NASDAQ,Consumer Cyclical,Apparel Retail,12.692,1.936,55.69,82.52,0.832,,True,Pass,4146d044989af6d3,2026-06-20T02:50:20.628421+00:00
+GGG,0000042888,GRACO INC,NYSE,Industrials,Specialty Industrial Machinery,12.619,0.678,52.31,92.7,0.073,,True,Pass,4146d044989af6d3,2026-06-20T02:50:20.692423+00:00
+AIT,0000109563,APPLIED INDUSTRIAL TECHNOLOGIES INC,NYSE,Industrials,Industrial Distribution,12.491,0.466,30.39,98.51,0.616,,True,Pass,4146d044989af6d3,2026-06-20T02:50:20.743424+00:00
+PEN,0001321732,Penumbra Inc,NYSE,Healthcare,Medical Devices,12.476,0.277,67.38,87.92,1.06,,True,Pass,4146d044989af6d3,2026-06-20T02:50:20.755422+00:00
+CR,0001944013,Crane Co,NYSE,Industrials,Specialty Industrial Machinery,12.41,0.411,44.6,78.2,2.215,,True,Pass,4146d044989af6d3,2026-06-20T02:50:20.788422+00:00
+BROS,0001866581,Dutch Bros Inc.,NYSE,Consumer Cyclical,Restaurants,12.354,0.343,25.26,98.55,3.868,,True,Pass,4146d044989af6d3,2026-06-20T02:50:22.431422+00:00
+SPXC,0000088205,"SPX Technologies, Inc.",NYSE,Industrials,Building Products & Equipment,12.164,0.375,40.61,99.36,1.366,,True,Pass,4146d044989af6d3,2026-06-20T02:50:20.880420+00:00
+AVY,0000008818,Avery Dennison Corp,NYSE,Consumer Cyclical,Packaging & Containers,12.137,1.034,28.75,98.35,2.627,,True,Pass,4146d044989af6d3,2026-06-20T02:50:20.890423+00:00
+LFUS,0000889331,LITTELFUSE INC /DE,NASDAQ,Technology,Electronic Components,12.134,0.448,38.57,,1.339,,True,Pass,4146d044989af6d3,2026-06-20T02:50:20.914421+00:00
+COKE,0000317540,"Coca-Cola Consolidated, Inc.",NASDAQ,Consumer Defensive,Beverages - Non-Alcoholic,12.084,0.939,39.66,69.47,0.92,,True,Pass,4146d044989af6d3,2026-06-20T02:50:20.934424+00:00
+DT,0001773383,"Dynatrace, Inc.",NYSE,Technology,Software - Application,12.073,0.562,81.73,,0.582,,True,Pass,4146d044989af6d3,2026-06-20T02:50:20.954424+00:00
+PNR,0000077360,PENTAIR plc,NYSE,Industrials,Specialty Industrial Machinery,12.011,0.786,41.22,99.14,1.892,,True,Pass,4146d044989af6d3,2026-06-20T02:50:20.997421+00:00
+BLD,0001633931,TopBuild Corp,NYSE,Industrials,Engineering & Construction,12.004,0.764,28.96,,3.066,,True,Pass,4146d044989af6d3,2026-06-20T02:50:21.007421+00:00
+HAS,0000046080,"HASBRO, INC.",NASDAQ,Consumer Cyclical,Leisure,11.99,1.093,63.65,97.3,3.049,,True,Pass,4146d044989af6d3,2026-06-20T02:50:21.028420+00:00
+NYT,0000071691,NEW YORK TIMES CO,NYSE,Communication Services,Publishing,11.826,0.578,50.66,94.38,0.0,,True,Pass,4146d044989af6d3,2026-06-20T02:50:21.101421+00:00
+FORM,0001039399,FORMFACTOR INC,NASDAQ,Technology,Semiconductor Equipment & Materials,11.658,0.137,42.2,98.64,0.232,,True,Pass,4146d044989af6d3,2026-06-20T02:50:21.197420+00:00
+CLX,0000021076,CLOROX CO /DE/,NYSE,Consumer Defensive,Household & Personal Products,11.584,0.576,43.85,86.27,3.521,,True,Pass,4146d044989af6d3,2026-06-20T02:50:21.227422+00:00
+WTS,0000795403,WATTS WATER TECHNOLOGIES INC,NYSE,Industrials,Specialty Industrial Machinery,11.483,0.365,49.24,,0.546,,True,Pass,4146d044989af6d3,2026-06-20T02:50:21.278422+00:00
+ALLE,0001579241,Allegion plc,NYSE,Industrials,Security & Protection Services,11.478,0.781,44.97,,2.201,,True,Pass,4146d044989af6d3,2026-06-20T02:50:21.289421+00:00
+TYL,0000860731,TYLER TECHNOLOGIES INC,NYSE,Technology,Software - Application,11.475,0.705,46.75,,0.106,,True,Pass,4146d044989af6d3,2026-06-20T02:50:21.299421+00:00
+TRMB,0000864749,TRIMBLE INC.,NASDAQ,Technology,Scientific & Technical Instruments,11.46,0.505,71.48,98.61,1.63,,True,Pass,4146d044989af6d3,2026-06-20T02:50:21.310423+00:00
+PINS,0001506293,"PINTEREST, INC.",NYSE,Communication Services,Internet Content & Information,11.354,1.249,79.86,,3.454,,True,Pass,4146d044989af6d3,2026-06-20T02:50:21.330421+00:00
+WMS,0001604028,"ADVANCED DRAINAGE SYSTEMS, INC.",NYSE,Industrials,Building Products & Equipment,11.269,0.819,38.27,97.1,2.079,,True,Pass,4146d044989af6d3,2026-06-20T02:50:21.362422+00:00
+ZBRA,0000877212,ZEBRA TECHNOLOGIES CORP,NASDAQ,Technology,Communication Equipment,11.241,0.915,48.18,,2.777,,True,Pass,4146d044989af6d3,2026-06-20T02:50:21.383423+00:00
+AAON,0000824142,"AAON, INC.",NASDAQ,Industrials,Building Products & Equipment,11.199,0.044,26.24,87.71,1.766,,True,Pass,4146d044989af6d3,2026-06-20T02:50:21.394422+00:00
+ICLR,0001060955,ICON PLC,NASDAQ,Healthcare,Diagnostics & Research,11.179,1.036,26.44,,2.548,,True,Pass,4146d044989af6d3,2026-06-20T02:50:21.418422+00:00
+RVTY,0000031791,"REVVITY, INC.",NYSE,Healthcare,Diagnostics & Research,11.156,0.57,54.32,,3.917,,True,Pass,4146d044989af6d3,2026-06-20T02:50:21.443422+00:00
+VMI,0000102729,VALMONT INDUSTRIES INC,NYSE,Industrials,Conglomerates,11.072,0.495,30.43,95.67,1.453,,True,Pass,4146d044989af6d3,2026-06-20T02:50:21.483422+00:00
+RDY,0001135951,DR REDDYS LABORATORIES LTD,NYSE,Healthcare,Drug Manufacturers - Specialty & Generic,11.067,56.755,52.77,15.29,1.135,,True,Pass,4146d044989af6d3,2026-06-20T02:50:21.493421+00:00
+CGNX,0000851205,COGNEX CORP,NASDAQ,Technology,Scientific & Technical Instruments,11.0,0.25,68.02,,0.327,,True,Pass,4146d044989af6d3,2026-06-20T02:50:21.526424+00:00
+ALGM,0000866291,"ALLEGRO MICROSYSTEMS, INC.",NASDAQ,Technology,Semiconductors,10.987,0.163,46.49,76.18,2.885,,True,Pass,4146d044989af6d3,2026-06-20T02:50:21.536420+00:00
+SWKS,0000004127,"SKYWORKS SOLUTIONS, INC.",NASDAQ,Technology,Semiconductors,10.897,0.96,41.08,,1.309,,True,Pass,4146d044989af6d3,2026-06-20T02:50:21.577421+00:00
+WSE,0002099039,Wise Group plc,NASDAQ,Technology,Information Technology Services,10.843,5.329,79.71,43.18,0.578,,True,Pass,4146d044989af6d3,2026-06-20T02:50:21.597421+00:00
+POWL,0000080420,POWELL INDUSTRIES INC,NASDAQ,Industrials,Electrical Equipment & Parts,10.827,0.203,30.1,95.45,0.008,,True,Pass,4146d044989af6d3,2026-06-20T02:50:21.618421+00:00
+GMED,0001237831,GLOBUS MEDICAL INC,NYSE,Healthcare,Medical Devices,10.755,0.779,68.49,,0.123,,True,Pass,4146d044989af6d3,2026-06-20T02:50:21.660420+00:00
+FIVE,0001177609,"FIVE BELOW, INC",NASDAQ,Consumer Cyclical,Specialty Retail,10.731,0.681,36.8,,2.639,,True,Pass,4146d044989af6d3,2026-06-20T02:50:21.692420+00:00
+BMRN,0001048477,BIOMARIN PHARMACEUTICAL INC,NASDAQ,Healthcare,Biotechnology,10.571,0.874,51.16,,2.28,,True,Pass,4146d044989af6d3,2026-06-20T02:50:21.804422+00:00
+CART,0001579091,Maplebear Inc.,NASDAQ,Consumer Cyclical,Internet Retail,10.471,0.941,73.11,83.84,0.056,,True,Pass,4146d044989af6d3,2026-06-20T02:50:21.817423+00:00
+FLS,0000030625,FLOWSERVE CORP,NYSE,Industrials,Specialty Industrial Machinery,10.442,0.513,35.53,,2.55,,True,Pass,4146d044989af6d3,2026-06-20T02:50:21.830421+00:00
+CAVA,0001639438,"CAVA GROUP, INC.",NYSE,Consumer Cyclical,Restaurants,10.387,0.21,37.74,97.59,3.343,,True,Pass,4146d044989af6d3,2026-06-20T02:50:21.911422+00:00
+OC,0001370946,Owens Corning,NYSE,Industrials,Building Products & Equipment,10.319,1.681,27.18,,2.96,,True,Pass,4146d044989af6d3,2026-06-20T02:50:21.982422+00:00
+KRYS,0001711279,"Krystal Biotech, Inc.",NASDAQ,Healthcare,Biotechnology,10.261,0.25,94.17,99.42,0.05,,True,Pass,4146d044989af6d3,2026-06-20T02:50:22.125422+00:00
+GDDY,0001609711,GoDaddy Inc.,NYSE,Technology,Software - Infrastructure,10.201,1.666,63.77,,2.934,,True,Pass,4146d044989af6d3,2026-06-20T02:50:22.138424+00:00
+PODD,0001145197,INSULET CORP,NASDAQ,Healthcare,Medical Devices,10.096,0.619,71.01,,1.684,,True,Pass,4146d044989af6d3,2026-06-20T02:50:22.207422+00:00
+SCI,0000089089,SERVICE CORP INTERNATIONAL,NYSE,Consumer Cyclical,Personal Services,10.019,0.965,26.21,96.53,3.916,,True,Pass,4146d044989af6d3,2026-06-20T02:50:22.229421+00:00
+DCI,0000029644,DONALDSON Co INC,NYSE,Industrials,Specialty Industrial Machinery,9.913,0.462,34.57,90.86,0.891,,True,Pass,4146d044989af6d3,2026-06-20T02:50:22.286422+00:00
+TIMB,0001826168,TIM S.A.,NYSE,Communication Services,Telecom Services,9.899,13.61,54.05,4.84,1.485,,True,Pass,4146d044989af6d3,2026-06-20T02:50:22.298424+00:00
+TKR,0000098362,TIMKEN CO,NYSE,Industrials,Tools & Accessories,9.893,0.535,30.6,95.28,2.707,,True,Pass,4146d044989af6d3,2026-06-20T02:50:22.309421+00:00
+EHC,0000785161,Encompass Health Corp,NYSE,Healthcare,Medical Care Facilities,9.724,1.2,43.49,,1.959,,True,Pass,4146d044989af6d3,2026-06-20T02:50:22.410421+00:00
+AYI,0001144215,ACUITY INC. (DE),NYSE,Industrials,Electrical Equipment & Parts,9.629,0.64,48.51,99.24,1.053,,True,Pass,4146d044989af6d3,2026-06-20T02:50:22.452421+00:00
+CNM,0001856525,"Core & Main, Inc.",NYSE,Industrials,Industrial Distribution,9.402,0.655,27.06,,2.667,,True,Pass,4146d044989af6d3,2026-06-20T02:50:22.699420+00:00
+ASR,0001123452,SOUTHEAST AIRPORT GROUP,NYSE,Industrials,Airports & Air Services,9.256,12.653,46.66,12.59,1.768,,True,Pass,4146d044989af6d3,2026-06-20T02:50:22.577420+00:00
+LEVI,0000094845,LEVI STRAUSS & CO,NYSE,Consumer Cyclical,Apparel Manufacturing,9.115,0.689,61.69,93.12,2.453,,True,Pass,4146d044989af6d3,2026-06-20T02:50:22.651422+00:00
+HSIC,0001000228,HENRY SCHEIN INC,NASDAQ,Healthcare,Medical Distribution,9.104,0.578,31.19,,3.577,,True,Pass,4146d044989af6d3,2026-06-20T02:50:22.688422+00:00
+TECH,0000842023,BIO-TECHNE Corp,NASDAQ,Healthcare,Biotechnology,9.072,0.295,66.4,,0.793,,True,Pass,4146d044989af6d3,2026-06-20T02:50:22.720422+00:00
+HUBS,0001404655,HUBSPOT INC,NYSE,Technology,Software - Application,9.011,0.798,83.66,98.84,2.812,,True,Pass,4146d044989af6d3,2026-06-20T02:50:22.741421+00:00
+JKHY,0000779152,JACK HENRY & ASSOCIATES INC,NASDAQ,Technology,Information Technology Services,8.969,0.786,44.06,,0.191,,True,Pass,4146d044989af6d3,2026-06-20T02:50:22.783420+00:00
+PSO,0000938323,PEARSON PLC,NYSE,Communication Services,Publishing,8.934,0.656,52.0,4.34,2.532,,True,Pass,4146d044989af6d3,2026-06-20T02:50:22.813421+00:00
+BSY,0001031308,BENTLEY SYSTEMS INC,NASDAQ,Technology,Software - Application,8.926,0.512,81.64,53.47,2.619,,True,Pass,4146d044989af6d3,2026-06-20T02:50:22.823421+00:00
+CRL,0001100682,"CHARLES RIVER LABORATORIES INTERNATIONAL, INC.",NYSE,Healthcare,Diagnostics & Research,8.911,0.607,34.46,,3.445,,True,Pass,4146d044989af6d3,2026-06-20T02:50:22.834421+00:00
+ESE,0000866706,ESCO TECHNOLOGIES INC,NYSE,Technology,Scientific & Technical Instruments,8.899,0.259,41.88,98.98,0.715,,True,Pass,4146d044989af6d3,2026-06-20T02:50:22.866421+00:00
+TTC,0000737758,TORO CO,NYSE,Industrials,Tools & Accessories,8.819,0.832,33.57,95.97,1.688,,True,Pass,4146d044989af6d3,2026-06-20T02:50:22.964421+00:00
+KT,0000892450,KT CORP,NYSE,Communication Services,Telecom Services,8.769,4961.628,100.0,33.28,2.05,,True,Pass,4146d044989af6d3,2026-06-20T02:50:23.016421+00:00
+BRKR,0001109354,BRUKER CORP,NASDAQ,Healthcare,Medical Devices,8.712,0.14,47.62,92.77,3.489,,True,Pass,4146d044989af6d3,2026-06-20T02:50:23.066421+00:00
+TTD,0001671933,"Trade Desk, Inc.",NASDAQ,Communication Services,Advertising Agencies,8.702,1.093,77.83,89.62,0.597,,True,Pass,4146d044989af6d3,2026-06-20T02:50:23.076422+00:00
+DDS,0000028917,"DILLARD'S, INC.",NYSE,Consumer Cyclical,Department Stores,8.665,0.848,40.51,72.0,0.649,,True,Pass,4146d044989af6d3,2026-06-20T02:50:23.109422+00:00
+QRVO,0001604778,"Qorvo, Inc.",NASDAQ,Technology,Semiconductors,8.662,0.809,46.2,97.23,1.974,,True,Pass,4146d044989af6d3,2026-06-20T02:50:23.119422+00:00
+UHS,0000352915,UNIVERSAL HEALTH SERVICES INC,NYSE,Healthcare,Medical Care Facilities,8.546,1.906,44.23,,1.921,,True,Pass,4146d044989af6d3,2026-06-20T02:50:23.191422+00:00
+IT,0000749251,GARTNER INC,NYSE,Technology,Information Technology Services,8.536,1.368,68.99,,2.51,,True,Pass,4146d044989af6d3,2026-06-20T02:50:23.201420+00:00
+BIRK,0001977102,Birkenstock Holding plc,NYSE,Consumer Cyclical,Footwear & Accessories,8.48,0.415,57.76,96.61,2.22,,True,Pass,4146d044989af6d3,2026-06-20T02:50:23.239421+00:00
+ZWS,0001439288,Zurn Elkay Water Solutions Corp,NYSE,Industrials,Pollution & Treatment Controls,8.374,0.35,45.38,92.69,1.409,,True,Pass,4146d044989af6d3,2026-06-20T02:50:23.280422+00:00
+CRUS,0000772406,"CIRRUS LOGIC, INC.",NASDAQ,Technology,Semiconductors,8.339,0.651,52.78,,0.261,,True,Pass,4146d044989af6d3,2026-06-20T02:50:23.310422+00:00
+ENS,0001289308,EnerSys,NYSE,Industrials,Electrical Equipment & Parts,8.324,0.548,29.32,,2.048,,True,Pass,4146d044989af6d3,2026-06-20T02:50:23.320422+00:00
+DOCU,0001261333,"DOCUSIGN, INC.",NASDAQ,Technology,Software - Application,8.3,1.235,79.54,96.59,0.473,,True,Pass,4146d044989af6d3,2026-06-20T02:50:23.331423+00:00
+MTCH,0000891103,"Match Group, Inc.",NASDAQ,Communication Services,Internet Content & Information,8.269,1.082,73.88,,3.59,,True,Pass,4146d044989af6d3,2026-06-20T02:50:23.373422+00:00
+AGCO,0000880266,AGCO CORP /DE,NYSE,Industrials,Farm & Heavy Construction Machinery,8.23,0.79,25.33,92.78,2.603,,True,Pass,4146d044989af6d3,2026-06-20T02:50:23.394422+00:00
+YMM,0001838413,Full Truck Alliance Co. Ltd.,NYSE,Technology,Software - Application,8.158,5.863,85.01,81.45,0.006,,True,Pass,4146d044989af6d3,2026-06-20T02:50:23.458421+00:00
+HALO,0001159036,"HALOZYME THERAPEUTICS, INC.",NASDAQ,Healthcare,Biotechnology,8.131,0.677,76.67,,2.284,,True,Pass,4146d044989af6d3,2026-06-20T02:50:23.478422+00:00
+AOS,0000091142,SMITH A O CORP,NYSE,Industrials,Specialty Industrial Machinery,8.024,0.708,38.76,,0.826,,True,Pass,4146d044989af6d3,2026-06-20T02:50:23.547421+00:00
+NPO,0001164863,Enpro Inc.,NYSE,Industrials,Specialty Industrial Machinery,8.021,0.22,43.07,,2.178,,True,Pass,4146d044989af6d3,2026-06-20T02:50:23.569421+00:00
+CELH,0001341766,"Celsius Holdings, Inc.",NASDAQ,Consumer Defensive,Beverages - Non-Alcoholic,7.874,0.33,50.35,64.96,0.995,,True,Pass,4146d044989af6d3,2026-06-20T02:50:23.685421+00:00
+MANH,0001056696,MANHATTAN ASSOCIATES INC,NASDAQ,Technology,Software - Application,7.826,0.398,55.99,,0.193,,True,Pass,4146d044989af6d3,2026-06-20T02:50:23.719421+00:00
+MIDD,0000769520,MIDDLEBY Corp,NASDAQ,Industrials,Specialty Industrial Machinery,7.789,0.555,38.74,,2.707,,True,Pass,4146d044989af6d3,2026-06-20T02:50:23.739422+00:00
+STN,0001131383,STANTEC INC,NYSE,Industrials,Engineering & Construction,7.721,0.76,54.24,80.04,2.642,,True,Pass,4146d044989af6d3,2026-06-20T02:50:23.761422+00:00
+ATR,0000896622,"APTARGROUP, INC.",NYSE,Healthcare,Medical Instruments & Supplies,7.679,0.606,36.67,96.92,1.781,,True,Pass,4146d044989af6d3,2026-06-20T02:50:23.799421+00:00
+IDCC,0001405495,"InterDigital, Inc.",NASDAQ,Technology,Software - Application,7.651,0.581,84.66,,0.819,,True,Pass,4146d044989af6d3,2026-06-20T02:50:23.829421+00:00
+RAL,0002041385,Ralliant Corp,NYSE,Technology,Electronic Components,7.632,0.345,50.4,,3.302,,True,Pass,4146d044989af6d3,2026-06-20T02:50:23.861420+00:00
+QGEN,0001015820,QIAGEN N.V.,NYSE,Healthcare,Diagnostics & Research,7.621,0.615,66.14,84.57,2.291,,True,Pass,4146d044989af6d3,2026-06-20T02:50:23.871420+00:00
+GAP,0000039911,GAP INC,NYSE,Consumer Cyclical,Apparel Retail,7.614,1.646,40.5,68.65,3.15,,True,Pass,4146d044989af6d3,2026-06-20T02:50:23.882421+00:00
+SFM,0001575515,"Sprouts Farmers Market, Inc.",NASDAQ,Consumer Defensive,Grocery Stores,7.57,0.652,38.97,,2.452,,True,Pass,4146d044989af6d3,2026-06-20T02:50:23.913421+00:00
+SAIL,0002030781,"SailPoint, Inc.",NASDAQ,Technology,Software - Infrastructure,7.561,0.206,66.35,,2.114,,True,Pass,4146d044989af6d3,2026-06-20T02:50:23.924420+00:00
+BIO,0000012208,"BIO-RAD LABORATORIES, INC.",NYSE,Healthcare,Medical Devices,7.559,0.51,52.01,94.4,3.098,,True,Pass,4146d044989af6d3,2026-06-20T02:50:23.935422+00:00
+EDU,0001372920,New Oriental Education & Technology Group Inc.,NYSE,Consumer Defensive,Education & Training Services,7.505,0.907,54.96,35.56,1.029,,True,Pass,4146d044989af6d3,2026-06-20T02:50:23.965421+00:00
+CHWY,0001766502,"Chewy, Inc.",NYSE,Consumer Cyclical,Internet Retail,7.456,0.714,29.91,,1.311,,True,Pass,4146d044989af6d3,2026-06-20T02:50:24.047422+00:00
+ZG,0001617640,"ZILLOW GROUP, INC.",NASDAQ,Communication Services,Internet Content & Information,7.434,0.464,73.34,,3.796,,True,Pass,4146d044989af6d3,2026-06-20T02:50:24.131422+00:00
+TAP,0000024545,MOLSON COORS BEVERAGE CO,NYSE,Consumer Defensive,Beverages - Brewers,7.39,1.878,38.62,,2.653,,True,Pass,4146d044989af6d3,2026-06-20T02:50:24.151421+00:00
+ST,0001477294,Sensata Technologies Holding plc,NYSE,Technology,Scientific & Technical Instruments,7.363,0.625,29.45,,3.755,,True,Pass,4146d044989af6d3,2026-06-20T02:50:24.173421+00:00
+POOL,0000945841,POOL CORP,NASDAQ,Industrials,Industrial Distribution,7.252,0.364,29.69,,2.495,,True,Pass,4146d044989af6d3,2026-06-20T02:50:24.225425+00:00
+FSS,0000277509,FEDERAL SIGNAL CORP /DE/,NYSE,Industrials,Farm & Heavy Construction Machinery,7.23,0.319,29.02,,1.228,,True,Pass,4146d044989af6d3,2026-06-20T02:50:24.256421+00:00
+GTES,0001718512,Gates Industrial Corp plc,NYSE,Industrials,Specialty Industrial Machinery,7.135,0.501,40.3,,3.267,,True,Pass,4146d044989af6d3,2026-06-20T02:50:24.377421+00:00
+HQY,0001428336,"HEALTHEQUITY, INC.",NASDAQ,Healthcare,Health Information Services,7.124,0.49,70.68,,1.964,,True,Pass,4146d044989af6d3,2026-06-20T02:50:24.367422+00:00
+JBTM,0001433660,JBT MAREL Corp,NYSE,Industrials,Specialty Industrial Machinery,6.903,0.427,35.4,,2.952,,True,Pass,4146d044989af6d3,2026-06-20T02:50:24.603421+00:00
+ENPH,0001463101,"Enphase Energy, Inc.",NASDAQ,Technology,Solar,6.89,0.191,27.18,,3.417,,True,Pass,4146d044989af6d3,2026-06-20T02:50:24.630422+00:00
+YOU,0001856314,"Clear Secure, Inc.",NYSE,Technology,Software - Application,6.877,0.464,65.48,97.18,0.476,,True,Pass,4146d044989af6d3,2026-06-20T02:50:26.897421+00:00
+MHK,0000851968,MOHAWK INDUSTRIES INC,NYSE,Consumer Cyclical,"Furnishings, Fixtures & Appliances",6.845,1.163,25.34,94.18,1.77,,True,Pass,4146d044989af6d3,2026-06-20T02:50:24.661420+00:00
+VFC,0000103379,V F CORP,NYSE,Consumer Cyclical,Apparel Manufacturing,6.799,1.513,50.8,91.32,2.524,,True,Pass,4146d044989af6d3,2026-06-20T02:50:24.732421+00:00
+LNTH,0001521036,"Lantheus Holdings, Inc.",NASDAQ,Healthcare,Drug Manufacturers - Specialty & Generic,6.762,0.408,60.48,,1.709,,True,Pass,4146d044989af6d3,2026-06-20T02:50:24.762422+00:00
+AWI,0000007431,ARMSTRONG WORLD INDUSTRIES INC,NYSE,Industrials,Building Products & Equipment,6.738,0.347,40.3,,1.299,,True,Pass,4146d044989af6d3,2026-06-20T02:50:24.786422+00:00
+MSM,0001003078,MSC INDUSTRIAL DIRECT CO INC,NYSE,Industrials,Industrial Distribution,6.617,0.301,40.78,89.03,1.33,,True,Pass,4146d044989af6d3,2026-06-20T02:50:24.995421+00:00
+URBN,0000912615,URBAN OUTFITTERS INC,NASDAQ,Consumer Cyclical,Apparel Retail,6.544,0.558,36.06,75.83,1.593,,True,Pass,4146d044989af6d3,2026-06-20T02:50:25.067421+00:00
+ESAB,0001877322,ESAB Corp,NYSE,Industrials,Metal Fabrication,6.466,0.272,36.71,99.82,3.937,,True,Pass,4146d044989af6d3,2026-06-20T02:50:25.194421+00:00
+KLIC,0000056978,KULICKE & SOFFA INDUSTRIES INC,NASDAQ,Technology,Semiconductor Equipment & Materials,6.378,0.016,53.56,93.14,0.34,,True,Pass,4146d044989af6d3,2026-06-20T02:50:25.293423+00:00
+M,0000794367,"Macy's, Inc.",NYSE,Consumer Cyclical,Department Stores,6.35,1.786,40.31,99.04,3.629,,True,Pass,4146d044989af6d3,2026-06-20T02:50:25.314422+00:00
+MSA,0000066570,MSA Safety Inc,NYSE,Industrials,Security & Protection Services,6.346,0.378,46.8,95.08,1.325,,True,Pass,4146d044989af6d3,2026-06-20T02:50:25.335423+00:00
+LQDA,0001819576,Liquidia Corp,NASDAQ,Healthcare,Drug Manufacturers - Specialty & Generic,6.32,0.048,91.81,70.19,3.964,,True,Pass,4146d044989af6d3,2026-06-20T02:50:25.369422+00:00
+GOLF,0001672013,Acushnet Holdings Corp.,NYSE,Consumer Cyclical,Leisure,6.308,0.171,47.52,57.53,3.403,,True,Pass,4146d044989af6d3,2026-06-20T02:50:25.430423+00:00
+BYD,0000906553,BOYD GAMING CORP,NYSE,Consumer Cyclical,Resorts & Casinos,6.294,0.855,59.16,72.57,2.473,,True,Pass,4146d044989af6d3,2026-06-20T02:50:25.480420+00:00
+CROX,0001334036,"Crocs, Inc.",NASDAQ,Consumer Cyclical,Footwear & Accessories,6.214,0.697,58.1,,1.815,,True,Pass,4146d044989af6d3,2026-06-20T02:50:25.545421+00:00
+BZ,0001842827,Kanzhun Ltd,NASDAQ,Communication Services,Internet Content & Information,6.156,4.739,85.47,83.22,0.037,,True,Pass,4146d044989af6d3,2026-06-20T02:50:25.643423+00:00
+PCOR,0001611052,"PROCORE TECHNOLOGIES, INC.",NYSE,Technology,Software - Application,6.034,0.311,79.9,,3.893,,True,Pass,4146d044989af6d3,2026-06-20T02:50:25.745421+00:00
+TEO,0000932470,TELECOM ARGENTINA SA,NYSE,Communication Services,Telecom Services,5.923,2788.424,75.73,12.92,2.375,,True,Pass,4146d044989af6d3,2026-06-20T02:50:25.801422+00:00
+IBP,0001580905,"Installed Building Products, Inc.",NYSE,Consumer Cyclical,Residential Construction,5.88,0.382,33.87,99.83,2.43,,True,Pass,4146d044989af6d3,2026-06-20T02:50:25.861422+00:00
+DUOL,0001562088,"Duolingo, Inc.",NASDAQ,Technology,Software - Application,5.85,0.433,72.67,97.97,0.518,,True,Pass,4146d044989af6d3,2026-06-20T02:50:25.904423+00:00
+PAYC,0001590955,"Paycom Software, Inc.",NYSE,Technology,Software - Application,5.821,0.71,87.6,,1.138,,True,Pass,4146d044989af6d3,2026-06-20T02:50:25.946421+00:00
+CHE,0000019584,CHEMED CORP,NYSE,Healthcare,Medical Care Facilities,5.791,0.444,32.38,,0.6,,True,Pass,4146d044989af6d3,2026-06-20T02:50:25.978421+00:00
+DSGX,0001050140,DESCARTES SYSTEMS GROUP INC,NASDAQ,Technology,Software - Application,5.77,0.288,77.35,93.15,0.025,,True,Pass,4146d044989af6d3,2026-06-20T02:50:26.010423+00:00
+ACLS,0001113232,AXCELIS TECHNOLOGIES INC,NASDAQ,Technology,Semiconductor Equipment & Materials,5.764,0.097,43.61,,0.652,,True,Pass,4146d044989af6d3,2026-06-20T02:50:26.020422+00:00
+SPHR,0001795250,Sphere Entertainment Co.,NYSE,Communication Services,Entertainment,5.631,0.373,55.14,,3.484,,True,Pass,4146d044989af6d3,2026-06-20T02:50:26.124420+00:00
+CWST,0000911177,CASELLA WASTE SYSTEMS INC,NASDAQ,Industrials,Waste Management,5.533,0.342,33.67,,3.058,,True,Pass,4146d044989af6d3,2026-06-20T02:50:26.267421+00:00
+NOVT,0001076930,NOVANTA INC,NASDAQ,Technology,Scientific & Technical Instruments,5.531,0.084,44.23,,1.629,,True,Pass,4146d044989af6d3,2026-06-20T02:50:26.278422+00:00
+GLBE,0001835963,Global-E Online Ltd.,NASDAQ,Consumer Cyclical,Internet Retail,5.516,0.283,45.59,68.19,0.135,,True,Pass,4146d044989af6d3,2026-06-20T02:50:26.331422+00:00
+LGND,0000886163,LIGAND PHARMACEUTICALS INC,NASDAQ,Healthcare,Biotechnology,5.509,0.123,83.16,,3.362,,True,Pass,4146d044989af6d3,2026-06-20T02:50:26.372424+00:00
+OMAB,0001378239,Central North Airport Group,NASDAQ,Industrials,Airports & Air Services,5.503,7.257,67.52,14.02,1.39,,True,Pass,4146d044989af6d3,2026-06-20T02:50:26.382424+00:00
+DIOD,0000029002,DIODES INC /DEL/,NASDAQ,Technology,Semiconductors,5.489,0.223,31.28,,0.529,,True,Pass,4146d044989af6d3,2026-06-20T02:50:26.465423+00:00
+DOX,0001062579,AMDOCS LTD,NASDAQ,Technology,Software - Infrastructure,5.464,0.793,37.79,,1.042,,True,Pass,4146d044989af6d3,2026-06-20T02:50:26.486425+00:00
+PCTY,0001591698,Paylocity Holding Corp,NASDAQ,Technology,Software - Application,5.411,0.508,69.42,86.62,0.329,,True,Pass,4146d044989af6d3,2026-06-20T02:50:26.604421+00:00
+VSNT,0002067876,"Versant Media Group, Inc.",NASDAQ,Communication Services,Entertainment,5.407,2.129,56.2,83.98,1.321,,True,Pass,4146d044989af6d3,2026-06-20T02:50:26.614425+00:00
+APPF,0001433195,APPFOLIO INC,NASDAQ,Technology,Software - Application,5.357,0.238,63.75,92.18,0.202,,True,Pass,4146d044989af6d3,2026-06-20T02:50:26.723421+00:00
+PATH,0001734722,"UiPath, Inc.",NYSE,Technology,Software - Infrastructure,5.321,0.384,83.05,82.38,0.671,,True,Pass,4146d044989af6d3,2026-06-20T02:50:26.775422+00:00
+BOOT,0001610250,"Boot Barn Holdings, Inc.",NYSE,Consumer Cyclical,Apparel Retail,5.287,0.305,38.08,,2.043,,True,Pass,4146d044989af6d3,2026-06-20T02:50:26.839423+00:00
+CAI,0002019410,"Caris Life Sciences, Inc.",NASDAQ,Healthcare,Biotechnology,5.221,0.147,68.92,56.66,3.341,,True,Pass,4146d044989af6d3,2026-06-20T02:50:26.861422+00:00
+LAUR,0000912766,"LAUREATE EDUCATION, INC.",NASDAQ,Consumer Defensive,Education & Training Services,5.099,0.37,36.97,,1.452,,True,Pass,4146d044989af6d3,2026-06-20T02:50:27.054422+00:00
+TAL,0001499620,TAL Education Group,NYSE,Consumer Defensive,Education & Training Services,5.098,0.601,55.35,59.76,1.098,,True,Pass,4146d044989af6d3,2026-06-20T02:50:27.065422+00:00
+FBIN,0001519751,"Fortune Brands Innovations, Inc.",NYSE,Industrials,Building Products & Equipment,5.058,0.443,44.91,,3.652,,True,Pass,4146d044989af6d3,2026-06-20T02:50:27.108423+00:00
+PEGA,0001013857,PEGASYSTEMS INC,NASDAQ,Technology,Software - Application,5.029,0.513,74.96,59.62,0.347,,True,Pass,4146d044989af6d3,2026-06-20T02:50:27.160422+00:00
+FTDR,0001727263,"Frontdoor, Inc.",NASDAQ,Consumer Cyclical,Personal Services,5.026,0.411,55.24,,2.408,,True,Pass,4146d044989af6d3,2026-06-20T02:50:27.170421+00:00
+IPGP,0001111928,IPG PHOTONICS CORP,NASDAQ,Technology,Semiconductor Equipment & Materials,5.009,0.056,37.56,71.81,0.178,,True,Pass,4146d044989af6d3,2026-06-20T02:50:27.243422+00:00
+ADT,0001703056,ADT Inc.,NYSE,Industrials,Security & Protection Services,5.004,2.056,80.82,95.33,2.863,,True,Pass,4146d044989af6d3,2026-06-20T02:50:27.253422+00:00
