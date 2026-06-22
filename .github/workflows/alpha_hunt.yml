@@ -5,10 +5,18 @@ on:
     # GitHub 排程可能延遲；cron 是啟動條件，不再用執行時鐘二次攔截。
     - cron: '0 1 * * 1-5'
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '**.py'
+      - '**.csv'
+      - 'ModeC_requirements.txt'
+      - '.github/workflows/alpha_hunt.yml'
   pull_request:
     branches: [main]
     paths:
       - '**.py'
+      - '**.csv'
       - 'ModeC_requirements.txt'
       - '.github/workflows/alpha_hunt.yml'
 
