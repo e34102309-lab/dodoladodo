@@ -18,7 +18,8 @@
 - `total_market_hunter_v2.py`：本機執行、低請求量且可斷點續跑的全市場初篩器。
 - `qualified_universe.csv`：手動更新並上傳的候選宇宙，至少包含 `Ticker,CIK`。
 - `AQR_ModeC_Agent_V12.py`：價值、品質、預期、資本配置與下檔風險評分引擎。
-- `run_mode_c_ai_agent.py`：對候選做連網證據查核、ETF 重疊確認、每週去重與投資論點反證。
+- `build_mode_c_dashboard.py`：把評分結果整理成不依賴外部 AI 的靜態研究網站。
+- `run_mode_c_ai_agent.py`：保留為選用工具，不再由主要 GitHub Actions 自動呼叫。
 
 ## 本機全市場初篩
 
@@ -76,16 +77,32 @@ PowerShell 先測試 20 檔：
 pip install -r ModeC_requirements.txt
 export USER_EMAIL="your_email@example.com"
 python AQR_ModeC_Agent_V12.py
+python build_mode_c_dashboard.py
 ```
 
-`qualified_universe.csv` 由你在本機需要時更新；GitHub Actions 不會為 PR 重跑耗時的全市場初篩。
+本機產生的網站位於 `public/index.html`。`qualified_universe.csv` 由你在本機需要時更新；GitHub Actions 不會為 PR 重跑耗時的全市場初篩。
+
+## 靜態研究網站
+
+主要工作流程完成量化分析後，會建立並部署研究網站：
+
+`https://e34102309-lab.github.io/Alpha-Engine-V9/`
+
+網站功能：
+
+- 搜尋、分數門檻、Shortlist、合格名單與自訂追蹤清單。
+- 點擊股票查看品質、價值、Real FCF、ICR、ROIC、ROCE、稀釋、估值與壓力測試。
+- 直接開啟 SEC 官方公司申報頁及 Yahoo 財務資料頁。
+- 一鍵複製固定格式的 AI 研究提示，再貼到你慣用的 AI 手動查核。
+- 追蹤名單只保存在目前瀏覽器的 `localStorage`，不會公開或上傳，並可匯出文字檔。
+
+主要流程不再需要 `GEMINI_API_KEY`，也不會因 Gemini 503 高需求錯誤而讓本批研究失敗。若 GitHub Pages 尚未啟用，先到 repository 的 `Settings > Pages`，將 Source 設為 `GitHub Actions`。私人 repository 的 Pages 可用性仍取決於 GitHub 方案；無法部署時，可以從 Actions artifact 下載 `Mode_C_Long_Term_Value_Outputs`，解壓後開啟 `public/index.html`。
 
 ## 輸出
 
 - `mode_c_screen.csv`：全部公司與落選原因。
 - `mode_c_shortlist.csv`：產業分散後最多 12 檔研究候選。
 - `mode_c_report.md`：長期價值研究摘要。
-- `mode_c_agent_payload.json`：交給連網 Agent 的九項反證任務包。
-- `Mode_C_Final_Decision_Memo.md`：AI 二審研究備忘錄。
-
-AI 報告使用純文字繁體中文，會移除 emoji、異常 Unicode 與裝飾符號。同一股票在同一 ISO 週最多分析一次；再次執行時依排名改選本週尚未分析的其他候選，每次最多 5 檔。
+- `mode_c_agent_payload.json`：供手動 AI 研究或其他工具使用的九項反證任務包。
+- `public/index.html`：可直接開啟的研究網站。
+- `public/data.json`：網站使用的完整結構化資料。

@@ -16,6 +16,9 @@ concurrency:
   group: mode-c-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+permissions:
+  contents: read
+
 jobs:
   quality-checks:
     runs-on: ubuntu-latest
@@ -37,7 +40,7 @@ jobs:
           pip install -r ModeC_requirements.txt
 
       - name: Compile Python Sources
-        run: python -m py_compile AQR_ModeC_Agent_V12.py total_market_hunter_v2.py run_mode_c_ai_agent.py
+        run: python -m py_compile AQR_ModeC_Agent_V12.py total_market_hunter_v2.py run_mode_c_ai_agent.py build_mode_c_dashboard.py
 
       - name: Run Unit Tests
         run: python -m unittest discover -s tests -v
@@ -47,6 +50,10 @@ jobs:
     needs: quality-checks
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -69,37 +76,18 @@ jobs:
           SEND_EMAIL: "0"
         run: python AQR_ModeC_Agent_V12.py
 
-      - name: Calculate ISO Week Cache Key
-        id: ai-week
-        shell: bash
-        run: echo "week=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
+      - name: Build Static Research Dashboard
+        run: python build_mode_c_dashboard.py
 
-      - name: Restore Weekly AI Report History
-        uses: actions/cache/restore@v4
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload GitHub Pages Artifact
+        uses: actions/upload-pages-artifact@v4
         with:
-          path: .mode_c_state
-          key: mode-c-ai-${{ steps.ai-week.outputs.week }}-${{ github.run_id }}
-          restore-keys: |
-            mode-c-ai-${{ steps.ai-week.outputs.week }}-
+          path: public
 
-      - name: Run AI Evidence Review
-        env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          USER_EMAIL: ${{ secrets.USER_EMAIL }}
-          EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
-          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
-          GEMINI_REPORT_LIMIT: "5"
-          MODE_C_STATE_DIR: .mode_c_state
-        run: python run_mode_c_ai_agent.py
-
-      - name: Save Weekly AI Report History
-        if: always()
-        uses: actions/cache/save@v4
-        with:
-          path: .mode_c_state
-          key: mode-c-ai-${{ steps.ai-week.outputs.week }}-${{ github.run_id }}
-
-      - name: Upload Final Artifacts
+      - name: Upload Research Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: Mode_C_Long_Term_Value_Outputs
@@ -108,5 +96,20 @@ jobs:
             mode_c_shortlist.csv
             mode_c_report.md
             mode_c_agent_payload.json
-            Mode_C_Final_Decision_Memo.md
+            public
           if-no-files-found: error
+
+  deploy-pages:
+    if: github.event_name != 'pull_request'
+    needs: run-mode-c-pipeline
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy Research Dashboard
+        id: deployment
+        uses: actions/deploy-pages@v4
