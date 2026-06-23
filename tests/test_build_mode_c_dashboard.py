@@ -39,11 +39,12 @@ class DashboardTests(unittest.TestCase):
 
             html = index.read_text(encoding="utf-8")
             self.assertIn("Alpha Engine 長期價值研究台", html)
-            self.assertIn("供應鏈二階雷達", html)
+            self.assertIn("主題擴散鏈", html)
             self.assertIn("AI 晶片二階受益鏈", html)
+            self.assertIn("二階：瓶頸零組件與設備", html)
             self.assertIn("localStorage", html)
             self.assertIn("複製 AI 研究提示", html)
-            self.assertIn("一階、二階或三階受益者", html)
+            self.assertIn("二階受益是否已開始進財報", html)
             self.assertIn('"CIK":"0000820313"', html)
             self.assertNotIn("Gemini API", html)
             self.assertTrue((root / "public" / ".nojekyll").exists())
@@ -55,6 +56,13 @@ class DashboardTests(unittest.TestCase):
             self.assertIn("themes", data)
             self.assertIn("ai_chip_second_order", data["stocks"][0]["Theme_Ids"])
             self.assertIn("AI 晶片二階受益鏈", data["stocks"][0]["Theme_Tags"])
+            self.assertEqual(
+                data["stocks"][0]["Theme_Layer_Map"]["ai_chip_second_order"],
+                "二階：瓶頸零組件與設備",
+            )
+            ai_theme = next(theme for theme in data["themes"] if theme["id"] == "ai_chip_second_order")
+            second_layer = next(layer for layer in ai_theme["layers"] if layer["name"] == "二階：瓶頸零組件與設備")
+            self.assertIn("APH", second_layer["top"])
 
 
 if __name__ == "__main__":
