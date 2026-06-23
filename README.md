@@ -84,9 +84,15 @@ python build_mode_c_dashboard.py
 
 ## 靜態研究網站
 
-主要工作流程完成量化分析後，會建立並部署研究網站：
+主要工作流程完成量化分析後，會建立研究網站並上傳成 GitHub Actions artifact；不再部署 GitHub Pages。這樣 private repository 在免費帳號也能使用，不必把程式碼公開，也不必升級付費方案。
 
-`https://e34102309-lab.github.io/Alpha-Engine-V9/`
+下載方式：
+
+1. 到 GitHub repository 的 `Actions`。
+2. 打開最新一次 `Mode-C Long-Term Value Research Pipeline`。
+3. 在頁面下方 `Artifacts` 下載 `Alpha_Engine_Static_Dashboard`。
+4. 解壓縮 zip。
+5. 直接打開 `index.html`。
 
 網站功能：
 
@@ -96,7 +102,7 @@ python build_mode_c_dashboard.py
 - 一鍵複製固定格式的 AI 研究提示，再貼到你慣用的 AI 手動查核。
 - 追蹤名單只保存在目前瀏覽器的 `localStorage`，不會公開或上傳，並可匯出文字檔。
 
-主要流程不再需要 `GEMINI_API_KEY`，也不會因 Gemini 503 高需求錯誤而讓本批研究失敗。若 GitHub Pages 尚未啟用，先到 repository 的 `Settings > Pages`，將 Source 設為 `GitHub Actions`。私人 repository 的 Pages 可用性仍取決於 GitHub 方案；無法部署時，可以從 Actions artifact 下載 `Mode_C_Long_Term_Value_Outputs`，解壓後開啟 `public/index.html`。
+主要流程不再需要 `GEMINI_API_KEY`，也不會因 Gemini 503 高需求錯誤而讓本批研究失敗。`Mode_C_Long_Term_Value_Outputs` artifact 仍會保留完整 CSV、Markdown、JSON 與 `public` 網站資料；`Alpha_Engine_Static_Dashboard` 則是給你最快打開網站用的精簡 artifact。
 
 ## 輸出
 
