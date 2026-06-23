@@ -84,8 +84,23 @@ jobs:
           SEND_EMAIL: "0"
         run: python AQR_ModeC_Agent_V12.py
 
+      - name: Restore Dashboard Trend History
+        uses: actions/cache/restore@v4
+        with:
+          path: .mode_c_state
+          key: mode-c-dashboard-trends-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            mode-c-dashboard-trends-${{ github.ref_name }}-
+            mode-c-dashboard-trends-
+
       - name: Build Static Research Dashboard
         run: python build_mode_c_dashboard.py
+
+      - name: Save Dashboard Trend History
+        uses: actions/cache/save@v4
+        with:
+          path: .mode_c_state
+          key: mode-c-dashboard-trends-${{ github.ref_name }}-${{ github.run_id }}
 
       - name: Upload Static Dashboard Artifact
         uses: actions/upload-artifact@v4
