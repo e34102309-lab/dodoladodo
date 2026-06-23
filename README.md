@@ -53,7 +53,7 @@ PowerShell 先測試 20 檔：
 - 品質 35%：ICR、Real FCF、ROIC、毛利趨勢與五年現金流穩定性。
 - 價值 30%：歷史 EV/EBITDA 分位與 Real FCF Yield。
 - 市場預期差 20%：反推 EBITDA 成長是否合理。
-- 動能 10%：只作輔助。
+- 動能 10%，僅作輔助。
 - 資本配置 5%：回購是否真正降低股數、增發與持續稀釋。
 - 再扣除壓力測試、資料品質、價值陷阱與其他風險分。
 
@@ -84,9 +84,16 @@ python build_mode_c_dashboard.py
 
 ## 靜態研究網站
 
-主要工作流程完成量化分析後，會建立研究網站並上傳成 GitHub Actions artifact；不再部署 GitHub Pages。這樣 private repository 在免費帳號也能使用，不必把程式碼公開，也不必升級付費方案。
+主要工作流程完成量化分析後，永遠會上傳 GitHub Actions artifact；如果 repository 是 public 且 GitHub Pages 已設定為 `GitHub Actions` 來源，還會自動部署線上網站。
 
-下載方式：
+- Private repo / 免費帳號：下載 `Alpha_Engine_Static_Dashboard` artifact，解壓縮後打開 `index.html`。
+- Public repo / GitHub Pages 啟用：直接刷新線上網站。
+
+線上網站網址：
+
+`https://e34102309-lab.github.io/Alpha-Engine-V9/`
+
+artifact 下載方式：
 
 1. 到 GitHub repository 的 `Actions`。
 2. 打開最新一次 `Mode-C Long-Term Value Research Pipeline`。
