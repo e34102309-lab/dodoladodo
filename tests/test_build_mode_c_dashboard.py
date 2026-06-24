@@ -6,6 +6,7 @@ from pathlib import Path
 import pandas as pd
 
 from build_mode_c_dashboard import build_dashboard
+from enhance_dashboard_ui import enhance_dashboard
 
 
 class DashboardTests(unittest.TestCase):
@@ -71,11 +72,18 @@ class DashboardTests(unittest.TestCase):
                 root / "universe.csv",
                 root / "public",
             )
+            self.assertTrue(enhance_dashboard(index))
+            self.assertFalse(enhance_dashboard(index))
 
             html = index.read_text(encoding="utf-8")
             self.assertIn("Alpha Engine 長期價值研究台", html)
             self.assertIn("主題擴散鏈", html)
             self.assertIn("候選風口偵測", html)
+            self.assertIn("它會自動偵測什麼？", html)
+            self.assertIn("它不會自動做什麼？", html)
+            self.assertIn("點我 → 下面只看這群股票", html)
+            self.assertIn("data-candidate", html)
+            self.assertIn("clearCandidate", html)
             self.assertIn("AI 晶片二階受益鏈", html)
             self.assertIn("二階：瓶頸零組件與設備", html)
             self.assertIn("待人工確認", html)

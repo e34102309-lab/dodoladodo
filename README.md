@@ -19,6 +19,7 @@
 - `qualified_universe.csv`：手動更新並上傳的候選宇宙，至少包含 `Ticker,CIK`。
 - `AQR_ModeC_Agent_V12.py`：價值、品質、預期、資本配置與下檔風險評分引擎。
 - `build_mode_c_dashboard.py`：把評分結果整理成不依賴外部 AI 的靜態研究網站。
+- `enhance_dashboard_ui.py`：在網站生成後整理候選風口區塊，加入使用說明與可點選篩選互動。
 - `run_mode_c_ai_agent.py`：保留為選用工具，不再由主要 GitHub Actions 自動呼叫。
 
 ## 本機全市場初篩
@@ -78,6 +79,7 @@ pip install -r ModeC_requirements.txt
 export USER_EMAIL="your_email@example.com"
 python AQR_ModeC_Agent_V12.py
 python build_mode_c_dashboard.py
+python enhance_dashboard_ui.py public/index.html
 ```
 
 本機產生的網站位於 `public/index.html`。`qualified_universe.csv` 由你在本機需要時更新；GitHub Actions 不會為 PR 重跑耗時的全市場初篩。
@@ -106,6 +108,7 @@ artifact 下載方式：
 - 搜尋、分數門檻、Shortlist、合格名單與自訂追蹤清單。
 - 主題擴散鏈：把 AI 晶片、資料中心電力與散熱、電氣化、AI 軟體與資安、高品質醫療等主題拆成一階、二階、三階受益層，協助安排研究順序。
 - 候選風口偵測：每次跑完依產業、行業與主題層級統計平均分數、合格公司數、shortlist 公司數、營收變化、毛利變化與 Real FCF Yield，並與上次 workflow 保存的基準比較。系統只標記「待人工確認」候選，不會自動加入正式主題庫。
+- 候選風口卡片可點選；點擊後，下方股票表會自動篩出該產業、行業或主題層級的相關公司，方便從「可能風口」往下檢查實際標的。
 - 點擊主題卡片可篩出相關公司，卡片會列出每一層的高分候選。例如 AI 晶片的一階是核心算力與晶片，二階是半導體設備、記憶體、電源管理、散熱、連接器、被動元件與測試量測，三階是資料中心基建外溢。
 - 點擊股票查看它屬於哪個主題與受益層級，並檢查品質、價值、Real FCF、ICR、ROIC、ROCE、稀釋、估值與壓力測試。
 - 直接開啟 SEC 官方公司申報頁及 Yahoo 財務資料頁。
