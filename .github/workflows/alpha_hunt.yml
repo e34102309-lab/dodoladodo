@@ -48,7 +48,7 @@ jobs:
           pip install -r ModeC_requirements.txt
 
       - name: Compile Python Sources
-        run: python -m py_compile AQR_ModeC_Agent_V12.py total_market_hunter_v2.py run_mode_c_ai_agent.py build_mode_c_dashboard.py
+        run: python -m py_compile AQR_ModeC_Agent_V12.py total_market_hunter_v2.py run_mode_c_ai_agent.py build_mode_c_dashboard.py enhance_dashboard_ui.py
 
       - name: Run Unit Tests
         run: python -m unittest discover -s tests -v
@@ -95,6 +95,9 @@ jobs:
 
       - name: Build Static Research Dashboard
         run: python build_mode_c_dashboard.py
+
+      - name: Enhance Static Research Dashboard UI
+        run: python enhance_dashboard_ui.py public/index.html
 
       - name: Save Dashboard Trend History
         uses: actions/cache/save@v4
