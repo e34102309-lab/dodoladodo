@@ -2,9 +2,15 @@ name: Mode-C Long-Term Value Research Pipeline
 
 on:
   schedule:
-    # GitHub 排程可能延遲；cron 是啟動條件，不再用執行時鐘二次攔截。
-    - cron: '0 1 * * 1-5'
+    # Monthly full-market refresh, then Mode C from the refreshed universe.
+    - cron: '0 3 1 * *'
   workflow_dispatch:
+    inputs:
+      refresh_universe:
+        description: Run the full-market hunter before Mode C
+        required: false
+        type: boolean
+        default: false
   push:
     branches: [main]
     paths:
@@ -25,7 +31,7 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   quality-checks:
@@ -57,9 +63,9 @@ jobs:
     if: github.event_name != 'pull_request'
     needs: quality-checks
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 360
     permissions:
-      contents: read
+      contents: write
       pages: write
       id-token: write
     steps:
@@ -77,6 +83,70 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r ModeC_requirements.txt
+
+      - name: Restore Full-Market Hunter Cache
+        if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.refresh_universe)
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            .hunter_cache
+            hunter_checkpoint.jsonl
+          key: alpha-hunter-cache-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            alpha-hunter-cache-${{ github.ref_name }}-
+            alpha-hunter-cache-
+
+      - name: Monthly Full-Market Universe Refresh
+        if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.refresh_universe)
+        env:
+          USER_EMAIL: ${{ secrets.USER_EMAIL }}
+        run: |
+          set +e
+          python total_market_hunter_v2.py --email "$USER_EMAIL" --output-dir .
+          status=$?
+          set -e
+          echo "HUNTER_EXIT=$status" >> "$GITHUB_ENV"
+          if [ "$status" -ne 0 ]; then
+            echo "::warning::Full-market hunter stopped early; Mode C will use the last complete qualified_universe.csv in the repository."
+            if [ ! -f qualified_universe.csv ]; then
+              exit "$status"
+            fi
+          fi
+
+      - name: Save Full-Market Hunter Cache
+        if: always() && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.refresh_universe))
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            .hunter_cache
+            hunter_checkpoint.jsonl
+          key: alpha-hunter-cache-${{ github.ref_name }}-${{ github.run_id }}
+
+      - name: Commit Refreshed Qualified Universe
+        if: env.HUNTER_EXIT == '0'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add qualified_universe.csv
+          if git diff --cached --quiet; then
+            echo "No qualified_universe.csv changes to commit."
+          else
+            git commit -m "Monthly refresh qualified universe [skip ci]"
+            git push
+          fi
+
+      - name: Upload Full-Market Hunter Artifacts
+        if: always() && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.refresh_universe))
+        uses: actions/upload-artifact@v4
+        with:
+          name: Alpha_Engine_Full_Market_Hunter
+          path: |
+            hunter_audit.csv
+            hunter_audit.partial.csv
+            qualified_universe.csv
+            qualified_universe.partial.csv
+          if-no-files-found: warn
+          retention-days: 30
 
       - name: Validate Uploaded Universe and Run Quant Engine
         env:
