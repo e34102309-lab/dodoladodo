@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from build_mode_c_dashboard import build_dashboard
+from build_mode_c_dashboard import DASHBOARD_TREND_POLICY_VERSION, build_dashboard
 from enhance_dashboard_ui import enhance_dashboard
 
 
@@ -27,6 +27,8 @@ class DashboardTests(unittest.TestCase):
                         "Rev_3Q_Change_pct": 12.0,
                         "GM_3Q_Change_pp": 2.0,
                         "Real_FCF_Yield_pct": 3.5,
+                        "Debt_Source_Method": "SEC component composition",
+                        "ICR_Method": "net_cash",
                     },
                     {
                         "Ticker": "TEL",
@@ -54,7 +56,7 @@ class DashboardTests(unittest.TestCase):
                         "GM_3Q_Change_pp": 1.2,
                         "Real_FCF_Yield_pct": 4.1,
                     },
-                    {"Ticker": "TEST", "Status": "Fail", "Long_Term_Score": float("nan")},
+                    {"Ticker": "TEST", "Status": "Abstain: model unavailable", "Decision_State": "ABSTAIN", "Model_Route": "BANK", "Long_Term_Score": float("nan")},
                 ]
             ).to_csv(root / "screen.csv", index=False)
             pd.DataFrame([{"Ticker": "APH"}]).to_csv(root / "shortlist.csv", index=False)
@@ -66,11 +68,23 @@ class DashboardTests(unittest.TestCase):
                 ]
             ).to_csv(root / "universe.csv", index=False)
 
+            history = root / "history.json"
+            history.write_text(
+                json.dumps(
+                    {
+                        "policy_version": "old-policy",
+                        "generated_at": "2026-01-01T00:00:00+00:00",
+                        "groups": {"industry:Electronic Components": {"avg_score": 1}},
+                    }
+                ),
+                encoding="utf-8",
+            )
             index = build_dashboard(
                 root / "screen.csv",
                 root / "shortlist.csv",
                 root / "universe.csv",
                 root / "public",
+                history,
             )
             self.assertTrue(enhance_dashboard(index))
             self.assertFalse(enhance_dashboard(index))
@@ -84,6 +98,17 @@ class DashboardTests(unittest.TestCase):
             self.assertIn("點我 → 下面只看這群股票", html)
             self.assertIn("data-candidate", html)
             self.assertIn("clearCandidate", html)
+            self.assertIn('value="abstain"', html)
+            self.assertIn("m<=0||", html)
+            self.assertIn("Industry_Model_Score", html)
+            self.assertIn("specializedPanel", html)
+            self.assertIn("Industry_Model_Metrics_JSON", html)
+            self.assertIn("債務來源：", html)
+            self.assertIn("ICR 口徑：", html)
+            self.assertIn("SEC component composition", html)
+            self.assertIn("net_cash", html)
+            self.assertIn("一年拆股因子", html)
+            self.assertIn("三年拆股因子", html)
             self.assertIn("AI 晶片二階受益鏈", html)
             self.assertIn("二階：瓶頸零組件與設備", html)
             self.assertIn("待人工確認", html)
@@ -99,6 +124,8 @@ class DashboardTests(unittest.TestCase):
             self.assertEqual(data["stats"]["shortlist"], 1)
             self.assertIsNone(data["stocks"][3]["Long_Term_Score"])
             self.assertEqual(data["trend_baseline"]["status"], "建立基準中")
+            saved_history = json.loads(history.read_text(encoding="utf-8"))
+            self.assertEqual(saved_history["policy_version"], DASHBOARD_TREND_POLICY_VERSION)
             self.assertIn("emerging_candidates", data)
             self.assertTrue(data["emerging_candidates"])
             self.assertTrue(

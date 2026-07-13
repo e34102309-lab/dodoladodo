@@ -2,7 +2,9 @@ name: Mode-C Long-Term Value Research Pipeline
 
 on:
   schedule:
-    # Monthly full-market refresh, then Mode C from the refreshed universe.
+    # Weekday Mode C refresh from the latest qualified universe.
+    - cron: '0 1 * * 1-5'
+    # Monthly full-market refresh, followed by Mode C on the refreshed universe.
     - cron: '0 3 1 * *'
   workflow_dispatch:
     inputs:
@@ -54,7 +56,7 @@ jobs:
           pip install -r ModeC_requirements.txt
 
       - name: Compile Python Sources
-        run: python -m py_compile AQR_ModeC_Agent_V12.py total_market_hunter_v2.py run_mode_c_ai_agent.py build_mode_c_dashboard.py enhance_dashboard_ui.py
+        run: python -m py_compile AQR_ModeC_Agent_V12.py mode_c_evidence.py mode_c_routing.py mode_c_industry_models.py total_market_hunter_v2.py run_mode_c_ai_agent.py build_mode_c_dashboard.py enhance_dashboard_ui.py validate_mode_c_outputs.py
 
       - name: Run Unit Tests
         run: python -m unittest discover -s tests -v
@@ -85,7 +87,7 @@ jobs:
           pip install -r ModeC_requirements.txt
 
       - name: Restore Full-Market Hunter Cache
-        if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.refresh_universe)
+        if: github.event.schedule == '0 3 1 * *' || (github.event_name == 'workflow_dispatch' && inputs.refresh_universe)
         uses: actions/cache/restore@v4
         with:
           path: |
@@ -97,12 +99,13 @@ jobs:
             alpha-hunter-cache-
 
       - name: Monthly Full-Market Universe Refresh
-        if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.refresh_universe)
+        if: github.event.schedule == '0 3 1 * *' || (github.event_name == 'workflow_dispatch' && inputs.refresh_universe)
         env:
           USER_EMAIL: ${{ secrets.USER_EMAIL }}
         run: |
           set +e
-          python total_market_hunter_v2.py --email "$USER_EMAIL" --output-dir .
+          contact_email="${USER_EMAIL:-a7924177@gmail.com}"
+          python total_market_hunter_v2.py --email "$contact_email" --output-dir .
           status=$?
           set -e
           echo "HUNTER_EXIT=$status" >> "$GITHUB_ENV"
@@ -114,7 +117,7 @@ jobs:
           fi
 
       - name: Save Full-Market Hunter Cache
-        if: always() && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.refresh_universe))
+        if: always() && (github.event.schedule == '0 3 1 * *' || (github.event_name == 'workflow_dispatch' && inputs.refresh_universe))
         uses: actions/cache/save@v4
         with:
           path: |
@@ -136,7 +139,7 @@ jobs:
           fi
 
       - name: Upload Full-Market Hunter Artifacts
-        if: always() && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.refresh_universe))
+        if: always() && (github.event.schedule == '0 3 1 * *' || (github.event_name == 'workflow_dispatch' && inputs.refresh_universe))
         uses: actions/upload-artifact@v4
         with:
           name: Alpha_Engine_Full_Market_Hunter
@@ -153,6 +156,9 @@ jobs:
           USER_EMAIL: ${{ secrets.USER_EMAIL }}
           SEND_EMAIL: "0"
         run: python AQR_ModeC_Agent_V12.py
+
+      - name: Validate Research Artifacts
+        run: python validate_mode_c_outputs.py
 
       - name: Restore Dashboard Trend History
         uses: actions/cache/restore@v4
@@ -190,6 +196,7 @@ jobs:
           path: |
             mode_c_screen.csv
             mode_c_shortlist.csv
+            mode_c_evidence_ledger.csv
             mode_c_report.md
             mode_c_agent_payload.json
             public

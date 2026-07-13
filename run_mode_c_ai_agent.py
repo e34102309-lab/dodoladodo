@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import json
 import os
 import random
@@ -9,8 +11,12 @@ from datetime import datetime, timezone
 from email.message import EmailMessage
 from pathlib import Path
 
-from google import genai
-from google.genai import types
+try:
+    from google import genai
+    from google.genai import types
+except ImportError:
+    genai = None
+    types = None
 
 
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
@@ -47,7 +53,15 @@ def retry_delay_seconds(attempt: int) -> float:
     return min(GEMINI_RETRY_MAX_SECONDS, base + jitter)
 
 
+def _require_google_genai() -> None:
+    if genai is None or types is None:
+        raise RuntimeError(
+            "google-genai is required only when the optional AI report agent is executed"
+        )
+
+
 def build_generation_config() -> types.GenerateContentConfig:
+    _require_google_genai()
     kwargs = {"temperature": 0.1}
     if ENABLE_GEMINI_SEARCH:
         try:
@@ -141,6 +155,7 @@ def sanitize_report_text(text: str) -> str:
 
 def execute_pm_agent_reasoning(payload_data):
     """對長期價值研究候選做可審計的二次查核。"""
+    _require_google_genai()
     client = genai.Client()
     tasks = payload_data.get("tasks", [])
     limits = payload_data.get("portfolio_limits", {})
@@ -165,13 +180,14 @@ Quant 候選與查核任務：
 3. 無法驗證時寫「待查」，不可把待查內容寫成已確認。
 4. 必須逐項回答：三句話投資論點、最強反方、thesis 失效條件、悲觀/基準/樂觀情境、最新財報警訊、股數稀釋、資本配置、QQQ/VOO 重疊、已透過 ETF 持有仍值得主動加碼的理由。
 5. 使用最新可得資料查核該股票是否為 QQQ 或 VOO 前十大；一般股票 75 分才可考慮 1% 小部位，前十大必須至少 80 分。名單或權重無法驗證時寫待查。
-6. 建立三情境時說明營收、毛利、Real FCF 與估值倍數假設，不製造精確目標價幻覺。
-7. 驗證最新 10-K/10-Q footnotes、管理層資本配置、一年與三年股數變化、產業瓶頸與主要競爭風險。單一年稀釋是扣分，三年持續明顯稀釋才支持排除。
-8. 加碼必須至少等一次財報，且 thesis、Real FCF、股數與估值未惡化；不可因股價單純上漲或下跌而加碼。
-9. 強制檢討或退出條件包括：分數跌破60、Real FCF轉負、ICR<3、連續兩季營收與毛利惡化、明顯稀釋、資本配置失控、thesis被證偽；估值面另檢查歷史90分位、隱含 EBITDA CAGR>30% 與過低 FCF Yield。
-10. 高 Short Interest 只作波動風險，不得變成事件交易、放空或期權建議。
-11. 結論只能是研究優先、觀察、排除或資料不足。即使研究優先，也只能建議完成研究後 1%～1.5% 起始部位，不得突破單股3%、單一主動產業9%、主動個股總上限30%。
-12. 避免保證、必漲、完美等語言，最後提醒這不是個人化投資建議。
+6. 先讀取每檔的 scoring_framework 與 industry_model。一般企業才使用 Real FCF、ROIC、DSI 與 EV/EBITDA；銀行、保險、REIT、公用事業、景氣循環及特殊金融必須使用任務內的專用 metrics、warnings 與 hard_failures，不得混用一般企業門檻。
+7. 建立三情境時，說明該產業核心營運 driver、資本或債務安全、現金或分配能力與估值假設，不製造精確目標價幻覺。
+8. 驗證最新 10-K/10-Q footnotes、監管或公司自訂揭露、管理層資本配置、一年與三年股數變化、產業瓶頸與主要競爭風險。單一年稀釋是扣分，三年持續明顯稀釋才支持排除。
+9. 加碼必須至少等一次財報，且 thesis、專用產業 KPI、股數與估值未惡化；不可因股價單純上漲或下跌而加碼。
+10. 強制檢討或退出條件包括：分數跌破60、資料信心跌破70、專用模型 hard failure、資本配置失控或 thesis 被證偽；一般企業另檢查 Real FCF、ICR、壓力測試、毛利與估值，專用產業則檢查任務列出的監管與產業風險。
+11. 高 Short Interest 只作波動風險，不得變成事件交易、放空或期權建議。
+12. 結論只能是研究優先、觀察、排除或資料不足。即使研究優先，也只能建議完成研究後 1%～1.5% 起始部位，不得突破單股3%、單一主動產業9%、主動個股總上限30%。
+13. 避免保證、必漲、完美等語言，最後提醒這不是個人化投資建議。
 """
 
     config = build_generation_config()
