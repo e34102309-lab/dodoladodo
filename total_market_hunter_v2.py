@@ -15,7 +15,10 @@ This is a research pre-screen, not a trading signal.
 from __future__ import annotations
 
 import argparse
+import csv
 import hashlib
+import html
+import io
 import json
 import math
 import os
@@ -27,12 +30,16 @@ import threading
 import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import pandas as pd
 import requests
 import yfinance as yf
+
+from mode_c_routing import route_industry_model
+from mode_c_industry_models import initial_screen_industry
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
@@ -42,7 +49,7 @@ from urllib3.util.retry import Retry
 # ==============================================================================
 MIN_MCAP_B = 5.0
 STANDARD_GROSS_MARGIN = 0.25
-MIN_GROSS_MARGIN_FLOOR = 0.15
+MIN_GROSS_MARGIN_FLOOR = 0.0
 MIN_INDUSTRY_SAMPLE = 5
 DEBT_EBITDA_WARNING = 4.0
 MAX_DEBT_EBITDA = 5.0
@@ -54,42 +61,18 @@ MIN_INSTITUTIONAL_OWN = 0.40
 # excluding otherwise valid businesses during the very first screening stage.
 DEFAULT_REQUIRE_INSTITUTIONAL_OWNERSHIP = False
 DEFAULT_ENABLE_PPE_FILTER = False
+HUNTER_POLICY_VERSION = "2026-07-industry-models-v7"
 
 SUPPORTED_EQUITY_EXCHANGES = {"NMS", "NYQ", "NGM", "NCM", "ASE", "PCX"}
 SUPPORTED_SEC_EXCHANGES = {"NASDAQ", "NYSE", "NYSE AMERICAN"}
-
-BLOCKED_SECTORS = {
-    "Financial Services",
-    "Financials",
-    "Real Estate",
-    "Energy",
-    "Basic Materials",
-    "Utilities",
+COMMON_SECURITY_CLASSES = {
+    "COMMON_OR_EQUIVALENT",
+    "COMMON_ADS_INFERRED",
 }
 
-BLOCKED_INDUSTRY_KEYWORDS = {
-    "bank",
-    "insurance",
-    "reit",
-    "mortgage",
-    "credit services",
-    "capital markets",
-    "asset management",
-    "airlines",
-    "marine shipping",
-    "trucking",
-    "tobacco",
-    "farm products",
-    "packaged foods",
-    "oil & gas",
-    "coal",
-    "auto manufacturers",
-    "auto parts",
-    "aerospace & defense",
-    "steel",
-    "aluminum",
-    "copper",
-}
+STRATEGY_EXCLUDED_SECTORS: set[str] = set()
+
+BLOCKED_INDUSTRY_KEYWORDS: set[str] = set()
 
 # Keys are symbols to remove; values are the preferred share class.
 DUAL_CLASS_KEEP = {
@@ -109,9 +92,18 @@ WINDOWS_RESERVED_BASENAMES = {
 }
 
 SEC_TICKER_URL = "https://www.sec.gov/files/company_tickers_exchange.json"
+SEC_SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik}.json"
+NASDAQ_LISTED_URL = (
+    "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt"
+)
+OTHER_LISTED_URL = (
+    "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+)
 SCREENER_PAGE_SIZE = 250
 SCREENER_CACHE_HOURS = 24
 SEC_CACHE_DAYS = 7
+SEC_SECURITY_CLASS_CACHE_DAYS = 30
+SECURITY_DIRECTORY_CACHE_DAYS = 7
 INFO_CACHE_DAYS = 7
 RESULT_CACHE_DAYS = 7
 
@@ -168,7 +160,8 @@ class HunterConfig:
     max_ppe_rev_ratio: float = MAX_PPE_REV_RATIO
 
     def signature(self) -> str:
-        raw = json.dumps(asdict(self), sort_keys=True, separators=(",", ":"))
+        payload = {**asdict(self), "policy_version": HUNTER_POLICY_VERSION}
+        raw = json.dumps(payload, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
 
@@ -242,7 +235,12 @@ def atomic_write_json(path: Path, payload: Any) -> None:
 def atomic_write_csv(path: Path, rows: List[dict]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temp_path = path.with_suffix(path.suffix + ".tmp")
-    pd.DataFrame(rows).to_csv(temp_path, index=False, encoding="utf-8-sig")
+    pd.DataFrame(rows).to_csv(
+        temp_path,
+        index=False,
+        encoding="utf-8-sig",
+        lineterminator="\n",
+    )
     os.replace(temp_path, path)
 
 
@@ -371,6 +369,312 @@ def get_sec_ticker_map(email: str, cache_dir: Path, fresh: bool = False) -> Dict
         raise RuntimeError(f"SEC ticker mapping unavailable: {exc}") from exc
 
 
+def normalize_market_symbol(value: Any) -> str:
+    symbol = str(value or "").upper().strip().replace(".", "-")
+    return re.sub(r"\s+", "", symbol)
+
+
+def classify_security_name(security_name: Any, *, is_etf: bool = False) -> str:
+    """Classify the listed instrument without inferring from ticker punctuation."""
+    if is_etf:
+        return "EXCLUDED_NON_COMMON"
+    name = re.sub(r"\s+", " ", html.unescape(str(security_name or ""))).strip()
+    if not name:
+        return "UNKNOWN"
+    lowered = name.lower()
+    if re.search(
+        r"\b(preferred|preference|warrants?|rights?|notes?|bonds?|debentures?|"
+        r"etf|exchange-traded fund)\b",
+        lowered,
+    ):
+        return "EXCLUDED_NON_COMMON"
+    if re.search(
+        r"\b(common stock|common shares?|ordinary shares?|capital stock|"
+        r"shares? of beneficial interest|common units?|registered shares?|"
+        r"registry shares?|series\s+[a-z0-9]+\s+shares?)\b",
+        lowered,
+    ):
+        return "COMMON_OR_EQUIVALENT"
+    if re.search(r"\bclass\s+[a-z0-9]+\b", lowered):
+        return "COMMON_OR_EQUIVALENT"
+    if re.search(r"\b(units?|certificates?)\b", lowered):
+        return "EXCLUDED_NON_COMMON"
+    if re.search(
+        r"\b(american depositary|american depository|depositary receipts?|"
+        r"depository receipts?|sponsored adr|ads|adrs?)\b",
+        lowered,
+    ):
+        return "AMBIGUOUS_ADS"
+    return "COMMON_OR_EQUIVALENT"
+
+
+def parse_nasdaq_symbol_directory(text: str, source: str) -> Dict[str, dict]:
+    reader = csv.DictReader(io.StringIO(str(text or "")), delimiter="|")
+    output: Dict[str, dict] = {}
+    for row in reader:
+        raw_symbol = row.get("Symbol") or row.get("ACT Symbol") or ""
+        ticker = normalize_market_symbol(raw_symbol)
+        if not is_standard_common_stock_symbol(ticker):
+            continue
+        security_name = str(row.get("Security Name") or "").strip()
+        is_etf = str(row.get("ETF") or "").upper() == "Y"
+        is_test = str(row.get("Test Issue") or "").upper() == "Y"
+        security_class = classify_security_name(
+            security_name,
+            is_etf=is_etf or is_test,
+        )
+        output[ticker] = {
+            "SecurityName": security_name,
+            "SecurityClass": security_class,
+            "SecurityClassConfidence": (
+                "NEEDS_SEC" if security_class == "AMBIGUOUS_ADS" else "HIGH"
+            ),
+            "IsETF": is_etf,
+            "SecurityClassEvidenceSource": source,
+        }
+    return output
+
+
+def reclassify_security_directory(rows: Dict[str, dict]) -> Dict[str, dict]:
+    """Rebuild derived class labels whenever screening policy changes."""
+    output: Dict[str, dict] = {}
+    for ticker, raw in rows.items():
+        row = dict(raw or {})
+        security_name = str(row.get("SecurityName") or "")
+        is_etf = bool(row.get("IsETF")) or bool(
+            re.search(r"\betf\b", security_name, flags=re.IGNORECASE)
+        )
+        security_class = classify_security_name(security_name, is_etf=is_etf)
+        output[normalize_market_symbol(ticker)] = {
+            **row,
+            "SecurityClass": security_class,
+            "SecurityClassConfidence": (
+                "NEEDS_SEC" if security_class == "AMBIGUOUS_ADS" else "HIGH"
+            ),
+            "IsETF": is_etf,
+        }
+    return output
+
+
+def get_nasdaq_security_directory(
+    email: str,
+    cache_dir: Path,
+    fresh: bool = False,
+) -> Dict[str, dict]:
+    cache_path = cache_dir / "nasdaq_security_directory.json"
+    cached = load_json(cache_path)
+    cached_rows = cached.get("securities") if isinstance(cached, dict) else None
+    if (
+        not fresh
+        and isinstance(cached_rows, dict)
+        and is_fresh(
+            cached.get("fetched_at"),
+            SECURITY_DIRECTORY_CACHE_DAYS * 24 * 60 * 60,
+        )
+    ):
+        return reclassify_security_directory(cached_rows)
+
+    headers = {
+        "User-Agent": f"AlphaEngineResearch {validate_sec_contact_email(email)}",
+        "Accept-Encoding": "gzip, deflate",
+    }
+    session = create_sec_session()
+    try:
+        responses = []
+        for url in (NASDAQ_LISTED_URL, OTHER_LISTED_URL):
+            response = session.get(url, headers=headers, timeout=(10, 60))
+            response.raise_for_status()
+            responses.append(response.text)
+        securities = {
+            **parse_nasdaq_symbol_directory(responses[0], "NASDAQ Trader nasdaqlisted"),
+            **parse_nasdaq_symbol_directory(responses[1], "NASDAQ Trader otherlisted"),
+        }
+        if len(securities) < 1_000:
+            raise RuntimeError(
+                f"NASDAQ Trader security directory is unexpectedly small: {len(securities)}"
+            )
+        atomic_write_json(
+            cache_path,
+            {"fetched_at": utc_now_iso(), "securities": securities},
+        )
+        print(f"[Security directory] loaded {len(securities):,} listed instruments.")
+        return reclassify_security_directory(securities)
+    except Exception as exc:
+        if isinstance(cached_rows, dict) and len(cached_rows) >= 1_000:
+            print(f"[Security directory] refresh failed; using cached data: {exc}")
+            return reclassify_security_directory(cached_rows)
+        raise RuntimeError(f"NASDAQ Trader security directory unavailable: {exc}") from exc
+
+
+class InlineXBRLCoverParser(HTMLParser):
+    TARGETS = {
+        "dei:tradingsymbol": "symbol",
+        "dei:security12btitle": "title",
+    }
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.values: Dict[str, Dict[str, List[str]]] = {
+            "symbol": {},
+            "title": {},
+        }
+        self._active: Optional[dict] = None
+        self._nested_depth = 0
+
+    def handle_starttag(self, tag: str, attrs: List[Tuple[str, Optional[str]]]) -> None:
+        if self._active is not None:
+            self._nested_depth += 1
+            return
+        if tag.lower() != "ix:nonnumeric":
+            return
+        attributes = {str(key).lower(): value for key, value in attrs}
+        kind = self.TARGETS.get(str(attributes.get("name") or "").lower())
+        context = str(attributes.get("contextref") or "").strip()
+        if kind and context:
+            self._active = {"kind": kind, "context": context, "text": []}
+            self._nested_depth = 0
+
+    def handle_data(self, data: str) -> None:
+        if self._active is not None:
+            self._active["text"].append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        if self._active is None:
+            return
+        if self._nested_depth > 0:
+            self._nested_depth -= 1
+            return
+        if tag.lower() != "ix:nonnumeric":
+            return
+        value = re.sub(r"\s+", " ", "".join(self._active["text"])).strip()
+        if value:
+            self.values[self._active["kind"]].setdefault(
+                self._active["context"],
+                [],
+            ).append(value)
+        self._active = None
+
+
+def extract_registered_security_titles(document: str) -> Dict[str, str]:
+    parser = InlineXBRLCoverParser()
+    parser.feed(str(document or ""))
+    output: Dict[str, str] = {}
+    shared_contexts = set(parser.values["symbol"]) & set(parser.values["title"])
+    for context in shared_contexts:
+        symbols = parser.values["symbol"][context]
+        titles = parser.values["title"][context]
+        if len(titles) == 1:
+            titles = titles * len(symbols)
+        for symbol, title in zip(symbols, titles):
+            ticker = normalize_market_symbol(symbol)
+            if is_standard_common_stock_symbol(ticker):
+                output[ticker] = title
+    return output
+
+
+def latest_annual_filing_record(submissions: dict) -> Optional[dict]:
+    recent = ((submissions.get("filings") or {}).get("recent") or {})
+    forms = recent.get("form") or []
+    candidates = []
+    for index, form in enumerate(forms):
+        if str(form).upper() not in {"10-K", "20-F", "40-F"}:
+            continue
+        try:
+            accession = str((recent.get("accessionNumber") or [])[index])
+            primary_document = str((recent.get("primaryDocument") or [])[index])
+        except IndexError:
+            continue
+        accepted_values = recent.get("acceptanceDateTime") or []
+        filed_values = recent.get("filingDate") or []
+        accepted_at = (
+            str(accepted_values[index])
+            if index < len(accepted_values) and accepted_values[index]
+            else str(filed_values[index])
+            if index < len(filed_values)
+            else ""
+        )
+        parsed = parse_iso_datetime(accepted_at)
+        if not accession or not primary_document or parsed is None:
+            continue
+        if parsed > datetime.now(timezone.utc):
+            continue
+        candidates.append(
+            {
+                "form": str(form).upper(),
+                "accession": accession,
+                "primary_document": primary_document,
+                "accepted_at": parsed.isoformat(),
+            }
+        )
+    return max(candidates, key=lambda row: row["accepted_at"], default=None)
+
+
+def get_sec_registered_security_titles(
+    cik: str,
+    email: str,
+    cache_dir: Path,
+    pacer: RequestPacer,
+    session: requests.Session,
+) -> dict:
+    cik = str(cik).replace(".0", "").zfill(10)
+    cache_path = cache_dir / "sec_security_classes" / f"CIK{cik}.json"
+    cached = load_json(cache_path)
+    if (
+        isinstance(cached, dict)
+        and isinstance(cached.get("titles"), dict)
+        and is_fresh(
+            cached.get("fetched_at"),
+            SEC_SECURITY_CLASS_CACHE_DAYS * 24 * 60 * 60,
+        )
+    ):
+        return cached
+
+    headers = {
+        "User-Agent": f"AlphaEngineResearch {validate_sec_contact_email(email)}",
+        "Accept-Encoding": "gzip, deflate",
+    }
+    try:
+        pacer.wait()
+        submissions_response = session.get(
+            SEC_SUBMISSIONS_URL.format(cik=cik),
+            headers=headers,
+            timeout=(10, 45),
+        )
+        submissions_response.raise_for_status()
+        filing = latest_annual_filing_record(submissions_response.json())
+        if filing is None:
+            raise RuntimeError("no current 10-K/20-F/40-F filing record")
+        archive_url = (
+            "https://www.sec.gov/Archives/edgar/data/"
+            f"{int(cik)}/{filing['accession'].replace('-', '')}/"
+            f"{filing['primary_document']}"
+        )
+        pacer.wait()
+        filing_response = session.get(
+            archive_url,
+            headers=headers,
+            timeout=(10, 60),
+        )
+        filing_response.raise_for_status()
+        titles = extract_registered_security_titles(filing_response.text)
+        if not titles:
+            raise RuntimeError("annual filing cover has no paired security-title facts")
+        payload = {
+            "fetched_at": utc_now_iso(),
+            "accepted_at": filing["accepted_at"],
+            "form": filing["form"],
+            "accession": filing["accession"],
+            "source_url": archive_url,
+            "titles": titles,
+        }
+        atomic_write_json(cache_path, payload)
+        return payload
+    except Exception as exc:
+        if isinstance(cached, dict) and isinstance(cached.get("titles"), dict):
+            return {**cached, "fallback_reason": str(exc)}
+        return {"titles": {}, "error": str(exc)}
+
+
 def _normalise_screener_quote(quote: dict) -> dict:
     ticker = str(quote.get("symbol") or quote.get("ticker") or "").upper().strip()
     return {
@@ -495,14 +799,18 @@ def get_yahoo_screener_candidates(
 
 
 def is_standard_common_stock_symbol(ticker: str) -> bool:
-    return bool(re.fullmatch(r"[A-Z]{1,6}", ticker))
+    # Admit a single-letter common share class (for example BRK-B), while
+    # continuing to reject preferred-style multi-letter suffixes.
+    return bool(re.fullmatch(r"[A-Z]{1,6}(?:[-.][A-Z])?", ticker))
 
 
 def prefilter_candidates(
     quotes: List[dict],
     sec_map: Dict[str, dict],
+    security_directory: Optional[Dict[str, dict]] = None,
     scan_limit: int = 0,
 ) -> List[dict]:
+    security_directory = security_directory or {}
     candidates: List[dict] = []
     for quote in quotes:
         ticker = str(quote.get("symbol") or "").upper()
@@ -518,10 +826,24 @@ def prefilter_candidates(
         if quote_type and quote_type != "EQUITY":
             continue
         sector = str(quote.get("sector") or "").strip()
-        if sector in BLOCKED_SECTORS:
+        if sector in STRATEGY_EXCLUDED_SECTORS:
             continue
 
-        candidates.append({**sec_row, "ScreenerQuote": quote})
+        security = security_directory.get(ticker) or {}
+        candidates.append(
+            {
+                **sec_row,
+                "ScreenerQuote": quote,
+                "SecurityName": str(security.get("SecurityName") or ""),
+                "SecurityClass": str(security.get("SecurityClass") or "UNKNOWN"),
+                "SecurityClassConfidence": str(
+                    security.get("SecurityClassConfidence") or "MISSING"
+                ),
+                "SecurityClassEvidenceSource": str(
+                    security.get("SecurityClassEvidenceSource") or "Unavailable"
+                ),
+            }
+        )
         if scan_limit > 0 and len(candidates) >= scan_limit:
             break
     return candidates
@@ -755,13 +1077,53 @@ def make_result(
     status: str,
     **fields: Any,
 ) -> dict:
+    quote = candidate.get("ScreenerQuote") or {}
+    market_data = candidate.get("_MergedInfo") or quote
+    price = first_number(
+        market_data,
+        "currentPrice",
+        "regularMarketPrice",
+        "intradayprice",
+    )
+    average_volume = first_number(
+        market_data,
+        "averageVolume",
+        "averageDailyVolume3Month",
+        "averageDailyVolume10Day",
+    )
+    average_dollar_volume_m = (
+        price * average_volume / 1_000_000
+        if price is not None
+        and price > 0
+        and average_volume is not None
+        and average_volume > 0
+        else None
+    )
     return {
         "Ticker": candidate["Ticker"],
         "CIK": candidate["CIK"],
         "Name": candidate.get("Name", ""),
         "SECExchange": candidate.get("SECExchange", ""),
+        "QuoteType": str(quote.get("quoteType") or "").upper(),
+        "Exchange": str(quote.get("exchange") or "").upper(),
+        "SecurityName": candidate.get("SecurityName", ""),
+        "SecurityClass": candidate.get("SecurityClass", "UNKNOWN"),
+        "SecurityClassConfidence": candidate.get(
+            "SecurityClassConfidence",
+            "MISSING",
+        ),
+        "SecurityClassEvidenceSource": candidate.get(
+            "SecurityClassEvidenceSource",
+            "Unavailable",
+        ),
+        "AverageDailyDollarVolume_M": (
+            round(average_dollar_volume_m, 3)
+            if average_dollar_volume_m is not None
+            else None
+        ),
         **fields,
         "Status": status,
+        "HunterPolicyVersion": HUNTER_POLICY_VERSION,
         "ConfigSignature": config.signature(),
         "EvaluatedAt": utc_now_iso(),
     }
@@ -779,6 +1141,14 @@ def evaluate_candidate(
     ticker = candidate["Ticker"]
     quote = candidate.get("ScreenerQuote") or {}
     merged = {**quote, **info}
+    candidate = {**candidate, "_MergedInfo": merged}
+
+    if candidate.get("SecurityClass") == "EXCLUDED_NON_COMMON":
+        return make_result(
+            candidate,
+            config,
+            "Drop: official security directory identifies a non-common instrument",
+        )
 
     quote_type = first_text(merged, "quoteType").upper()
     exchange = first_text(merged, "exchange").upper()
@@ -810,8 +1180,59 @@ def evaluate_candidate(
             "Review: 產業資料缺失",
             MarketCap_B=round(market_cap_b, 3),
         )
-    if sector in BLOCKED_SECTORS:
+    if sector in STRATEGY_EXCLUDED_SECTORS:
         return make_result(candidate, config, f"Drop: 產業隔離 ({sector})")
+    model_route = route_industry_model(sector, industry)
+    if not bool(model_route["supported"]):
+        return make_result(
+            candidate,
+            config,
+            "Review: 專用產業模型路由不可判定",
+            Sector=sector,
+            Industry=industry,
+            MarketCap_B=round(market_cap_b, 3),
+            ModelRouteHint=str(model_route["route"]),
+            IndustryModelKey=str(model_route.get("model_key") or "UNKNOWN"),
+            ModelSupported=False,
+            RouteReason=str(model_route["reason"]),
+            InfoFromCache=used_info_cache,
+        )
+    industry_initial = initial_screen_industry(str(model_route["model_key"]), merged)
+    if industry_initial["decision"] == "DROP":
+        return make_result(
+            candidate,
+            config,
+            "Drop: 專用產業初篩未通過",
+            Sector=sector,
+            Industry=industry,
+            MarketCap_B=round(market_cap_b, 3),
+            ModelRouteHint=str(model_route["route"]),
+            IndustryModelKey=str(model_route["model_key"]),
+            ModelSupported=True,
+            RouteReason=str(model_route["reason"]),
+            IndustryInitialScore=industry_initial["data_quality_score"],
+            IndustryInitialWarnings=" | ".join(industry_initial["warnings"]),
+            IndustryInitialFailures=" | ".join(industry_initial["hard_failures"]),
+            InfoFromCache=used_info_cache,
+        )
+    if str(model_route["model_key"]) != "GENERAL_CORPORATE":
+        return make_result(
+            candidate,
+            config,
+            "Pass",
+            Sector=sector,
+            Industry=industry,
+            MarketCap_B=round(market_cap_b, 3),
+            ModelRouteHint=str(model_route["route"]),
+            IndustryModelKey=str(model_route["model_key"]),
+            ModelSupported=True,
+            RouteReason=str(model_route["reason"]),
+            RoutedWithoutGeneralCorporateScoring=True,
+            IndustryInitialScore=industry_initial["data_quality_score"],
+            IndustryInitialWarnings=" | ".join(industry_initial["warnings"]),
+            IndustryInitialFailures="",
+            InfoFromCache=used_info_cache,
+        )
     industry_lower = industry.lower()
     blocked_keyword = next(
         (keyword for keyword in BLOCKED_INDUSTRY_KEYWORDS if keyword in industry_lower),
@@ -820,16 +1241,18 @@ def evaluate_candidate(
     if blocked_keyword:
         return make_result(candidate, config, f"Drop: 行業隔離 ({industry})")
 
+    first_layer_warnings: List[str] = []
     ocf = first_number(merged, "operatingCashflow", "operatingCashFlow")
     if ocf is None:
-        return make_result(candidate, config, "Review: OCF 資料缺失")
-    if ocf <= 0:
+        first_layer_warnings.append("Yahoo OCF missing; defer to SEC")
+    elif ocf <= 0:
         return make_result(candidate, config, "Drop: 營運現金流非正值")
 
     gross_margin = first_number(merged, "grossMargins", "grossMargin")
     if gross_margin is None or not 0 <= gross_margin <= 1:
-        return make_result(candidate, config, "Review: 毛利率資料缺失或失真")
-    if gross_margin < config.min_gross_margin_floor:
+        gross_margin = None
+        first_layer_warnings.append("Yahoo gross margin missing; defer to SEC")
+    elif gross_margin <= config.min_gross_margin_floor:
         return make_result(
             candidate,
             config,
@@ -846,33 +1269,69 @@ def evaluate_candidate(
     ebitda = first_number(merged, "ebitda")
     total_debt = first_number(merged, "totalDebt")
     revenue = first_number(merged, "totalRevenue")
-    if ebitda is None or ebitda <= 0:
-        return make_result(candidate, config, "Review: EBITDA 資料缺失或非正值")
+    if ebitda is None:
+        first_layer_warnings.append("Yahoo EBITDA missing; defer to SEC")
+    elif ebitda <= 0:
+        return make_result(candidate, config, "Drop: EBITDA 非正值")
     if total_debt is None or total_debt < 0:
-        return make_result(candidate, config, "Review: 總負債資料缺失或失真")
-    if revenue is None or revenue <= 0:
-        return make_result(candidate, config, "Review: 營收資料缺失或非正值")
+        total_debt = None
+        first_layer_warnings.append("Yahoo total debt missing; defer to SEC")
+    if revenue is None:
+        first_layer_warnings.append("Yahoo revenue missing; defer to SEC")
+    elif revenue <= 0:
+        return make_result(candidate, config, "Drop: 營收非正值")
 
-    debt_ebitda = total_debt / ebitda
-    if debt_ebitda > config.max_debt_ebitda:
+    debt_ebitda = (
+        total_debt / ebitda
+        if total_debt is not None and ebitda is not None
+        else None
+    )
+    total_cash = first_number(merged, "totalCash", "cash")
+    cash_is_usable = total_cash is not None and total_cash >= 0
+    net_debt_ebitda = (
+        max(total_debt - total_cash, 0.0) / ebitda
+        if cash_is_usable and total_debt is not None and ebitda is not None
+        else None
+    )
+    screening_leverage = (
+        net_debt_ebitda
+        if net_debt_ebitda is not None
+        else debt_ebitda
+    )
+    leverage_label = (
+        "淨負債/EBITDA"
+        if net_debt_ebitda is not None
+        else "負債/EBITDA"
+        if debt_ebitda is not None
+        else "待 SEC 確認"
+    )
+    if screening_leverage is not None and screening_leverage > config.max_debt_ebitda:
         return make_result(
             candidate,
             config,
             (
-                f"Drop: 負債/EBITDA>{config.max_debt_ebitda:.1f} "
-                f"({debt_ebitda:.1f}x)"
+                f"Drop: {leverage_label}>{config.max_debt_ebitda:.1f} "
+                f"({screening_leverage:.1f}x)"
             ),
             Sector=sector,
             Industry=industry,
             MarketCap_B=round(market_cap_b, 3),
-            GrossMargin=round(gross_margin * 100, 2),
-            Debt_EBITDA=round(debt_ebitda, 3),
+            GrossMargin=round(gross_margin * 100, 2) if gross_margin is not None else None,
+            Debt_EBITDA=round(debt_ebitda, 3) if debt_ebitda is not None else None,
+            NetDebt_EBITDA=(
+                round(net_debt_ebitda, 3)
+                if net_debt_ebitda is not None
+                else None
+            ),
+            LeverageBasis=leverage_label,
         )
-    leverage_warning = debt_ebitda > config.debt_ebitda_warning
-    total_cash = first_number(merged, "totalCash", "cash")
+    leverage_warning = bool(
+        screening_leverage is not None
+        and screening_leverage > config.debt_ebitda_warning
+    )
     net_cash = (
-        total_cash is not None
-        and total_cash >= 0
+        cash_is_usable
+        and total_debt is not None
         and total_cash > total_debt
     )
 
@@ -892,28 +1351,36 @@ def evaluate_candidate(
 
     ppe_revenue: Optional[float] = None
     if config.enable_ppe_filter:
-        net_ppe = first_number(merged, "netPPE", "propertyPlantEquipment")
-        if net_ppe is None:
-            net_ppe = fetch_optional_net_ppe(
-                ticker,
-                cache_dir,
-                yahoo_pacer,
-                request_timeout_seconds,
+        if revenue is None:
+            first_layer_warnings.append(
+                "Yahoo revenue missing; PP&E ratio deferred to SEC"
             )
-        if net_ppe is None or net_ppe < 0:
-            return make_result(candidate, config, "Review: PP&E 資料缺失")
-        ppe_revenue = net_ppe / revenue
-        if ppe_revenue > config.max_ppe_rev_ratio:
-            return make_result(
-                candidate,
-                config,
-                (
-                    f"Drop: PP&E/Revenue>{config.max_ppe_rev_ratio:.1f} "
-                    f"({ppe_revenue:.2f})"
-                ),
-            )
+        else:
+            net_ppe = first_number(merged, "netPPE", "propertyPlantEquipment")
+            if net_ppe is None:
+                net_ppe = fetch_optional_net_ppe(
+                    ticker,
+                    cache_dir,
+                    yahoo_pacer,
+                    request_timeout_seconds,
+                )
+            if net_ppe is None or net_ppe < 0:
+                return make_result(candidate, config, "Review: PP&E 資料缺失")
+            ppe_revenue = net_ppe / revenue
+            if ppe_revenue > config.max_ppe_rev_ratio:
+                return make_result(
+                    candidate,
+                    config,
+                    (
+                        f"Drop: PP&E/Revenue>{config.max_ppe_rev_ratio:.1f} "
+                        f"({ppe_revenue:.2f})"
+                    ),
+                )
 
-    needs_peer_margin_check = gross_margin < config.standard_gross_margin
+    needs_peer_margin_check = bool(
+        gross_margin is not None
+        and gross_margin < config.standard_gross_margin
+    )
     return make_result(
         candidate,
         config,
@@ -923,21 +1390,37 @@ def evaluate_candidate(
         Sector=sector,
         Industry=industry,
         MarketCap_B=round(market_cap_b, 3),
-        OperatingCashFlow_B=round(ocf / 1_000_000_000, 3),
-        GrossMargin=round(gross_margin * 100, 2),
+        OperatingCashFlow_B=(
+            round(ocf / 1_000_000_000, 3) if ocf is not None else None
+        ),
+        GrossMargin=(
+            round(gross_margin * 100, 2) if gross_margin is not None else None
+        ),
         InstitutionalOwnership=(
             round(institutional_own * 100, 2)
             if institutional_own is not None and 0 <= institutional_own <= 1
             else None
         ),
-        Debt_EBITDA=round(debt_ebitda, 3),
+        Debt_EBITDA=round(debt_ebitda, 3) if debt_ebitda is not None else None,
+        NetDebt_EBITDA=(
+            round(net_debt_ebitda, 3) if net_debt_ebitda is not None else None
+        ),
+        LeverageBasis=leverage_label,
         LeverageWarning=leverage_warning,
+        GrossLeverageWarning=bool(
+            debt_ebitda is not None
+            and debt_ebitda > config.debt_ebitda_warning
+        ),
         NetCash=net_cash,
         GrossMarginRule=(
             "絕對毛利率>=25%"
-            if not needs_peer_margin_check
+            if gross_margin is not None and not needs_peer_margin_check
             else "等待同業中位數"
+            if needs_peer_margin_check
+            else "Yahoo 毛利率缺失，交由 SEC 深篩"
         ),
+        RoutedToSECForMissingYahoo=bool(first_layer_warnings),
+        FirstLayerWarnings=" | ".join(first_layer_warnings),
         PPE_Revenue=round(ppe_revenue, 3) if ppe_revenue is not None else None,
         InfoFromCache=used_info_cache,
     )
@@ -969,7 +1452,7 @@ def apply_peer_margin_rules(
     rows: List[dict],
     min_sample: int = MIN_INDUSTRY_SAMPLE,
 ) -> List[dict]:
-    """Resolve sub-25% margins only after enough same-industry peers exist."""
+    """Annotate sub-25% margins without making one ratio a hard exclusion."""
     adjusted = [dict(row) for row in rows]
     industry_margins: Dict[str, List[float]] = {}
     for row in adjusted:
@@ -987,8 +1470,9 @@ def apply_peer_margin_rules(
         industry = str(row.get("Industry") or "").strip()
         peers = industry_margins.get(industry, [])
         if len(peers) < max(1, min_sample):
-            row["Status"] = "Review: 同業毛利率樣本不足"
-            row["GrossMarginRule"] = f"同業樣本不足({len(peers)})"
+            row["Status"] = "Pass"
+            row["GrossMarginRule"] = f"同業樣本不足({len(peers)})，交由 SEC 深篩"
+            row["GrossMarginWarning"] = True
             continue
         median_margin = float(pd.Series(peers).median())
         row["IndustryMedianGrossMargin"] = round(median_margin, 2)
@@ -996,29 +1480,203 @@ def apply_peer_margin_rules(
         if own_margin >= median_margin:
             row["Status"] = "Pass"
             row["GrossMarginRule"] = "低於25%但高於同業中位數"
+            row["GrossMarginWarning"] = False
         else:
-            row["Status"] = "Drop: 毛利率低於25%且低於同業中位數"
-            row["GrossMarginRule"] = "未通過同業比較"
+            row["Status"] = "Pass"
+            row["GrossMarginRule"] = "低於同業中位數，交由 SEC 深篩"
+            row["GrossMarginWarning"] = True
+    return adjusted
+
+
+def enrich_ambiguous_ads_from_sec(
+    rows: List[dict],
+    email: str,
+    cache_dir: Path,
+) -> List[dict]:
+    """Resolve generic ADS labels from point-in-time SEC annual cover facts."""
+    adjusted = [dict(row) for row in rows]
+    targets: Dict[str, List[dict]] = {}
+    for row in adjusted:
+        status = str(row.get("Status") or "")
+        if row.get("SecurityClass") != "AMBIGUOUS_ADS":
+            continue
+        if status != "Pass" and not status.startswith("PeerCheck:"):
+            continue
+        cik = str(row.get("CIK") or "").replace(".0", "").zfill(10)
+        if cik.isdigit() and int(cik) > 0:
+            targets.setdefault(cik, []).append(row)
+    if not targets:
+        return adjusted
+
+    session = create_sec_session()
+    pacer = RequestPacer(0.12)
+    resolved = 0
+    unresolved = 0
+    for cik, group in targets.items():
+        payload = get_sec_registered_security_titles(
+            cik,
+            email,
+            cache_dir,
+            pacer,
+            session,
+        )
+        titles = payload.get("titles") if isinstance(payload, dict) else {}
+        source = (
+            f"SEC {payload.get('form') or 'annual'} cover "
+            f"{payload.get('accession') or 'unavailable'}; "
+            f"accepted {payload.get('accepted_at') or 'unavailable'}"
+        )
+        for row in group:
+            ticker = normalize_market_symbol(row.get("Ticker"))
+            title = titles.get(ticker) if isinstance(titles, dict) else None
+            if title:
+                security_class = classify_security_name(title)
+                row["SecurityName"] = title
+                row["SecurityClass"] = security_class
+                row["SecurityClassConfidence"] = (
+                    "NEEDS_SEC" if security_class == "AMBIGUOUS_ADS" else "HIGH"
+                )
+                row["SecurityClassEvidenceSource"] = source
+                if security_class in {
+                    "COMMON_OR_EQUIVALENT",
+                    "EXCLUDED_NON_COMMON",
+                }:
+                    resolved += 1
+                    continue
+            row["SecurityClass"] = "UNRESOLVED_ADS"
+            row["SecurityClassConfidence"] = "LOW"
+            row["SecurityClassEvidenceSource"] = (
+                f"{source}; symbol-to-title mapping unresolved"
+            )
+            unresolved += 1
+
+    inferred = 0
+    by_cik: Dict[str, List[dict]] = {}
+    for row in adjusted:
+        status = str(row.get("Status") or "")
+        if status == "Pass" or status.startswith("PeerCheck:"):
+            cik = str(row.get("CIK") or "").replace(".0", "").zfill(10)
+            by_cik.setdefault(cik, []).append(row)
+    all_rows_by_cik: Dict[str, List[dict]] = {}
+    for row in adjusted:
+        cik = str(row.get("CIK") or "").replace(".0", "").zfill(10)
+        all_rows_by_cik.setdefault(cik, []).append(row)
+    for cik, eligible_group in by_cik.items():
+        unresolved_rows = [
+            row
+            for row in eligible_group
+            if row.get("SecurityClass") == "UNRESOLVED_ADS"
+        ]
+        if len(unresolved_rows) != 1:
+            continue
+        if any(
+            row.get("SecurityClass") in COMMON_SECURITY_CLASSES
+            for row in eligible_group
+        ):
+            continue
+        has_preferred_sibling = any(
+            row.get("SecurityClass") == "EXCLUDED_NON_COMMON"
+            for row in all_rows_by_cik.get(cik, [])
+        )
+        row = unresolved_rows[0]
+        inference = (
+            "only unresolved ADS after an official preferred sibling was excluded"
+            if has_preferred_sibling
+            else "sole exchange-listed ADS class for this CIK"
+        )
+        row["SecurityClass"] = "COMMON_ADS_INFERRED"
+        row["SecurityClassConfidence"] = "MEDIUM"
+        row["SecurityClassEvidenceSource"] = (
+            f"{row.get('SecurityClassEvidenceSource')}; inferred common: {inference}"
+        )
+        inferred += 1
+        unresolved -= 1
+    print(
+        f"[SEC share-class check] resolved={resolved:,}; "
+        f"inferred={inferred:,}; unresolved={unresolved:,}; CIKs={len(targets):,}."
+    )
+    return adjusted
+
+
+def resolve_share_classes(rows: List[dict]) -> List[dict]:
+    """Fail closed on non-common ADSs and choose duplicate CIKs by liquidity."""
+    adjusted = [dict(row) for row in rows]
+    for row in adjusted:
+        if row.get("Status") != "Pass":
+            continue
+        security_class = str(row.get("SecurityClass") or "UNKNOWN")
+        if security_class == "EXCLUDED_NON_COMMON":
+            row["Status"] = "Drop: official evidence identifies a non-common security"
+            row["ShareClassSelectionReason"] = row.get("SecurityClassEvidenceSource", "")
+        elif security_class in {"AMBIGUOUS_ADS", "UNRESOLVED_ADS"}:
+            row["Status"] = "Review: ADS common/preferred class is unresolved"
+            row["ShareClassSelectionReason"] = row.get("SecurityClassEvidenceSource", "")
+        elif security_class == "UNKNOWN":
+            row["Status"] = "Review: official common-equity class evidence is missing"
+            row["ShareClassSelectionReason"] = row.get("SecurityClassEvidenceSource", "")
+
+    pass_groups: Dict[str, List[dict]] = {}
+    for row in adjusted:
+        if row.get("Status") != "Pass":
+            continue
+        cik = str(row.get("CIK") or "").replace(".0", "").zfill(10)
+        pass_groups.setdefault(cik, []).append(row)
+
+    def selection_key(row: dict) -> Tuple[float, float, str]:
+        try:
+            liquidity = float(row.get("AverageDailyDollarVolume_M"))
+        except (TypeError, ValueError):
+            liquidity = -1.0
+        try:
+            market_cap = float(row.get("MarketCap_B"))
+        except (TypeError, ValueError):
+            market_cap = -1.0
+        if not math.isfinite(liquidity):
+            liquidity = -1.0
+        if not math.isfinite(market_cap):
+            market_cap = -1.0
+        return liquidity, market_cap, str(row.get("Ticker") or "")
+
+    for cik, group in pass_groups.items():
+        if len(group) == 1:
+            group[0]["ShareClassSelectionReason"] = "Only eligible listed class for CIK"
+            continue
+        common = [
+            row
+            for row in group
+            if row.get("SecurityClass") in COMMON_SECURITY_CLASSES
+        ]
+        if not common:
+            for row in group:
+                row["Status"] = "Review: duplicate CIK share classes are unresolved"
+                row["ShareClassSelectionReason"] = (
+                    "No listed class has official common-equity evidence"
+                )
+            continue
+        selected = max(common, key=selection_key)
+        selected_ticker = str(selected.get("Ticker") or "")
+        selected["ShareClassSelectionReason"] = (
+            "Official common-equity class with highest average daily dollar volume"
+        )
+        for row in group:
+            if row is selected:
+                continue
+            row["Status"] = f"Drop: duplicate CIK share class; selected {selected_ticker}"
+            row["ShareClassSelectionReason"] = (
+                f"Selected {selected_ticker} using official class evidence and liquidity"
+            )
     return adjusted
 
 
 def qualified_rows(rows: List[dict]) -> List[dict]:
-    resolved_rows = apply_peer_margin_rules(rows)
+    resolved_rows = resolve_share_classes(apply_peer_margin_rules(rows))
     passes = [row for row in resolved_rows if row.get("Status") == "Pass"]
     passes.sort(key=lambda row: float(row.get("MarketCap_B") or 0), reverse=True)
-    seen_ciks = set()
-    output = []
-    for row in passes:
-        cik = row.get("CIK")
-        if cik in seen_ciks:
-            continue
-        seen_ciks.add(cik)
-        output.append(row)
-    return output
+    return passes
 
 
 def write_partial_outputs(output_dir: Path, rows: List[dict]) -> None:
-    resolved_rows = apply_peer_margin_rules(rows)
+    resolved_rows = resolve_share_classes(apply_peer_margin_rules(rows))
     atomic_write_csv(output_dir / "hunter_audit.partial.csv", resolved_rows)
     atomic_write_csv(
         output_dir / "qualified_universe.partial.csv",
@@ -1027,7 +1685,7 @@ def write_partial_outputs(output_dir: Path, rows: List[dict]) -> None:
 
 
 def write_complete_outputs(output_dir: Path, rows: List[dict]) -> None:
-    resolved_rows = apply_peer_margin_rules(rows)
+    resolved_rows = resolve_share_classes(apply_peer_margin_rules(rows))
     atomic_write_csv(output_dir / "hunter_audit.csv", resolved_rows)
     atomic_write_csv(
         output_dir / "qualified_universe.csv",
@@ -1142,6 +1800,15 @@ def run(args: argparse.Namespace) -> int:
     print("=" * 72)
 
     sec_map = get_sec_ticker_map(args.email, cache_dir, fresh=args.fresh)
+    try:
+        security_directory = get_nasdaq_security_directory(
+            args.email,
+            cache_dir,
+            fresh=args.fresh,
+        )
+    except RuntimeError as exc:
+        print(f"[安全停止] {exc}")
+        return 3
     screener_pacer = RequestPacer(args.screener_interval)
     yahoo_pacer = RequestPacer(args.yahoo_interval)
 
@@ -1160,6 +1827,7 @@ def run(args: argparse.Namespace) -> int:
     candidates = prefilter_candidates(
         quotes,
         sec_map,
+        security_directory=security_directory,
         scan_limit=max(0, args.scan_limit),
     )
     if not candidates:
@@ -1191,13 +1859,16 @@ def run(args: argparse.Namespace) -> int:
         for index, candidate in enumerate(pending, start=1):
             ticker = candidate["Ticker"]
             try:
-                info, used_cache = fetch_ticker_info(
-                    ticker,
-                    cache_dir,
-                    yahoo_pacer,
-                    fresh=args.fresh,
-                    timeout_seconds=max(5.0, args.request_timeout),
-                )
+                if candidate.get("SecurityClass") == "EXCLUDED_NON_COMMON":
+                    info, used_cache = {}, False
+                else:
+                    info, used_cache = fetch_ticker_info(
+                        ticker,
+                        cache_dir,
+                        yahoo_pacer,
+                        fresh=args.fresh,
+                        timeout_seconds=max(5.0, args.request_timeout),
+                    )
                 result = evaluate_candidate(
                     candidate,
                     info,
@@ -1284,6 +1955,11 @@ def run(args: argparse.Namespace) -> int:
         and not any(str(row.get("Status") or "").startswith("Retry:") for row in rows)
     )
     if complete:
+        rows = enrich_ambiguous_ads_from_sec(
+            rows,
+            args.email,
+            cache_dir,
+        )
         write_complete_outputs(output_dir, rows)
         print(
             f"[完成] {len(qualified_rows(rows))} 檔通過；"
@@ -1296,7 +1972,7 @@ def run(args: argparse.Namespace) -> int:
             "最後一次完整 qualified_universe.csv 保持不變。"
         )
 
-    summarize_reasons(apply_peer_margin_rules(rows))
+    summarize_reasons(resolve_share_classes(apply_peer_margin_rules(rows)))
     return 0 if complete else 5
 
 

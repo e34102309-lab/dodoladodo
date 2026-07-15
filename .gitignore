@@ -13,5 +13,16 @@ qualified_universe.partial.csv
 # AI weekly rotation state is persisted by GitHub Actions cache
 .mode_c_state/
 
+# Generated Mode C artifacts and local runtime state
+mode_c_screen.csv
+mode_c_shortlist.csv
+mode_c_evidence_ledger.csv
+mode_c_report.md
+mode_c_agent_payload.json
+mode_c_run.stdout.log
+mode_c_run.stderr.log
+local_shares_vector_cache.json
+public/
+
 # Local secrets
 .env
