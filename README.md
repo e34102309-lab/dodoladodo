@@ -24,6 +24,7 @@
 - `mode_c_industry_models.py`：九種專用產業模型的純計算、硬性風險、覆蓋率與信心閘門。
 - `build_mode_c_dashboard.py`：把評分結果整理成不依賴外部 AI 的靜態研究網站。
 - `enhance_dashboard_ui.py`：在網站生成後整理候選風口區塊，加入使用說明與可點選篩選互動。
+- `mode_c_fixture_pipeline.py`：以 GLW、PGR、IFNNY 固定資料跑完整 CSV、JSON、dashboard 與 validator 整合測試。
 - `run_mode_c_ai_agent.py`：保留為選用工具，不再由主要 GitHub Actions 自動呼叫。
 
 ## 本機全市場初篩
@@ -119,7 +120,8 @@ export USER_EMAIL="your_email@example.com"
 python AQR_ModeC_Agent_V12.py
 python build_mode_c_dashboard.py
 python enhance_dashboard_ui.py public/index.html
-python validate_mode_c_outputs.py --dashboard public/data.json
+python validate_mode_c_outputs.py --dashboard public/data.json --zero-report mode_c_zero_audit.json
+python mode_c_fixture_pipeline.py --output-dir fixture_output
 ```
 
 完整的缺值、產業適用性、FCF 分母、CapEx 敏感度與 dashboard 稽核紀錄見 `METRIC_STATUS_AUDIT.md`。
@@ -166,6 +168,7 @@ artifact 下載方式：
 - `mode_c_screen.csv`：全部公司與落選原因。
 - `mode_c_shortlist.csv`：分數優先、最多 12 檔研究候選；產業風險改由權重上限與壓力測試處理。
 - `mode_c_evidence_ledger.csv`：只輸出實際採用的來源 facts 與衍生 metrics，包含 accession、acceptance time、可用時間、選用角色、衍生公式與 source evidence IDs；未被模型使用的大量候選 facts 不寫入正式 artifact，避免全市場輸出膨脹。
+- `mode_c_zero_audit.json`：逐筆分類重要指標的真零值與無效零值；`invalid_zero` 非零時 pipeline 直接失敗。
 - `mode_c_report.md`：長期價值研究摘要。
 - `mode_c_agent_payload.json`：供手動 AI 研究或其他工具使用的九項反證任務包。
 - `public/index.html`：可直接開啟的研究網站。

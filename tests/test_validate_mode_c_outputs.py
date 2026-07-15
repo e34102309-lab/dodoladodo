@@ -7,7 +7,12 @@ import pandas as pd
 
 from mode_c_evidence import EVIDENCE_COLUMNS
 from mode_c_metric_contract import annotate_dataframe
-from validate_mode_c_outputs import ValidationError, validate_outputs
+from validate_mode_c_outputs import (
+    ValidationError,
+    _validate_financial_formulas,
+    build_zero_classification_report,
+    validate_outputs,
+)
 
 
 class ModeCOutputValidationTests(unittest.TestCase):
@@ -39,7 +44,15 @@ class ModeCOutputValidationTests(unittest.TestCase):
                     "Maintenance_CapEx_B": 0.2,
                     "Maintenance_CapEx_Confidence": "HIGH",
                     "TTM_SBC_B": 0.1,
+                    "SBC_Economic_Cost_B": 0.1,
+                    "Maintenance_Real_FCF_B": 0.9,
+                    "Conservative_Real_FCF_B": 0.8,
                     "Real_FCF_Yield_pct": 7.9,
+                    "Conservative_Real_FCF_Yield_pct": 7.02,
+                    "Maintenance_Real_FCF_to_MarketCap_Yield_pct": 7.9,
+                    "Conservative_Real_FCF_to_MarketCap_Yield_pct": 7.02,
+                    "Maintenance_Real_FCF_to_EV_Yield_pct": 9.0,
+                    "Conservative_Real_FCF_to_EV_Yield_pct": 8.0,
                     "ROIC_pct": 18.0,
                     "EV_EBITDA_x": 8.0,
                     "Historical_Valuation_Coverage": 0.8,
@@ -149,6 +162,58 @@ class ModeCOutputValidationTests(unittest.TestCase):
             screen.to_csv(paths[1], index=False, encoding="utf-8-sig")
             with self.assertRaisesRegex(ValidationError, "net-cash ICR method"):
                 validate_outputs(*paths)
+
+    def test_fcf_amounts_and_yields_must_recompute_from_inputs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = self._write_valid_outputs(Path(tmp))
+            screen = pd.read_csv(paths[0], encoding="utf-8-sig")
+            metadata = json.loads(screen.loc[0, "Metric_Metadata_JSON"])
+            screen.loc[0, "Maintenance_Real_FCF_B"] = 9.9
+            metadata["Maintenance_Real_FCF_B"]["value"] = 9.9
+            screen.loc[0, "Metric_Metadata_JSON"] = json.dumps(metadata)
+            screen.to_csv(paths[0], index=False, encoding="utf-8-sig")
+            screen.to_csv(paths[1], index=False, encoding="utf-8-sig")
+            with self.assertRaisesRegex(ValidationError, "cannot be recomputed"):
+                validate_outputs(*paths)
+
+    def test_ev_yields_cannot_survive_missing_enterprise_value(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = self._write_valid_outputs(Path(tmp))
+            screen = pd.read_csv(paths[0], encoding="utf-8-sig")
+            metadata = json.loads(screen.loc[0, "Metric_Metadata_JSON"])
+            metadata["EV_B"].update(
+                {"value": None, "status": "MISSING", "evidence_ids": []}
+            )
+            screen.loc[0, "Metric_Metadata_JSON"] = json.dumps(metadata)
+            with self.assertRaisesRegex(
+                ValidationError, "EV-based FCF yields survive missing enterprise value"
+            ):
+                _validate_financial_formulas(screen)
+
+    def test_zero_report_classifies_evidenced_zero_and_rejects_invalid_zero(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = self._write_valid_outputs(Path(tmp))
+            screen = pd.read_csv(paths[0], encoding="utf-8-sig")
+            metadata = json.loads(screen.loc[0, "Metric_Metadata_JSON"])
+            metadata["Cash_B"] = {
+                "value": 0.0,
+                "status": "VALID",
+                "reason": "reported zero",
+                "as_of": "2026-01-01",
+                "source_method": "SEC fact",
+                "evidence_ids": ["cash-zero"],
+            }
+            screen.loc[0, "Cash_B"] = 0.0
+            screen.loc[0, "Metric_Metadata_JSON"] = json.dumps(metadata)
+            report = build_zero_classification_report(screen)
+            self.assertEqual(report["summary"]["true_zero"], 1)
+            self.assertEqual(report["summary"]["invalid_zero"], 0)
+
+            metadata["Cash_B"]["status"] = "MISSING"
+            metadata["Cash_B"]["evidence_ids"] = []
+            screen.loc[0, "Metric_Metadata_JSON"] = json.dumps(metadata)
+            report = build_zero_classification_report(screen)
+            self.assertEqual(report["summary"]["invalid_zero"], 1)
 
     def test_nonpositive_enterprise_value_cannot_be_general_eligible(self):
         with tempfile.TemporaryDirectory() as tmp:

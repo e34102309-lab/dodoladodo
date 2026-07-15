@@ -19,10 +19,12 @@ mode_c_shortlist.csv
 mode_c_evidence_ledger.csv
 mode_c_report.md
 mode_c_agent_payload.json
+mode_c_zero_audit.json
 mode_c_run.stdout.log
 mode_c_run.stderr.log
 local_shares_vector_cache.json
 public/
+fixture_output/
 
 # Local secrets
 .env

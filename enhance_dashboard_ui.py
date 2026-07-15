@@ -104,6 +104,11 @@ ENHANCEMENT = r'''
         && (minScore <= 0 || (n(x.Long_Term_Score) ?? -1) >= minScore)
         && (!selectedTheme || themeIds(x).includes(selectedTheme))
         && candidateMatches2(x, activeCandidate2)
+        && (view !== 'complete' || yes(x.Data_Integrity_Complete))
+        && (view !== 'estimated' || integrityCount(x, 'ESTIMATED') > 0)
+        && (view !== 'missing' || integrityCount(x, 'MISSING') > 0)
+        && (view !== 'specialized' || (x.Industry_Model_Key && x.Industry_Model_Key !== 'GENERAL_CORPORATE'))
+        && (view !== 'general' || !x.Industry_Model_Key || x.Industry_Model_Key === 'GENERAL_CORPORATE')
         && (view !== 'shortlist' || yes(x.IsShortlist))
         && (view !== 'eligible' || yes(x.Long_Term_Eligible))
         && (view !== 'abstain' || x.Decision_State === 'ABSTAIN')
@@ -177,6 +182,8 @@ ENHANCEMENT = r'''
   fieldLabel2('Real_FCF_Yield_pct', '維護 FCF / 市值');
   fieldLabel2('Conservative_Real_FCF_Yield_pct', '保守 FCF / 市值');
   fields.push(
+    ['維護 Real FCF', 'Maintenance_Real_FCF_B', 'B'],
+    ['保守 Real FCF', 'Conservative_Real_FCF_B', 'B'],
     ['維護 FCF / EV', 'Maintenance_Real_FCF_to_EV_Yield_pct', '%'],
     ['保守 FCF / EV', 'Conservative_Real_FCF_to_EV_Yield_pct', '%'],
     ['Maintenance CapEx 低情境', 'Maintenance_CapEx_Low_B', 'B'],
@@ -191,9 +198,16 @@ ENHANCEMENT = r'''
     if (!stock) return;
     const metricSections = [...document.querySelectorAll('#detailBody .section')].filter(section => section.querySelector('.grid'));
     const financialSection = metricSections.at(-1);
-    (financialSection ? financialSection.querySelectorAll('.metric') : []).forEach((node, index) => {
+    const specialized = stock.Industry_Model_Key && stock.Industry_Model_Key !== 'GENERAL_CORPORATE';
+    (financialSection ? [...financialSection.querySelectorAll('.metric')] : []).forEach((node, index) => {
       const field = fields[index];
-      if (field) node.querySelector('b').innerHTML = metricHtml(stock, field[1], 2, field[2] || '');
+      if (!field) return;
+      const meta = (stock.Metric_Metadata || {})[field[1]] || {};
+      if (specialized && meta.status === 'NOT_APPLICABLE') {
+        node.remove();
+        return;
+      }
+      node.querySelector('b').innerHTML = metricHtml(stock, field[1], 2, field[2] || '');
     });
     if (metricSections.length > 1) {
       const componentNames = Object.keys(obj(stock.Industry_Model_Components_JSON));
@@ -208,7 +222,21 @@ ENHANCEMENT = r'''
       });
     }
     const qualityBox = document.querySelector('#detailBody .section:last-child .box');
-    if (qualityBox) qualityBox.innerHTML += `<br><br><b>狀態契約稽核</b><br>必要缺值：${e(stock.Required_Missing_Metrics || '無')}<br>選用缺值：${e(stock.Optional_Missing_Metrics || '無')}<br>指標證據覆蓋：${f(stock.Metric_Evidence_Coverage, 2)}<br>Maintenance CapEx 信心：${e(stock.Maintenance_CapEx_Confidence || '不適用')}<br>產業壓力延伸：${e(stock.Industry_Stress_Extension_Status || '待查')} - ${e(stock.Industry_Stress_Extension_Reason || '')}`;
+    const counts = stock.Data_Integrity_Summary || {};
+    if (qualityBox) qualityBox.innerHTML += `<br><br><b>狀態契約稽核</b><br>模型路由：${e(stock.Industry_Model_Key || 'GENERAL_CORPORATE')}<br>路由原因：${e(stock.Model_Route_Reason || '待查')}<br>適用欄位：${e(stock.Applicable_Metrics || '待查')}<br>不適用欄位：${e(stock.Not_Applicable_Metrics || '無')}<br>必要缺值：${e(stock.Required_Missing_Metrics || '無')}<br>選用缺值：${e(stock.Optional_Missing_Metrics || '無')}<br>指標證據覆蓋：${f(stock.Metric_Evidence_Coverage, 2)}<br>最新資料日期：${e(stock.Latest_Metric_AsOf || '待查')}<br>Yahoo fallback：${yes(stock.Uses_Yahoo_Fallback) ? '是' : '否'}<br>年度 fallback：${yes(stock.Uses_Annual_Fallback) ? '是' : '否'}<br>估計 Maintenance CapEx：${yes(stock.Uses_Estimated_Maintenance_CapEx) ? '是' : '否'}<br>外幣換算：${yes(stock.Uses_FX_Conversion) ? '是' : '否'}<br>有效 ${e(counts.VALID || 0)} / 估計 ${e(counts.ESTIMATED || 0)} / 缺資料 ${e(counts.MISSING || 0)} / 不適用 ${e(counts.NOT_APPLICABLE || 0)} / 暫不判斷 ${e(counts.ABSTAIN || 0)} / 過舊 ${e(counts.STALE || 0)}<br>Maintenance CapEx 信心：${e(stock.Maintenance_CapEx_Confidence || '不適用')}<br>產業壓力延伸：${e(stock.Industry_Stress_Extension_Status || '待查')} - ${e(stock.Industry_Stress_Extension_Reason || '')}`;
+  };
+
+  prompt = function(x) {
+    const special = x.Industry_Model_Key && x.Industry_Model_Key !== 'GENERAL_CORPORATE';
+    return [
+      `請以中長期價值投資角度研究 ${x.Ticker}，不要直接下買賣指令。`,
+      `模型：${x.Industry_Model_Key || 'GENERAL_CORPORATE'}；決策：${x.Decision_State || '待查'}；資料信心：${metricText(x, 'Data_Confidence_Score')}。`,
+      special
+        ? `專用指標：${x.Industry_Model_Metrics_JSON || '待查'}。`
+        : `維護 FCF / 市值：${metricText(x, 'Real_FCF_Yield_pct', 2, '%')}；ICR：${metricText(x, 'ICR', 2, 'x')}；ROIC：${metricText(x, 'ROIC_pct', 2, '%')}。`,
+      `必要缺值：${x.Required_Missing_Metrics || '無'}；不適用欄位：${x.Not_Applicable_Metrics || '無'}。`,
+      '請以最新官方財報核對產業 KPI、現金流、資產負債表、稀釋、估值、壓力情境與 thesis 失效條件。',
+    ].join('\n');
   };
 
   ['#search', '#view', '#min'].forEach(selector => $(selector).oninput = render);

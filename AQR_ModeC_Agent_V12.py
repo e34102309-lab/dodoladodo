@@ -275,25 +275,25 @@ def split_adjusted_share_value(
 def get_price_asof(ticker: str, date_like: pd.Timestamp) -> float:
     close = get_cached_series(ticker, "Close")
     if close is None or close.empty:
-        return 0.0
+        return np.nan
     date_like = pd.Timestamp(date_like).tz_localize(None)
     s = close.copy()
     s.index = pd.to_datetime(s.index).tz_localize(None)
     s = s[s.index <= date_like]
     if s.empty:
-        return 0.0
+        return np.nan
     return float(s.iloc[-1])
 
 
 def get_price_on_or_after(ticker: str, date_like: pd.Timestamp) -> float:
     close = get_cached_series(ticker, "Close")
     if close is None or close.empty:
-        return 0.0
+        return np.nan
     date_like = pd.Timestamp(date_like).tz_localize(None).normalize()
     s = close.copy()
     s.index = pd.to_datetime(s.index).tz_localize(None)
     s = s[s.index >= date_like]
-    return float(s.iloc[0]) if not s.empty else 0.0
+    return float(s.iloc[0]) if not s.empty else np.nan
 
 
 
@@ -1030,13 +1030,13 @@ class SECDataDistiller:
     @staticmethod
     def _instant_latest(df: pd.DataFrame) -> float:
         series = SECDataDistiller._instant_series(df)
-        return float(series.iloc[-1]) / 1e9 if not series.empty else 0.0
+        return float(series.iloc[-1]) / 1e9 if not series.empty else np.nan
 
 
     def latest_balance(self, df: pd.DataFrame, normalized_metric: str = "") -> float:
         facts = self._instant_facts(df)
         if facts.empty:
-            return 0.0
+            return np.nan
         row = facts.iloc[-1]
         self._mark_rows_used(row, f"{normalized_metric}:latest-balance")
         return float(row["val"]) / 1e9
@@ -1049,7 +1049,7 @@ class SECDataDistiller:
     ) -> Tuple[float, str]:
         facts = self._instant_facts(df)
         if facts.empty:
-            return 0.0, ""
+            return np.nan, ""
         row = facts.iloc[-1]
         self._mark_rows_used(row, f"{normalized_metric}:latest-balance")
         return float(row["val"]) / 1e9, str(row.get("concept") or "")
@@ -1058,7 +1058,7 @@ class SECDataDistiller:
     def latest_annual(self, df: pd.DataFrame) -> Tuple[float, str]:
         annual = self._annual_facts(df)
         if annual.empty:
-            return 0.0, "missing"
+            return np.nan, "missing"
         r = annual.iloc[-1]
         form = str(r.get("form") or "annual filing").upper()
         return float(r["val"]) / 1e9, f"{form} {r.get('fy', '')} end={pd.Timestamp(r['end']).date()}"
@@ -1104,7 +1104,7 @@ class SECDataDistiller:
         normalized_metric: str = "",
     ) -> Tuple[float, str, Dict[str, object]]:
         if df.empty:
-            return 0.0, "missing", {}
+            return np.nan, "missing", {}
         d = df.copy().sort_values(["end", "filed"] if "filed" in df.columns else ["end"])
         annual = self._annual_facts(d)
         q = d[d["form"].astype(str).str.upper().isin(["10-Q", "10-Q/A"])].copy()
@@ -1196,6 +1196,8 @@ class SECDataDistiller:
 
 
         val, method = self.latest_annual(df)
+        if not math.isfinite(val) or method == "missing":
+            return np.nan, "missing", {}
         result = val if signed else abs(val)
         annual_rows = self._annual_facts(df).tail(1)
         evidence_id = self._record_derived_metric(
@@ -1395,6 +1397,15 @@ def safe_div(n: float, d: float, default: float = np.nan) -> float:
         return n / d
     except Exception:
         return default
+
+
+def first_finite_positive(*values: Any) -> float:
+    """Return the first explicit positive number without fabricating zero."""
+    for value in values:
+        number = finite_number(value)
+        if number is not None and number > 0:
+            return float(number)
+    return np.nan
 
 
 
@@ -2110,7 +2121,7 @@ def historical_valuation(
         if shares <= 0:
             continue
         price = get_price_on_or_after(ticker, valuation_date)
-        if price <= 0:
+        if not math.isfinite(price) or price <= 0:
             continue
         period_key = str(period_end.date())
         price_evidence_id = sec.record_observed_input(
@@ -3324,6 +3335,8 @@ class ModeCResult:
     Cash_B: float = np.nan
     Net_Debt_B: float = np.nan
     Debt_Source_Method: str = ""
+    Maintenance_Real_FCF_B: float = np.nan
+    Conservative_Real_FCF_B: float = np.nan
     Real_FCF_Yield_pct: float = np.nan
     Conservative_Real_FCF_Yield_pct: float = np.nan
     Maintenance_Real_FCF_to_MarketCap_Yield_pct: float = np.nan
@@ -3636,8 +3649,12 @@ def run_specialized_mode_c_pipeline(
     model_key = str(model_route.get("model_key") or "UNKNOWN")
     sector = str(info.get("sector") or "").strip()
     industry = str(info.get("industry") or "").strip()
-    price = float(info.get("currentPrice") or info.get("regularMarketPrice") or pm.get("last_close") or 0.0)
-    if price <= 0:
+    price = first_finite_positive(
+        info.get("currentPrice"),
+        info.get("regularMarketPrice"),
+        pm.get("last_close"),
+    )
+    if not math.isfinite(price) or price <= 0:
         return ModeCResult(Ticker=ticker, Status="Fail: 價格失真")
 
     sec = SECDataDistiller(email, ticker=ticker, cik=cik, decision_timestamp=decision_timestamp)
@@ -3688,15 +3705,22 @@ def run_specialized_mode_c_pipeline(
 
     shares_now, shares_source = get_robust_shares(ticker, shares_frame, sec, info)
     share_evidence_ids = GLOBAL_EVIDENCE_LEDGER.selected_evidence_ids(ticker, "SharesOutstanding")
-    if shares_source != "SEC":
+    if shares_source != "SEC" and shares_now > 0:
         share_evidence_ids = [
             sec.record_observed_input(
                 "SharesOutstanding_Current", shares_now, "shares_B", shares_source,
                 "shares fallback used for specialized market capitalization",
             )
         ]
-    market_cap = price * shares_now if shares_now > 0 else float(info.get("marketCap") or 0.0) / 1e9
-    if market_cap <= 0 or market_cap < MIN_MARKET_CAP_B:
+    reported_market_cap = finite_number(info.get("marketCap"))
+    market_cap = (
+        price * shares_now
+        if shares_now > 0
+        else reported_market_cap / 1e9
+        if reported_market_cap is not None and reported_market_cap > 0
+        else np.nan
+    )
+    if not math.isfinite(market_cap) or market_cap < MIN_MARKET_CAP_B:
         return ModeCResult(Ticker=ticker, Status=f"Fail: 市值過低或無法取得 {market_cap:.2f}B")
     if shares_now > 0:
         market_cap_evidence_id = sec._record_derived_from_ids(
@@ -3711,25 +3735,32 @@ def run_specialized_mode_c_pipeline(
     assets = _specialized_balance(sec, frame("Assets"), "Assets")
     equity = _specialized_balance(sec, frame("Equity"), "Equity")
     average_equity = _specialized_average_balance(sec, frame("Equity"), "Equity")
-    goodwill = _specialized_balance(sec, frame("Goodwill"), "Goodwill", missing_value=0.0)
+    goodwill = _specialized_balance(sec, frame("Goodwill"), "Goodwill")
     intangible_assets = _specialized_balance(
-        sec, frame("IntangibleAssets"), "IntangibleAssets", missing_value=0.0
+        sec, frame("IntangibleAssets"), "IntangibleAssets"
     )
     average_goodwill = (
         _specialized_average_balance(sec, frame("Goodwill"), "Goodwill")
         if not frame("Goodwill").empty
-        else 0.0
+        else np.nan
     )
     average_intangible_assets = (
         _specialized_average_balance(sec, frame("IntangibleAssets"), "IntangibleAssets")
         if not frame("IntangibleAssets").empty
-        else 0.0
+        else np.nan
     )
-    tangible_equity = equity - goodwill - intangible_assets if is_finite(equity) else np.nan
+    tangible_equity = (
+        equity - goodwill - intangible_assets
+        if all(is_finite(value) for value in (equity, goodwill, intangible_assets))
+        else np.nan
+    )
     average_tangible_equity = (
         average_equity - average_goodwill - average_intangible_assets
-        if is_finite(average_equity)
-        else tangible_equity
+        if all(
+            is_finite(value)
+            for value in (average_equity, average_goodwill, average_intangible_assets)
+        )
+        else np.nan
     )
     cash = _specialized_balance(sec, frame("Cash"), "Cash")
     total_debt, debt_method, debt_source_concepts = _specialized_total_debt(sec, frames)
@@ -3858,13 +3889,11 @@ def run_specialized_mode_c_pipeline(
             if is_finite(capex) and is_finite(dna)
             else np.nan
         )
-        gain = 0.0 if frame("GainOnPropertySale").empty else gain
-        impairment = 0.0 if frame("RealEstateImpairment").empty else impairment
         interest = 0.0 if total_debt <= 0.01 and not is_finite(interest) else interest
         metrics.update(
             real_estate_dna_ttm_b=dna,
             interest_ttm_b=interest,
-            tax_ttm_b=tax if is_finite(tax) else 0.0,
+            tax_ttm_b=tax,
             dividends_ttm_b=dividends,
             maintenance_capex_b=maintenance,
             gain_on_property_sale_ttm_b=gain,
@@ -4272,8 +4301,12 @@ def _run_mode_c_pipeline_core(
                 Data_Confidence_Score=0.0,
                 Data_Confidence_Reasons="No evaluator is registered for the routed model key",
             )
-        price = float(info.get("currentPrice") or info.get("regularMarketPrice") or pm["last_close"] or 0.0)
-        if price <= 0:
+        price = first_finite_positive(
+            info.get("currentPrice"),
+            info.get("regularMarketPrice"),
+            pm.get("last_close"),
+        )
+        if not math.isfinite(price) or price <= 0:
             return ModeCResult(Ticker=ticker, Status="Fail: 價格失真")
 
 
@@ -4400,16 +4433,28 @@ def _run_mode_c_pipeline_core(
         net_income_ttm, net_income_method, net_income_evidence = sec.ttm_flow(df_net_income, normalized_metric="TTM_NetIncome")
         buyback_ttm, _, buyback_evidence = sec.ttm_flow(df_buyback, signed=False, normalized_metric="TTM_Buyback")
         issuance_ttm, _, issuance_evidence = sec.ttm_flow(df_issuance, signed=False, normalized_metric="TTM_StockIssuance")
-        tax_ttm, tax_method, tax_evidence = sec.ttm_flow(df_tax, normalized_metric="TTM_Tax") if not df_tax.empty else (0.0, "missing", {})
+        tax_ttm, tax_method, tax_evidence = sec.ttm_flow(df_tax, normalized_metric="TTM_Tax") if not df_tax.empty else (np.nan, "missing", {})
         fcf_stability = calculate_fcf_stability(
             sec, df_ocf, df_capex, df_sbc, df_dna, df_rev, df_net_income
         )
 
-
-        if capex_ttm <= 0:
+        critical_ttm = {
+            "OCF": (ocf_ttm, ocf_evidence),
+            "CapEx": (capex_ttm, capex_evidence),
+            "EBIT": (ebit_ttm, ebit_evidence),
+            "D&A": (dna_ttm, dna_evidence),
+            "Revenue": (rev_ttm, rev_evidence),
+            "NetIncome": (net_income_ttm, net_income_evidence),
+        }
+        missing_ttm = [
+            name
+            for name, (value, evidence) in critical_ttm.items()
+            if not math.isfinite(value) or not str(evidence.get("evidence_id") or "")
+        ]
+        if missing_ttm:
             return ModeCResult(
                 Ticker=ticker,
-                Status="Abstain: CapEx TTM 缺失或非正值",
+                Status=f"Abstain: TTM 證據鏈不完整 {'/'.join(missing_ttm)}",
                 Sector=sector,
                 Industry=industry,
                 Model_Route=str(model_route["route"]),
@@ -4417,14 +4462,31 @@ def _run_mode_c_pipeline_core(
                 Decision_State="ABSTAIN",
                 Decision_Timestamp=decision_timestamp.isoformat(),
                 Data_Confidence_Score=0.0,
-                Data_Confidence_Reasons="Maintenance CapEx cannot be estimated without SEC CapEx evidence",
+                Data_Confidence_Reasons=(
+                    "Critical TTM metrics require a finite value and selected source lineage: "
+                    + ", ".join(missing_ttm)
+                ),
+            )
+        if capex_ttm < 0:
+            return ModeCResult(
+                Ticker=ticker,
+                Status="Abstain: CapEx TTM 符號無效",
+                Sector=sector,
+                Industry=industry,
+                Model_Route=str(model_route["route"]),
+                Model_Route_Reason=str(model_route["reason"]),
+                Decision_State="ABSTAIN",
+                Decision_Timestamp=decision_timestamp.isoformat(),
+                Data_Confidence_Score=0.0,
+                Data_Confidence_Reasons="Absolute CapEx cannot be negative",
             )
         sbc_external_fallback = False
         sbc_metric_evidence_id = str(sbc_evidence.get("evidence_id") or "")
-        if sbc_ttm == 0:
-            sbc_ttm = abs(float(info.get("shareBasedCompensation") or 0.0)) / 1e9
-            sbc_external_fallback = sbc_ttm > 0
-            if sbc_external_fallback:
+        if not sbc_metric_evidence_id:
+            reported_sbc = finite_number(info.get("shareBasedCompensation"))
+            if reported_sbc is not None:
+                sbc_ttm = abs(reported_sbc) / 1e9
+                sbc_external_fallback = True
                 sbc_metric_evidence_id = sec.record_observed_input(
                     "TTM_SBC",
                     sbc_ttm,
@@ -4469,7 +4531,7 @@ def _run_mode_c_pipeline_core(
                 if "evidence_id" in latest_share_fact.columns
                 else []
             )
-        else:
+        elif shares_now > 0:
             share_evidence_id = sec.record_observed_input(
                 "SharesOutstanding_Current",
                 shares_now,
@@ -4478,8 +4540,15 @@ def _run_mode_c_pipeline_core(
                 "shares fallback used for market capitalization",
             )
             share_evidence_ids = [share_evidence_id]
-        mcap = price * shares_now if shares_now > 0 else float(info.get("marketCap") or 0.0) / 1e9
-        if mcap <= 0 or mcap < MIN_MARKET_CAP_B:
+        reported_market_cap = finite_number(info.get("marketCap"))
+        mcap = (
+            price * shares_now
+            if shares_now > 0
+            else reported_market_cap / 1e9
+            if reported_market_cap is not None and reported_market_cap > 0
+            else np.nan
+        )
+        if not math.isfinite(mcap) or mcap < MIN_MARKET_CAP_B:
             return ModeCResult(Ticker=ticker, Status=f"Fail: 市值過低或無法取得 {mcap:.2f}B")
         if shares_now > 0:
             market_cap_evidence_id = sec._record_derived_from_ids(
@@ -4543,6 +4612,19 @@ def _run_mode_c_pipeline_core(
             )
         cash = sec.latest_balance(df_cash, "Cash")
         equity = sec.latest_balance(df_equity, "Equity")
+        if not math.isfinite(cash) or not math.isfinite(equity):
+            return ModeCResult(
+                Ticker=ticker,
+                Status="Abstain: 現金或股東權益缺少可用即時點證據",
+                Sector=sector,
+                Industry=industry,
+                Model_Route=str(model_route["route"]),
+                Model_Route_Reason=str(model_route["reason"]),
+                Decision_State="ABSTAIN",
+                Decision_Timestamp=decision_timestamp.isoformat(),
+                Data_Confidence_Score=0.0,
+                Data_Confidence_Reasons="Cash and equity must be finite point-in-time balance-sheet facts",
+            )
         ev = mcap + total_debt - cash
         debt_evidence_ids = []
         for debt_metric in debt_source_concepts:
@@ -5112,8 +5194,13 @@ def _run_mode_c_pipeline_core(
 
         # 三點勾稽僅在各組成資料存在時執行，避免把缺值當成零。
         reconciliation_warning = False
-        yf_ebitda = float(info.get("ebitda") or 0.0) / 1e9
-        if yf_ebitda > 0 and ebitda > 0:
+        reported_yf_ebitda = finite_number(info.get("ebitda"))
+        yf_ebitda = (
+            reported_yf_ebitda / 1e9
+            if reported_yf_ebitda is not None
+            else np.nan
+        )
+        if math.isfinite(yf_ebitda) and yf_ebitda > 0 and ebitda > 0:
             diff_1 = safe_div(abs(ebitda - yf_ebitda), max(abs(ebitda), 0.001))
             diff_2 = np.nan
             if not df_tax.empty and (total_debt <= 0.01 or not df_int.empty):
@@ -5455,6 +5542,8 @@ def _run_mode_c_pipeline_core(
             Cash_B=round(cash, 3),
             Net_Debt_B=round(total_debt - cash, 3),
             Debt_Source_Method=debt_method,
+            Maintenance_Real_FCF_B=round(real_fcf, 3),
+            Conservative_Real_FCF_B=round(conservative_real_fcf, 3),
             Real_FCF_Yield_pct=round(real_fcf_yield, 2),
             Conservative_Real_FCF_Yield_pct=round(conservative_real_fcf_yield, 2),
             Maintenance_Real_FCF_to_MarketCap_Yield_pct=round(real_fcf_yield, 2),
