@@ -9,7 +9,7 @@ from typing import Any, Iterable, Mapping, Sequence
 import pandas as pd
 
 
-METRIC_CONTRACT_VERSION = "2026-07-metric-status-v1"
+METRIC_CONTRACT_VERSION = "2026-07-metric-status-v2"
 METRIC_STATUSES = frozenset(
     {
         "VALID",
@@ -61,6 +61,8 @@ DISPLAY_METRICS: tuple[str, ...] = (
     "Total_Debt_B",
     "Cash_B",
     "Net_Debt_B",
+    "Maintenance_Real_FCF_B",
+    "Conservative_Real_FCF_B",
     "ICR",
     "Stress_ICR_30x",
     "NetDebt_to_Stress_EBITDA_30x",
@@ -151,6 +153,8 @@ GENERAL_REQUIRED_METRICS = frozenset(
         "Dynamic_CapEx_B",
         "Maintenance_CapEx_B",
         "TTM_SBC_B",
+        "Maintenance_Real_FCF_B",
+        "Conservative_Real_FCF_B",
         "Real_FCF_Yield_pct",
         "ICR",
         "ROIC_pct",
@@ -174,6 +178,7 @@ ESTIMATED_METRICS = frozenset(
         "Maintenance_CapEx_Low_B",
         "Maintenance_CapEx_High_B",
         "Growth_CapEx_B",
+        "Maintenance_Real_FCF_B",
         "Real_FCF_Yield_pct",
         "Maintenance_Real_FCF_to_MarketCap_Yield_pct",
         "Maintenance_Real_FCF_to_EV_Yield_pct",
@@ -195,6 +200,8 @@ CSV_STATUS_METRICS = (
     "Conservative_Real_FCF_Yield_pct",
     "Maintenance_CapEx_B",
     "Growth_CapEx_B",
+    "Maintenance_Real_FCF_B",
+    "Conservative_Real_FCF_B",
     "ROIC_pct",
     "ICR",
     "EV_EBITDA_x",
@@ -210,6 +217,8 @@ ZERO_REQUIRES_EVIDENCE_METRICS = frozenset(
         "Dynamic_CapEx_B",
         "Maintenance_CapEx_B",
         "TTM_SBC_B",
+        "Maintenance_Real_FCF_B",
+        "Conservative_Real_FCF_B",
         "Real_FCF_Yield_pct",
         "Conservative_Real_FCF_Yield_pct",
         "Total_Debt_B",
@@ -243,6 +252,8 @@ EVIDENCE_ALIASES: dict[str, tuple[str, ...]] = {
     "CapEx_to_DnA_x": ("TTM_CapEx", "TTM_DnA"),
     "TTM_SBC_B": ("TTM_SBC",),
     "SBC_Economic_Cost_B": ("TTM_SBC",),
+    "Maintenance_Real_FCF_B": ("Real_FCF",),
+    "Conservative_Real_FCF_B": ("Conservative_Real_FCF",),
     "Real_FCF_Yield_pct": ("Real_FCF_to_MarketCap_Yield", "Real_FCF_Yield"),
     "Conservative_Real_FCF_Yield_pct": (
         "Conservative_Real_FCF_to_MarketCap_Yield",
@@ -547,6 +558,7 @@ def _metric_metadata(
             "Maintenance_CapEx_Low_B",
             "Maintenance_CapEx_High_B",
             "Growth_CapEx_B",
+            "Maintenance_Real_FCF_B",
             "Real_FCF_Yield_pct",
             "Maintenance_Real_FCF_to_MarketCap_Yield_pct",
             "Maintenance_Real_FCF_to_EV_Yield_pct",
@@ -636,6 +648,35 @@ def annotate_rows(
     for source in rows:
         row = dict(source)
         key = model_key(row)
+        if key == "GENERAL_CORPORATE":
+            ocf = finite_number(row.get("TTM_OCF_B"))
+            total_capex = finite_number(row.get("Dynamic_CapEx_B"))
+            maintenance_capex = finite_number(row.get("Maintenance_CapEx_B"))
+            sbc = finite_number(row.get("TTM_SBC_B"))
+            if all(
+                value is not None
+                for value in (ocf, total_capex, maintenance_capex, sbc)
+            ):
+                if finite_number(row.get("Maintenance_Real_FCF_B")) is None:
+                    row["Maintenance_Real_FCF_B"] = ocf - maintenance_capex - sbc
+                if finite_number(row.get("Conservative_Real_FCF_B")) is None:
+                    row["Conservative_Real_FCF_B"] = ocf - total_capex - sbc
+                maintenance_fcf = finite_number(row.get("Maintenance_Real_FCF_B"))
+                conservative_fcf = finite_number(row.get("Conservative_Real_FCF_B"))
+                market_cap = finite_number(row.get("MarketCap_B"))
+                enterprise_value = finite_number(row.get("EV_B"))
+                if market_cap is not None and market_cap > 0:
+                    maintenance_market_cap_yield = maintenance_fcf / market_cap * 100
+                    conservative_market_cap_yield = conservative_fcf / market_cap * 100
+                    row["Real_FCF_Yield_pct"] = maintenance_market_cap_yield
+                    row["Conservative_Real_FCF_Yield_pct"] = conservative_market_cap_yield
+                    row["Maintenance_Real_FCF_to_MarketCap_Yield_pct"] = maintenance_market_cap_yield
+                    row["Conservative_Real_FCF_to_MarketCap_Yield_pct"] = conservative_market_cap_yield
+                if enterprise_value is not None and enterprise_value > 0:
+                    if finite_number(row.get("Maintenance_Real_FCF_to_EV_Yield_pct")) is None:
+                        row["Maintenance_Real_FCF_to_EV_Yield_pct"] = maintenance_fcf / enterprise_value * 100
+                    if finite_number(row.get("Conservative_Real_FCF_to_EV_Yield_pct")) is None:
+                        row["Conservative_Real_FCF_to_EV_Yield_pct"] = conservative_fcf / enterprise_value * 100
         metadata = {
             metric: _metric_metadata(row, metric, index)
             for metric in DISPLAY_METRICS
@@ -656,13 +697,36 @@ def annotate_rows(
             if metadata[metric]["status"] in NULL_STATUSES
             and metadata[metric]["status"] != "NOT_APPLICABLE"
         )
+        industry_required_missing = [
+            item.strip()
+            for item in str(row.get("Industry_Model_Required_Missing") or "").split("|")
+            if item.strip()
+        ]
+        missing_required = sorted(
+            set(missing_required)
+            | {f"industry.{item}" for item in industry_required_missing}
+        )
         optional_missing = sorted(
             metric
             for metric in applicable_metrics(key) - required
             if metadata[metric]["status"] in NULL_STATUSES
             and metadata[metric]["status"] != "NOT_APPLICABLE"
         )
-        applicable = [metadata[metric] for metric in applicable_metrics(key)]
+        industry_optional_missing = [
+            item.strip()
+            for item in str(row.get("Industry_Model_Optional_Missing") or "").split("|")
+            if item.strip()
+        ]
+        optional_missing = sorted(
+            set(optional_missing)
+            | {f"industry.{item}" for item in industry_optional_missing}
+        )
+        applicable_names = set(applicable_metrics(key)) | {
+            metric
+            for metric in metadata
+            if metric.startswith(("industry.", "industry_component."))
+        }
+        applicable = [metadata[metric] for metric in applicable_names]
         evidenced = sum(
             bool(meta["evidence_ids"])
             for meta in applicable
@@ -686,11 +750,41 @@ def annotate_rows(
         row["Metric_Metadata_JSON"] = json.dumps(
             metadata, ensure_ascii=False, sort_keys=True, separators=(",", ":")
         )
+        status_counts = {
+            status: sum(
+                meta.get("status") == status
+                for meta in metadata.values()
+                if isinstance(meta, dict)
+            )
+            for status in sorted(METRIC_STATUSES)
+        }
+        valid_dates = sorted(
+            str(meta.get("as_of"))[:10]
+            for meta in metadata.values()
+            if isinstance(meta, dict)
+            and meta.get("status") in {"VALID", "ESTIMATED"}
+            and str(meta.get("as_of") or "")[:10].count("-") == 2
+        )
         row["Required_Missing_Metrics"] = " | ".join(missing_required)
         row["Optional_Missing_Metrics"] = " | ".join(optional_missing)
+        row["Applicable_Metrics"] = " | ".join(sorted(applicable_names))
+        row["Not_Applicable_Metrics"] = " | ".join(
+            sorted(
+                metric
+                for metric, meta in metadata.items()
+                if isinstance(meta, dict) and meta.get("status") == "NOT_APPLICABLE"
+            )
+        )
+        row["Metric_Status_Counts_JSON"] = json.dumps(
+            status_counts, sort_keys=True, separators=(",", ":")
+        )
+        row["Latest_Metric_AsOf"] = valid_dates[-1] if valid_dates else ""
         row["Metric_Evidence_Coverage"] = round(coverage, 4)
         row["Uses_Yahoo_Fallback"] = "yahoo" in methods_text
-        row["Uses_Annual_Fallback"] = "fallback annual" in methods_text
+        row["Uses_Annual_Fallback"] = "annual fallback" in methods_text or "fallback annual" in methods_text
+        row["Uses_FX_Conversion"] = (
+            metadata["Point_in_Time_FX_Rate"]["status"] == "VALID"
+        )
         row["Uses_Estimated_Maintenance_CapEx"] = any(
             metadata[metric]["status"] == "ESTIMATED"
             for metric in (
@@ -698,6 +792,7 @@ def annotate_rows(
                 "Real_FCF_Yield_pct",
             )
         )
+        row["Metric_Data_Complete"] = not missing_required
         annotated.append(row)
     return annotated
 

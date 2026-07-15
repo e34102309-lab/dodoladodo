@@ -188,14 +188,15 @@ class IndustryModelTests(unittest.TestCase):
         self.assertAlmostEqual(result.metrics["affo_proxy_b"], 2.0)
         self.assertIn("net_debt_to_ebitdare_x", result.metrics)
 
-    def test_reit_optional_adjustments_do_not_poison_ffo_proxy(self):
+    def test_reit_missing_adjustments_are_not_silently_treated_as_zero(self):
         reit = self.healthy_samples()["REIT_EQUITY"]
         reit.pop("gain_on_property_sale_ttm_b")
         reit.pop("real_estate_impairment_ttm_b")
         reit.pop("tax_ttm_b")
         result = evaluate_industry_model("REIT_EQUITY", reit)
-        self.assertTrue(math.isfinite(result.metrics["ffo_proxy_b"]))
-        self.assertTrue(math.isfinite(result.metrics["ebitdare_proxy_b"]))
+        self.assertEqual(result.decision, "ABSTAIN")
+        self.assertTrue(math.isnan(result.metrics["ffo_proxy_b"]))
+        self.assertTrue(math.isnan(result.metrics["ebitdare_proxy_b"]))
         self.assertIn("gain_on_property_sale_ttm_b", result.optional_missing)
 
     def test_mortgage_reit_requires_company_defined_recurring_earnings(self):

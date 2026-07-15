@@ -48,6 +48,34 @@ from mode_c_evidence import GLOBAL_EVIDENCE_LEDGER
 
 
 class ModeCCoreTests(unittest.TestCase):
+    def test_ttm_flow_without_quarters_or_annual_fact_returns_missing_not_zero(self):
+        sec = SECDataDistiller(
+            "research@example.com",
+            ticker="TEST",
+            cik="1",
+            decision_timestamp=pd.Timestamp("2026-01-02", tz="UTC"),
+        )
+        frame = SECDataDistiller._clean_facts(
+            pd.DataFrame(
+                [
+                    {
+                        "start": "2025-01-01",
+                        "end": "2025-03-31",
+                        "filed": "2025-04-15",
+                        "val": 123.0,
+                        "form": "8-K",
+                        "fp": "",
+                        "fy": 2025,
+                        "concept": "FixtureMetric",
+                    }
+                ]
+            )
+        )
+        value, method, details = sec.ttm_flow(frame, normalized_metric="Fixture")
+        self.assertTrue(math.isnan(value))
+        self.assertEqual(method, "missing")
+        self.assertEqual(details, {})
+
     def test_per_share_growth_uses_positive_comparable_annual_endpoints(self):
         class FakeSec:
             ticker = "TEST"
