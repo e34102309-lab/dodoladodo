@@ -71,8 +71,8 @@ class ModeCLongTermRuleTests(unittest.TestCase):
         self.assertIn("MAX_PER_SECTOR = 0", self.mode_c)
         self.assertIn("if max_per_sector > 0", self.mode_c)
 
-    def test_wednesday_friday_mode_c_and_monthly_universe_refresh_are_separate(self):
-        self.assertIn("- cron: '0 1 * * 3,5'", self.workflow)
+    def test_thursday_after_close_mode_c_and_monthly_universe_refresh_are_separate(self):
+        self.assertIn("- cron: '0 22 * * 4'", self.workflow)
         self.assertIn("- cron: '0 3 1 * *'", self.workflow)
         self.assertGreaterEqual(
             self.workflow.count("github.event.schedule == '0 3 1 * *'"),
