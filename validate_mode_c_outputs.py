@@ -12,6 +12,7 @@ import pandas as pd
 
 from mode_c_metric_contract import (
     DISPLAY_METRICS,
+    METRIC_CONTRACT_VERSION,
     METRIC_STATUSES,
     MODEL_APPLICABLE_METRICS,
     NULL_STATUSES,
@@ -62,6 +63,15 @@ SCREEN_COLUMNS = {
     "Required_Missing_Metrics",
     "Optional_Missing_Metrics",
     "Metric_Evidence_Coverage",
+    "Applicable_Metrics",
+    "Not_Applicable_Metrics",
+    "Metric_Status_Counts_JSON",
+    "Latest_Metric_AsOf",
+    "Uses_Yahoo_Fallback",
+    "Uses_Annual_Fallback",
+    "Uses_Estimated_Maintenance_CapEx",
+    "Uses_FX_Conversion",
+    "Metric_Data_Complete",
 }
 
 EVIDENCE_COLUMNS = {
@@ -87,6 +97,8 @@ ZERO_EVIDENCE_METRICS = {
     "Dynamic_CapEx_B",
     "Maintenance_CapEx_B",
     "TTM_SBC_B",
+    "Maintenance_Real_FCF_B",
+    "Conservative_Real_FCF_B",
     "Real_FCF_Yield_pct",
     "Conservative_Real_FCF_Yield_pct",
     "Total_Debt_B",
@@ -210,6 +222,146 @@ def _validate_metric_contract(screen: pd.DataFrame) -> None:
                     raise ValidationError(f"{ticker} {metric} must be VALID or ABSTAIN for ADS")
 
 
+def _metadata_number(metadata: Dict[str, Any], metric: str) -> float:
+    entry = metadata.get(metric, {})
+    if not isinstance(entry, dict) or str(entry.get("status") or "") not in {
+        "VALID", "ESTIMATED"
+    }:
+        return math.nan
+    return _number(entry.get("value"))
+
+
+def _validate_financial_formulas(screen: pd.DataFrame) -> None:
+    output_metrics = (
+        "Maintenance_Real_FCF_B",
+        "Conservative_Real_FCF_B",
+        "Real_FCF_Yield_pct",
+        "Conservative_Real_FCF_Yield_pct",
+        "Maintenance_Real_FCF_to_MarketCap_Yield_pct",
+        "Conservative_Real_FCF_to_MarketCap_Yield_pct",
+        "Maintenance_Real_FCF_to_EV_Yield_pct",
+        "Conservative_Real_FCF_to_EV_Yield_pct",
+    )
+    for _, row in screen.iterrows():
+        ticker = str(row["Ticker"])
+        if str(row.get("Industry_Model_Key") or "GENERAL_CORPORATE").upper() != "GENERAL_CORPORATE":
+            continue
+        metadata = _parse_metadata(row.get("Metric_Metadata_JSON"), ticker)
+        ocf = _metadata_number(metadata, "TTM_OCF_B")
+        total_capex = _metadata_number(metadata, "Dynamic_CapEx_B")
+        maintenance_capex = _metadata_number(metadata, "Maintenance_CapEx_B")
+        sbc = _metadata_number(metadata, "TTM_SBC_B")
+        market_cap = _metadata_number(metadata, "MarketCap_B")
+        enterprise_value = _metadata_number(metadata, "EV_B")
+        inputs_complete = all(
+            math.isfinite(value)
+            for value in (ocf, total_capex, maintenance_capex, sbc, market_cap)
+        ) and market_cap > 0
+        if not inputs_complete:
+            leaked = [
+                metric
+                for metric in output_metrics[:6]
+                if math.isfinite(_metadata_number(metadata, metric))
+            ]
+            if leaked:
+                raise ValidationError(
+                    f"{ticker} FCF outputs survive missing core inputs: {leaked}"
+                )
+            continue
+
+        maintenance_fcf = ocf - maintenance_capex - sbc
+        conservative_fcf = ocf - total_capex - sbc
+        expected = {
+            "Maintenance_Real_FCF_B": maintenance_fcf,
+            "Conservative_Real_FCF_B": conservative_fcf,
+            "Real_FCF_Yield_pct": maintenance_fcf / market_cap * 100.0,
+            "Maintenance_Real_FCF_to_MarketCap_Yield_pct": maintenance_fcf / market_cap * 100.0,
+            "Conservative_Real_FCF_Yield_pct": conservative_fcf / market_cap * 100.0,
+            "Conservative_Real_FCF_to_MarketCap_Yield_pct": conservative_fcf / market_cap * 100.0,
+        }
+        if math.isfinite(enterprise_value) and enterprise_value > 0:
+            expected.update(
+                {
+                    "Maintenance_Real_FCF_to_EV_Yield_pct": maintenance_fcf / enterprise_value * 100.0,
+                    "Conservative_Real_FCF_to_EV_Yield_pct": conservative_fcf / enterprise_value * 100.0,
+                }
+            )
+        else:
+            leaked_ev_yields = [
+                metric
+                for metric in output_metrics[6:]
+                if math.isfinite(_metadata_number(metadata, metric))
+            ]
+            if leaked_ev_yields:
+                raise ValidationError(
+                    f"{ticker} EV-based FCF yields survive missing enterprise value: "
+                    f"{leaked_ev_yields}"
+                )
+        for metric, expected_value in expected.items():
+            actual = _metadata_number(metadata, metric)
+            tolerance = 0.08 if metric.endswith("pct") else 0.0025
+            if not math.isfinite(actual) or not math.isclose(
+                actual, expected_value, abs_tol=tolerance
+            ):
+                raise ValidationError(
+                    f"{ticker} {metric} cannot be recomputed from audited inputs"
+                )
+        economic_cost = _metadata_number(metadata, "SBC_Economic_Cost_B")
+        if math.isfinite(economic_cost) and not math.isclose(economic_cost, sbc, abs_tol=0.0025):
+            raise ValidationError(f"{ticker} SBC economic cost differs from TTM SBC")
+
+
+def build_zero_classification_report(screen: pd.DataFrame) -> Dict[str, Any]:
+    records: list[Dict[str, Any]] = []
+    null_status_counts = {status: 0 for status in NULL_STATUSES}
+    summary = {
+        "true_zero": 0,
+        "invalid_zero": 0,
+        "not_applicable": 0,
+        "missing": 0,
+    }
+    for _, row in screen.iterrows():
+        ticker = str(row["Ticker"])
+        metadata = _parse_metadata(row.get("Metric_Metadata_JSON"), ticker)
+        for metric in DISPLAY_METRICS:
+            meta = metadata.get(metric, {})
+            status = str(meta.get("status") or "").upper()
+            raw_value = _number(row.get(metric))
+            if status in null_status_counts:
+                null_status_counts[status] += 1
+                if status == "NOT_APPLICABLE":
+                    summary["not_applicable"] += 1
+                elif status in {"MISSING", "ABSTAIN", "STALE", "INVALID"}:
+                    summary["missing"] += 1
+            if not math.isfinite(raw_value) or raw_value != 0.0:
+                continue
+            evidenced = bool(meta.get("evidence_ids"))
+            derived = bool(str(meta.get("source_method") or "").strip())
+            classification = (
+                "true_zero"
+                if status in {"VALID", "ESTIMATED"} and (evidenced or derived)
+                else "invalid_zero"
+            )
+            summary[classification] += 1
+            records.append(
+                {
+                    "ticker": ticker,
+                    "metric": metric,
+                    "classification": classification,
+                    "status": status,
+                    "reason": meta.get("reason"),
+                    "source_method": meta.get("source_method"),
+                    "evidence_ids": meta.get("evidence_ids", []),
+                }
+            )
+    return {
+        "metric_contract_version": METRIC_CONTRACT_VERSION,
+        "summary": summary,
+        "null_status_counts": null_status_counts,
+        "zero_records": records,
+    }
+
+
 def _validate_dashboard(dashboard_path: Path, screen: pd.DataFrame) -> Dict[str, Any]:
     payload = json.loads(dashboard_path.read_text(encoding="utf-8"))
     stocks = payload.get("stocks")
@@ -225,7 +377,8 @@ def _validate_dashboard(dashboard_path: Path, screen: pd.DataFrame) -> Dict[str,
     for _, row in screen.iterrows():
         ticker = str(row["Ticker"])
         expected = _parse_metadata(row["Metric_Metadata_JSON"], ticker)
-        actual = dashboard_by_ticker[ticker].get("Metric_Metadata")
+        dashboard_row = dashboard_by_ticker[ticker]
+        actual = dashboard_row.get("Metric_Metadata")
         if actual != expected:
             raise ValidationError(f"{ticker} dashboard metric metadata differs from screen")
         for metric in DISPLAY_METRICS:
@@ -235,11 +388,50 @@ def _validate_dashboard(dashboard_path: Path, screen: pd.DataFrame) -> Dict[str,
                 raise ValidationError(f"{ticker} dashboard fabricates {metric}")
             if expected_value is not None and _number(actual_value) != _number(expected_value):
                 raise ValidationError(f"{ticker} dashboard value differs for {metric}")
+        expected_counts = json.loads(str(row.get("Metric_Status_Counts_JSON") or "{}"))
+        if dashboard_row.get("Data_Integrity_Summary") != expected_counts:
+            raise ValidationError(f"{ticker} dashboard integrity summary differs from screen")
+        for field in (
+            "Required_Missing_Metrics",
+            "Optional_Missing_Metrics",
+            "Applicable_Metrics",
+            "Not_Applicable_Metrics",
+            "Latest_Metric_AsOf",
+        ):
+            raw_text = row.get(field)
+            expected_text = "" if pd.isna(raw_text) else str(raw_text)
+            if str(dashboard_row.get(field) or "") != expected_text:
+                raise ValidationError(f"{ticker} dashboard differs for {field}")
+        for field in (
+            "Uses_Yahoo_Fallback",
+            "Uses_Annual_Fallback",
+            "Uses_Estimated_Maintenance_CapEx",
+            "Uses_FX_Conversion",
+            "Metric_Data_Complete",
+        ):
+            if _as_bool(dashboard_row.get(field), field) != _as_bool(row.get(field), field):
+                raise ValidationError(f"{ticker} dashboard differs for {field}")
+    dashboard_status_counts = payload.get("stats", {}).get("metric_status_counts", {})
+    expected_status_counts = {
+        status: sum(
+            json.loads(str(raw or "{}")).get(status, 0)
+            for raw in screen["Metric_Status_Counts_JSON"]
+        )
+        for status in METRIC_STATUSES
+    }
+    if dashboard_status_counts != expected_status_counts:
+        raise ValidationError("dashboard aggregate metric-status counts differ from screen")
     groups = payload.get("trend_groups", {})
     for key, group in groups.items():
         coverage = group.get("metric_coverage", {})
         for field, summary in coverage.items():
             ratio = _number(summary.get("coverage"))
+            valid_count = int(summary.get("valid_count") or 0)
+            used_count = int(summary.get("used_count") or 0)
+            if summary.get("estimated_included") is not False or used_count != valid_count:
+                raise ValidationError(
+                    f"trend group {key} {field} includes non-VALID observations"
+                )
             if math.isfinite(ratio) and ratio < 0.50 and group.get(field) is not None:
                 raise ValidationError(f"trend group {key} exposes low-coverage {field}")
     for candidate in payload.get("emerging_candidates", []):
@@ -480,7 +672,20 @@ def _validate_screen(
             bad = screen.loc[invalid_history, "Ticker"].tolist()
             raise ValidationError(f"eligible rows have low point-in-time valuation coverage: {bad}")
 
+    contract_versions = set(
+        screen["Metric_Contract_Version"].fillna("").astype(str).str.strip()
+    )
+    if contract_versions != {METRIC_CONTRACT_VERSION}:
+        raise ValidationError(
+            f"metric contract version mismatch: {sorted(contract_versions)}"
+        )
     _validate_metric_contract(screen)
+    _validate_financial_formulas(screen)
+    zero_report = build_zero_classification_report(screen)
+    if zero_report["summary"]["invalid_zero"]:
+        raise ValidationError(
+            f"invalid zero values remain: {zero_report['summary']['invalid_zero']}"
+        )
     required_missing = screen["Required_Missing_Metrics"].fillna("").astype(str).str.strip()
     if (eligible & required_missing.ne("")).any():
         bad = screen.loc[eligible & required_missing.ne(""), "Ticker"].tolist()
@@ -506,6 +711,7 @@ def _validate_screen(
         "eligible_rows": int(eligible.sum()),
         "shortlist_rows": int(len(shortlist)),
         "decision_counts": states.value_counts().sort_index().to_dict(),
+        "zero_classification": zero_report["summary"],
     }, decision_timestamps.iloc[0]
 
 
@@ -647,6 +853,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--shortlist", default=DEFAULT_SHORTLIST)
     parser.add_argument("--evidence", default=DEFAULT_EVIDENCE)
     parser.add_argument("--dashboard")
+    parser.add_argument(
+        "--zero-report",
+        default="mode_c_zero_audit.json",
+        help="Write the classified important-metric zero audit (empty disables it)",
+    )
     return parser
 
 
@@ -659,6 +870,14 @@ def main() -> int:
             args.evidence,
             args.dashboard,
         )
+        if args.zero_report:
+            screen = pd.read_csv(args.screen, encoding="utf-8-sig")
+            report = build_zero_classification_report(screen)
+            Path(args.zero_report).write_text(
+                json.dumps(report, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            summary["zero_report"] = str(args.zero_report)
     except ValidationError as exc:
         print(f"Mode C output validation failed: {exc}")
         return 1

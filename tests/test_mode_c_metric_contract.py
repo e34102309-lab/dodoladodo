@@ -118,6 +118,50 @@ class ModeCMetricContractTests(unittest.TestCase):
         self.assertEqual(metadata["Cash_B"]["status"], "VALID")
         self.assertEqual(metadata["Cash_B"]["evidence_ids"], ["cash-zero"])
 
+    def test_true_zero_capex_is_preserved_only_with_lineage(self):
+        rows = [
+            row(
+                "ZEROX",
+                Dynamic_CapEx_B=0.0,
+                Maintenance_CapEx_B=0.0,
+                Maintenance_CapEx_Confidence="HIGH",
+            )
+        ]
+        evidence_rows = [
+            evidence("ZEROX", "TTM_CapEx", "capex-zero"),
+            evidence("ZEROX", "Maintenance_CapEx", "maintenance-zero"),
+        ]
+        annotated = annotate_rows(rows, evidence_rows)[0]
+        metadata = json.loads(annotated["Metric_Metadata_JSON"])
+        self.assertEqual(annotated["Dynamic_CapEx_B"], 0.0)
+        self.assertEqual(metadata["Dynamic_CapEx_B"]["status"], "VALID")
+        self.assertEqual(annotated["Maintenance_CapEx_B"], 0.0)
+        self.assertEqual(metadata["Maintenance_CapEx_B"]["status"], "ESTIMATED")
+
+    def test_missing_sbc_is_not_a_zero_cost(self):
+        annotated = annotate_rows(
+            [row("NOSBC", TTM_SBC_B=0.0)],
+            [],
+        )[0]
+        metadata = json.loads(annotated["Metric_Metadata_JSON"])
+        self.assertIsNone(annotated["TTM_SBC_B"])
+        self.assertEqual(metadata["TTM_SBC_B"]["status"], "MISSING")
+
+    def test_negative_fcf_yield_remains_negative(self):
+        annotated = annotate_rows(
+            [
+                row(
+                    "NEGFCF",
+                    Real_FCF_Yield_pct=-4.25,
+                    Maintenance_CapEx_Confidence="HIGH",
+                )
+            ],
+            [evidence("NEGFCF", "Real_FCF_to_MarketCap_Yield", "negative-fcf")],
+        )[0]
+        metadata = json.loads(annotated["Metric_Metadata_JSON"])
+        self.assertEqual(annotated["Real_FCF_Yield_pct"], -4.25)
+        self.assertEqual(metadata["Real_FCF_Yield_pct"]["status"], "ESTIMATED")
+
     def test_low_historical_coverage_is_not_displayed_as_zero(self):
         annotated = annotate_rows(
             [

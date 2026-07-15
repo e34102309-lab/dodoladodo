@@ -56,7 +56,7 @@ jobs:
           pip install -r ModeC_requirements.txt
 
       - name: Compile Python Sources
-        run: python -m py_compile AQR_ModeC_Agent_V12.py mode_c_evidence.py mode_c_metric_contract.py mode_c_routing.py mode_c_industry_models.py total_market_hunter_v2.py run_mode_c_ai_agent.py build_mode_c_dashboard.py enhance_dashboard_ui.py validate_mode_c_outputs.py
+        run: python -m py_compile AQR_ModeC_Agent_V12.py mode_c_evidence.py mode_c_metric_contract.py mode_c_routing.py mode_c_industry_models.py total_market_hunter_v2.py run_mode_c_ai_agent.py build_mode_c_dashboard.py enhance_dashboard_ui.py validate_mode_c_outputs.py mode_c_fixture_pipeline.py
 
       - name: Run Unit Tests
         run: python -m unittest discover -s tests -v
@@ -176,7 +176,7 @@ jobs:
         run: python enhance_dashboard_ui.py public/index.html
 
       - name: Validate Dashboard Metric Contract
-        run: python validate_mode_c_outputs.py --dashboard public/data.json
+        run: python validate_mode_c_outputs.py --dashboard public/data.json --zero-report mode_c_zero_audit.json
 
       - name: Save Dashboard Trend History
         uses: actions/cache/save@v4
@@ -202,6 +202,7 @@ jobs:
             mode_c_evidence_ledger.csv
             mode_c_report.md
             mode_c_agent_payload.json
+            mode_c_zero_audit.json
             public
           if-no-files-found: error
           retention-days: 30

@@ -10,6 +10,7 @@ from build_mode_c_dashboard import (
     build_dashboard,
     build_emerging_candidates,
     group_snapshot,
+    metric_summary,
 )
 from enhance_dashboard_ui import enhance_dashboard
 
@@ -104,6 +105,10 @@ class DashboardTests(unittest.TestCase):
             self.assertIn("data-candidate", html)
             self.assertIn("clearCandidate", html)
             self.assertIn('value="abstain"', html)
+            self.assertIn('value="complete"', html)
+            self.assertIn('value="estimated"', html)
+            self.assertIn('value="specialized"', html)
+            self.assertIn("資料完整性", html)
             self.assertIn("m<=0||", html)
             self.assertIn("v===null||v===undefined||v===''", html)
             self.assertIn("NOT_APPLICABLE:'不適用'", html)
@@ -135,6 +140,7 @@ class DashboardTests(unittest.TestCase):
             saved_history = json.loads(history.read_text(encoding="utf-8"))
             self.assertEqual(saved_history["policy_version"], DASHBOARD_TREND_POLICY_VERSION)
             self.assertIn("emerging_candidates", data)
+            self.assertIn("metric_status_counts", data["stats"])
             self.assertTrue(data["emerging_candidates"])
             self.assertTrue(
                 any(candidate["status"] == "待人工確認" for candidate in data["emerging_candidates"])
@@ -187,6 +193,30 @@ class DashboardTests(unittest.TestCase):
             build_emerging_candidates({"industry:test": group}, {}),
             [],
         )
+
+    def test_trends_exclude_estimates_and_preserve_not_applicable(self):
+        estimate_rows = [
+            {"Metric_Metadata": {"metric": {"status": "VALID", "value": 3.0}}},
+            {"Metric_Metadata": {"metric": {"status": "ESTIMATED", "value": 9.0}}},
+            {"Metric_Metadata": {"metric": {"status": "ESTIMATED", "value": 12.0}}},
+        ]
+        summary = metric_summary(estimate_rows, "metric")
+        self.assertEqual(summary["valid_count"], 1)
+        self.assertEqual(summary["estimated_count"], 2)
+        self.assertEqual(summary["used_count"], 1)
+        self.assertFalse(summary["estimated_included"])
+        self.assertIsNone(summary["value"])
+
+        not_applicable = metric_summary(
+            [
+                {"Metric_Metadata": {"metric": {"status": "NOT_APPLICABLE", "value": None}}},
+                {"Metric_Metadata": {"metric": {"status": "NOT_APPLICABLE", "value": None}}},
+            ],
+            "metric",
+        )
+        self.assertEqual(not_applicable["status"], "NOT_APPLICABLE")
+        self.assertEqual(not_applicable["coverage"], 0.0)
+        self.assertIsNone(not_applicable["value"])
 
 
 if __name__ == "__main__":

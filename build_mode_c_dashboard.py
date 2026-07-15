@@ -10,7 +10,8 @@ from typing import Any
 import pandas as pd
 
 
-DASHBOARD_TREND_POLICY_VERSION = "2026-07-metric-status-v2"
+DASHBOARD_TREND_POLICY_VERSION = "2026-07-metric-status-v3"
+TREND_INCLUDE_ESTIMATED = False
 
 
 THEME_RULES: list[dict[str, Any]] = [
@@ -135,7 +136,8 @@ def as_number(value: Any) -> float | None:
 
 
 def score(row: dict[str, Any]) -> float:
-    return as_number(row.get("Long_Term_Score")) or -1.0
+    value = as_number(row.get("Long_Term_Score"))
+    return value if value is not None else -1.0
 
 
 def parse_object(value: Any) -> dict[str, Any]:
@@ -148,10 +150,25 @@ def parse_object(value: Any) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
+def data_integrity_summary(metadata: dict[str, Any]) -> dict[str, int]:
+    counts = {status: 0 for status in (
+        "VALID", "ESTIMATED", "MISSING", "NOT_APPLICABLE",
+        "ABSTAIN", "STALE", "INVALID",
+    )}
+    for meta in metadata.values():
+        if not isinstance(meta, dict):
+            continue
+        status = str(meta.get("status") or "").upper()
+        if status in counts:
+            counts[status] += 1
+    return counts
+
+
 def metric_summary(rows: list[dict[str, Any]], field: str) -> dict[str, Any]:
     values: list[float] = []
     valid_count = 0
     estimated_count = 0
+    status_counts: dict[str, int] = {}
     for row in rows:
         metadata = row.get("Metric_Metadata")
         meta = metadata.get(field, {}) if isinstance(metadata, dict) else {}
@@ -160,21 +177,36 @@ def metric_summary(rows: list[dict[str, Any]], field: str) -> dict[str, Any]:
         if not status:
             value = as_number(row.get(field))
             status = "VALID" if value is not None else "MISSING"
+        status_counts[status] = status_counts.get(status, 0) + 1
         if status == "VALID" and value is not None:
             valid_count += 1
             values.append(value)
         elif status == "ESTIMATED" and value is not None:
             estimated_count += 1
-            values.append(value)
+            if TREND_INCLUDE_ESTIMATED:
+                values.append(value)
     coverage = len(values) / len(rows) if rows else 0.0
     average_value = round(sum(values) / len(values), 2) if values else None
+    if coverage >= 0.50:
+        summary_status = "VALID"
+    elif rows and status_counts.get("NOT_APPLICABLE", 0) == len(rows):
+        summary_status = "NOT_APPLICABLE"
+    elif rows and status_counts.get("ABSTAIN", 0) == len(rows):
+        summary_status = "ABSTAIN"
+    elif rows and status_counts.get("STALE", 0) == len(rows):
+        summary_status = "STALE"
+    else:
+        summary_status = "MISSING"
     return {
         "value": average_value if coverage >= 0.50 else None,
         "valid_count": valid_count,
         "estimated_count": estimated_count,
+        "used_count": len(values),
         "total_count": len(rows),
         "coverage": round(coverage, 4),
-        "status": "VALID" if coverage >= 0.50 else "MISSING",
+        "estimated_included": TREND_INCLUDE_ESTIMATED,
+        "status_counts": status_counts,
+        "status": summary_status,
     }
 
 
@@ -466,6 +498,8 @@ def build_payload(screen: Path, shortlist: Path, universe: Path, history: Path |
                 "CIK": cik_map.get(symbol, ""),
                 "IsShortlist": symbol in shortlist_set,
                 "Metric_Metadata": metadata,
+                "Data_Integrity_Summary": data_integrity_summary(metadata),
+                "Data_Integrity_Complete": truthy(row.get("Metric_Data_Complete")),
             }
             for field, meta in metadata.items():
                 if field in normalized and isinstance(meta, dict):
@@ -476,6 +510,16 @@ def build_payload(screen: Path, shortlist: Path, universe: Path, history: Path |
     for rank, row in enumerate(stocks, 1):
         row["Rank"] = rank
     attach_theme_tags(stocks)
+    integrity_totals = {
+        status: sum(
+            int(row.get("Data_Integrity_Summary", {}).get(status, 0))
+            for row in stocks
+        )
+        for status in (
+            "VALID", "ESTIMATED", "MISSING", "NOT_APPLICABLE",
+            "ABSTAIN", "STALE", "INVALID",
+        )
+    }
     groups = build_trend_groups(stocks)
     history_payload = load_trend_history(history)
     if history_payload.get("policy_version") != DASHBOARD_TREND_POLICY_VERSION:
@@ -487,6 +531,7 @@ def build_payload(screen: Path, shortlist: Path, universe: Path, history: Path |
             "total": len(stocks),
             "eligible": sum(truthy(row.get("Long_Term_Eligible")) for row in stocks),
             "shortlist": len(shortlist_set),
+            "metric_status_counts": integrity_totals,
         },
         "trend_baseline": {
             "status": "與上次比較" if history_payload.get("groups") else "建立基準中",
@@ -504,12 +549,14 @@ PAGE = r'''<!doctype html>
 <title>Alpha Engine 長期價值研究台</title>
 <style>
 :root{--bg:#07111f;--panel:#0d1b2d;--line:#29425f;--text:#eef5ff;--muted:#9fb2c9;--blue:#62adff;--green:#58d5a0;--yellow:#f3cb67;--red:#ff7b86}*{box-sizing:border-box}body{margin:0;background:linear-gradient(145deg,#07111f,#0a1b2e);color:var(--text);font-family:system-ui,"Noto Sans TC",sans-serif}.shell{width:min(1320px,calc(100% - 24px));margin:auto;padding:24px 0 56px}.panel{background:rgba(13,27,45,.96);border:1px solid var(--line);border-radius:18px;box-shadow:0 16px 44px #0005}.hero{padding:24px;display:flex;justify-content:space-between;gap:20px;align-items:end}.hero h1{margin:4px 0 8px;font-size:clamp(28px,4vw,46px)}.hero p,.muted{color:var(--muted)}.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:14px 0}.stat{padding:16px}.stat small{display:block;color:var(--muted)}.stat strong{font-size:27px}.theme,.emerging{padding:16px;margin:14px 0}.theme h2,.emerging h2{margin:0 0 4px}.themegrid{display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-top:12px}.emerginggrid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:12px}.theme-card,.emerging-card{padding:12px;border:1px solid var(--line);border-radius:14px;background:#091827;cursor:pointer;min-height:190px}.emerging-card{cursor:default}.theme-card:hover,.theme-card.active{border-color:var(--blue);box-shadow:0 0 0 1px var(--blue) inset}.theme-card b,.emerging-card b{display:block;margin-bottom:7px}.theme-card small,.emerging-card small{display:block;color:var(--muted);line-height:1.45}.theme-card .nums,.emerging-card .nums{margin-top:9px;color:var(--green)}.layers,.reasons{margin-top:8px;font-size:12px;color:var(--muted);line-height:1.5}.tools{display:grid;grid-template-columns:2fr 1fr 1.3fr 1fr auto;gap:9px;padding:12px}input,select,button{font:inherit;border:1px solid var(--line);border-radius:11px;padding:10px;background:#091827;color:var(--text)}button{cursor:pointer}button:hover{border-color:var(--blue)}.watch{display:flex;gap:9px;align-items:center;padding:12px;margin-top:12px}.watch input{max-width:230px}.table{margin-top:12px;overflow:auto}table{width:100%;border-collapse:collapse}th,td{padding:12px;border-bottom:1px solid var(--line);text-align:left}th{font-size:12px;color:var(--muted)}tbody tr{cursor:pointer}tbody tr:hover{background:#17314b88}.badge{display:inline-block;padding:3px 7px;border:1px solid var(--line);border-radius:999px;font-size:12px;margin:1px}.good{color:var(--green)}.warn{color:var(--yellow)}.danger{color:var(--red)}dialog{width:min(1000px,calc(100% - 20px));max-height:90vh;padding:0;background:#0a1728;color:var(--text);border:1px solid var(--line);border-radius:18px}dialog::backdrop{background:#0010}.head{position:sticky;top:0;background:#0a1728ee;padding:15px;display:flex;justify-content:space-between;border-bottom:1px solid var(--line)}.body{padding:18px}.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:9px}.metric,.box{padding:12px;border:1px solid var(--line);border-radius:12px;background:var(--panel)}.metric small{display:block;color:var(--muted);margin-bottom:5px}.section{margin-top:18px}.actions{display:flex;gap:8px;flex-wrap:wrap}a{color:var(--blue)}.footer{text-align:center;color:var(--muted);font-size:12px;margin-top:18px}@media(max-width:980px){.themegrid,.emerginggrid{grid-template-columns:repeat(2,1fr)}.tools{grid-template-columns:1fr 1fr}}@media(max-width:760px){.hero{display:block}.stats,.grid{grid-template-columns:repeat(2,1fr)}.watch{align-items:stretch;flex-direction:column}.watch input{max-width:none}.optional{display:none}}@media(max-width:520px){.stats,.grid,.tools,.themegrid,.emerginggrid{grid-template-columns:1fr}}
+.integrity{padding:16px;margin:14px 0}.integrity h2{margin:0 0 10px}.integritygrid{display:grid;grid-template-columns:repeat(7,1fr);gap:8px}.integritygrid span{padding:10px;border:1px solid var(--line);background:#091827}.integritygrid small{display:block;color:var(--muted)}@media(max-width:760px){.integritygrid{grid-template-columns:repeat(2,1fr)}}
 </style></head><body><main class="shell">
 <section class="hero panel"><div><span class="badge good">不依賴外部 AI</span><h1>Alpha Engine 長期價值研究台</h1><p>Mode C 整理數據與風險；候選風口偵測只負責提出線索，不自動定案。</p></div><div class="muted">QQQ 40% · VOO 30% · 主動個股 0–30%<br>單股上限 3% · 單一主動產業上限 9%</div></section>
 <section class="stats"><div class="stat panel"><small>本次分析</small><strong id="total">0</strong></div><div class="stat panel"><small>研究合格</small><strong id="eligible">0</strong></div><div class="stat panel"><small>分散 shortlist</small><strong id="shortlist">0</strong></div><div class="stat panel"><small>我的追蹤</small><strong id="watchCount">0</strong></div></section>
+<section class="integrity panel"><h2>資料完整性</h2><div id="integritySummary" class="integritygrid"></div></section>
 <section class="emerging panel"><h2>候選風口偵測</h2><p class="muted" id="baseline"></p><div id="emergingCards" class="emerginggrid"></div></section>
 <section class="theme panel"><h2>主題擴散鏈：一階 → 二階 → 三階</h2><p class="muted">用主題找研究方向，不用主題替你下買賣決定。點卡片可篩出相關公司，卡片會列出每一層的高分候選。</p><div id="themeCards" class="themegrid"></div></section>
-<section class="tools panel"><input id="search" placeholder="搜尋 ticker、產業、結論或主題"><select id="view"><option value="all">全部結果</option><option value="shortlist">Shortlist</option><option value="eligible">研究合格</option><option value="abstain">暫不判斷</option><option value="watch">我的追蹤</option></select><select id="theme"><option value="">不限主題</option></select><select id="min"><option value="0">不限分數</option><option>60</option><option>70</option><option>75</option><option>80</option></select><button id="refresh">重新整理</button></section>
+<section class="tools panel"><input id="search" placeholder="搜尋 ticker、產業、結論或主題"><select id="view"><option value="all">全部結果</option><option value="complete">只看完整資料</option><option value="estimated">含估計值</option><option value="missing">缺資料</option><option value="specialized">專用模型</option><option value="general">一般企業</option><option value="shortlist">Shortlist</option><option value="eligible">研究合格</option><option value="abstain">暫不判斷</option><option value="watch">我的追蹤</option></select><select id="theme"><option value="">不限主題</option></select><select id="min"><option value="0">不限分數</option><option>60</option><option>70</option><option>75</option><option>80</option></select><button id="refresh">重新整理</button></section>
 <section class="watch panel"><input id="addTicker" maxlength="10" placeholder="輸入想追蹤的 ticker"><button id="add">加入追蹤</button><button id="export">匯出追蹤名單</button><span class="muted">名單只存於你的瀏覽器，不會上傳。</span></section>
 <section class="table panel"><table><thead><tr><th>排名</th><th>Ticker</th><th>分數</th><th>結論</th><th class="optional">產業</th><th class="optional">主題</th><th class="optional">Real FCF Yield</th><th>追蹤</th></tr></thead><tbody id="rows"></tbody></table><p id="empty" class="muted" style="padding:20px" hidden>沒有符合條件的股票。</p></section><div id="updated" class="footer"></div></main>
 <dialog id="detail"><div class="head"><strong id="detailTitle"></strong><button id="close">關閉</button></div><div class="body" id="detailBody"></div></dialog>
@@ -523,15 +570,17 @@ function load(){try{return new Set((JSON.parse(localStorage.getItem(key)||'[]'))
 function toggle(t){t=norm(t);if(!t)return;watch.has(t)?watch.delete(t):watch.add(t);save();render()}
 function tagBadges(x){let t=tags(x);return t.length?t.slice(0,2).map(a=>`<span class="badge warn">${e(a)}</span>`).join(''):'<span class="muted">無</span>'}
 function layerBadges(x){let t=layerTags(x);return t.length?t.map(a=>`<span class="badge good">${e(a)}</span>`).join(''):'<span class="muted">尚無層級</span>'}
-function visible(){let q=$('#search').value.toLowerCase(),v=$('#view').value,m=Number($('#min').value),theme=$('#theme').value;let out=stocks.filter(x=>{let hay=[x.Ticker,x.Sector,x.Industry,x.Status,x.Verdict,x.Model_Route,x.Industry_Model_Key,x.Decision_State,...tags(x),...layerTags(x)].join(' ').toLowerCase();return(!q||hay.includes(q))&&(m<=0||(n(x.Long_Term_Score)??-1)>=m)&&(!theme||themeIds(x).includes(theme))&&(v!=='shortlist'||yes(x.IsShortlist))&&(v!=='eligible'||yes(x.Long_Term_Eligible))&&(v!=='abstain'||x.Decision_State==='ABSTAIN')&&(v!=='watch'||watch.has(x.Ticker))});if(v==='watch')for(let t of watch)if(!map.has(t)&&(!q||t.toLowerCase().includes(q)))out.push({Ticker:t,Status:'尚未在本次篩選資料',Theme_Tags:[],Theme_Ids:[],Theme_Layer_Map:{},Theme_Layer_Tags:[]});return out}
+function integrityCount(x,status){return Number((x.Data_Integrity_Summary||{})[status]||0)}
+function visible(){let q=$('#search').value.toLowerCase(),v=$('#view').value,m=Number($('#min').value),theme=$('#theme').value;let out=stocks.filter(x=>{let hay=[x.Ticker,x.Sector,x.Industry,x.Status,x.Verdict,x.Model_Route,x.Industry_Model_Key,x.Decision_State,...tags(x),...layerTags(x)].join(' ').toLowerCase(),special=x.Industry_Model_Key&&x.Industry_Model_Key!=='GENERAL_CORPORATE';return(!q||hay.includes(q))&&(m<=0||(n(x.Long_Term_Score)??-1)>=m)&&(!theme||themeIds(x).includes(theme))&&(v!=='complete'||yes(x.Data_Integrity_Complete))&&(v!=='estimated'||integrityCount(x,'ESTIMATED')>0)&&(v!=='missing'||integrityCount(x,'MISSING')>0)&&(v!=='specialized'||special)&&(v!=='general'||!special)&&(v!=='shortlist'||yes(x.IsShortlist))&&(v!=='eligible'||yes(x.Long_Term_Eligible))&&(v!=='abstain'||x.Decision_State==='ABSTAIN')&&(v!=='watch'||watch.has(x.Ticker))});if(v==='watch')for(let t of watch)if(!map.has(t)&&(!q||t.toLowerCase().includes(q)))out.push({Ticker:t,Status:'尚未在本次篩選資料',Theme_Tags:[],Theme_Ids:[],Theme_Layer_Map:{},Theme_Layer_Tags:[]});return out}
 function renderEmerging(){let base=data.trend_baseline||{};$('#baseline').textContent=`狀態：${base.status||'建立基準中'}${base.previous_generated_at?'；上次資料：'+new Date(base.previous_generated_at).toLocaleString('zh-TW'):''}。候選只代表待查線索，不是買入訊號。`;$('#emergingCards').innerHTML=emerging.length?emerging.map(c=>`<div class="emerging-card"><b>${e(c.name)}</b><span class="badge warn">${e(c.status)}</span><span class="badge ${c.confidence==='高'?'good':'warn'}">信心 ${e(c.confidence)}</span><div class="nums">分數 ${f(c.signal_score,1)} · ${e(c.kind)}</div><small>Top: ${(c.top||[]).map(e).join(', ')||'待資料'}</small><div class="reasons">${(c.reasons||[]).map(r=>'• '+e(r)).join('<br>')}</div></div>`).join(''):'<div class="emerging-card"><b>尚無明確候選風口</b><small>如果是第一次跑，系統正在建立基準；下一次開始會比較產業、行業與主題層級是否變強。</small></div>'}
 function renderThemes(){let sel=$('#theme');sel.innerHTML='<option value="">不限主題</option>'+themes.map(t=>`<option value="${e(t.id)}">${e(t.name)}</option>`).join('');$('#themeCards').innerHTML=themes.map(t=>`<div class="theme-card" data-theme="${e(t.id)}"><b>${e(t.name)}</b><small>${e(t.thesis)}</small><div class="nums">${t.count} 檔 · eligible ${t.eligible} · shortlist ${t.shortlist}</div><small>Top: ${(t.top||[]).map(e).join(', ')||'待資料'}</small><div class="layers">${(t.layers||[]).map(l=>`${e(l.name)}：${(l.top||[]).slice(0,5).map(e).join(', ')||'待資料'}`).join('<br>')}</div></div>`).join('');document.querySelectorAll('[data-theme]').forEach(card=>card.onclick=()=>{$('#theme').value=card.dataset.theme;render()})}
-function render(){let out=visible(),active=$('#theme').value;document.querySelectorAll('[data-theme]').forEach(card=>card.classList.toggle('active',card.dataset.theme===active));$('#rows').innerHTML=out.map(x=>`<tr data-t="${e(x.Ticker)}"><td>${x.Rank||'-'}</td><td><b>${e(x.Ticker)}</b> ${yes(x.IsShortlist)?'<span class="badge good">Shortlist</span>':''}</td><td>${f(x.Long_Term_Score)}</td><td>${e(x.Verdict||x.Status||'待查')}</td><td class="optional">${e(x.Sector||x.Industry||'N/A')}</td><td class="optional">${tagBadges(x)}</td><td class="optional">${f(x.Real_FCF_Yield_pct,2,'%')}</td><td><button data-w="${e(x.Ticker)}">${watch.has(x.Ticker)?'移除':'加入'}</button></td></tr>`).join('');$('#empty').hidden=out.length>0;document.querySelectorAll('tr[data-t]').forEach(r=>r.onclick=a=>{if(!a.target.dataset.w)openDetail(r.dataset.t)});document.querySelectorAll('[data-w]').forEach(b=>b.onclick=a=>{a.stopPropagation();toggle(b.dataset.w)})}
+function render(){let out=visible(),active=$('#theme').value;document.querySelectorAll('[data-theme]').forEach(card=>card.classList.toggle('active',card.dataset.theme===active));$('#rows').innerHTML=out.map(x=>`<tr data-t="${e(x.Ticker)}"><td>${x.Rank||'-'}</td><td><b>${e(x.Ticker)}</b> ${yes(x.IsShortlist)?'<span class="badge good">Shortlist</span>':''}</td><td>${metricHtml(x,'Long_Term_Score')}</td><td>${e(x.Verdict||x.Status||'待查')}</td><td class="optional">${e(x.Sector||x.Industry||'N/A')}</td><td class="optional">${tagBadges(x)}</td><td class="optional">${metricHtml(x,'Real_FCF_Yield_pct',2,'%')}</td><td><button data-w="${e(x.Ticker)}">${watch.has(x.Ticker)?'移除':'加入'}</button></td></tr>`).join('');$('#empty').hidden=out.length>0;document.querySelectorAll('tr[data-t]').forEach(r=>r.onclick=a=>{if(!a.target.dataset.w)openDetail(r.dataset.t)});document.querySelectorAll('[data-w]').forEach(b=>b.onclick=a=>{a.stopPropagation();toggle(b.dataset.w)})}
 const fields=[['資料信心','Data_Confidence_Score'],['EDGAR acceptance 比例 (0-1)','Evidence_AcceptedAt_Ratio'],['長期綜合分數','Long_Term_Score'],['專用模型分數','Industry_Model_Score'],['專用模型覆蓋','Industry_Model_Coverage','%'],['品質分數','Quality_Score'],['價值分數','Value_Score'],['市場預期分數','Expectations_Score'],['營運拐點分數','Operating_Inflection_Score'],['資本配置分數','Capital_Allocation_Score'],['風險扣分','Risk_Penalty'],['TTM OCF','TTM_OCF_B','B'],['全部 CapEx','Dynamic_CapEx_B','B'],['Maintenance CapEx','Maintenance_CapEx_B','B'],['Growth CapEx','Growth_CapEx_B','B'],['CapEx / D&A','CapEx_to_DnA_x','x'],['TTM SBC','TTM_SBC_B','B'],['Real FCF Yield','Real_FCF_Yield_pct','%'],['全額 CapEx FCF Yield','Conservative_Real_FCF_Yield_pct','%'],['總負債','Total_Debt_B','B'],['現金','Cash_B','B'],['淨負債','Net_Debt_B','B'],['ICR','ICR','x'],['30% 壓力 ICR','Stress_ICR_30x','x'],['30% 壓力淨負債 / EBITDA','NetDebt_to_Stress_EBITDA_30x','x'],['30% 壓力 Real FCF','Stress_Real_FCF_30_B','B'],['ROIC','ROIC_pct','%'],['ROCE','ROCE_pct','%'],['5Y Real FCF 正值年數','Real_FCF_Positive_Years_5Y'],['5Y OCF / 淨利','OCF_to_NetIncome_5Y','x'],['EV / EBITDA','EV_EBITDA_x','x'],['P / E','PE_x','x'],['最新毛利率','GM_Latest_pct','%'],['三季毛利變化','GM_3Q_Change_pp','pp'],['三季營收變化','Rev_3Q_Change_pct','%'],['DSI 季變化','DSI_QoQ_Change_pct','%'],['DSI 年變化','DSI_YoY_Change_pct','%'],['一年股數變化','Share_Count_Change_pct','%'],['三年股數變化','Share_Count_Change_3Y_pct','%'],['一年拆股因子','Share_Split_Factor_1Y','x'],['三年拆股因子','Share_Split_Factor_3Y','x'],['隱含 EBITDA CAGR','Implied_EBITDA_CAGR_3Y_pct','%'],['CAGR 動態上限','Implied_CAGR_Limit_pct','%'],['CAGR 餘裕','Implied_CAGR_Headroom_pct','pp'],['反向估值必要報酬','Reverse_DCF_Required_Return_pct','%'],['EBITDA -30% 下檔','EBITDA_Drawdown_30_pct','%']];
 function sec(x){let c=String(x.CIK||'').replace(/\D/g,'');return c?`https://www.sec.gov/edgar/browse/?CIK=${encodeURIComponent(c)}&owner=exclude&action=getcompany`:''}function yahoo(t,p=''){return`https://finance.yahoo.com/quote/${encodeURIComponent(t)}/${p}`}function obj(raw){try{let v=JSON.parse(raw||'{}');return v&&typeof v==='object'?v:{}}catch{return{}}}function specializedPanel(x){if(!x.Industry_Model_Key||x.Industry_Model_Key==='GENERAL_CORPORATE')return'';let metrics=obj(x.Industry_Model_Metrics_JSON),components=obj(x.Industry_Model_Components_JSON),items=o=>Object.entries(o).map(([k,v])=>`<div class="metric"><small>${e(k)}</small><b>${typeof v==='number'?f(v):e(v??'N/A')}</b></div>`).join('');return`<div class="section"><h3>${e(x.Industry_Model_Key)} 專用模型</h3><div class="grid">${items(components)}${items(metrics)}</div><div class="box">${e(x.Industry_Model_Hard_Failures||'無硬性失敗')}<br>${e(x.Industry_Model_Warnings||'無模型警示')}</div></div>`}
 function prompt(x){let themeText=tags(x).length?tags(x).join('、'):'無明確主題標籤',layerText=layerTags(x).length?layerTags(x).join('；'):'尚無層級標籤',special=x.Industry_Model_Key&&x.Industry_Model_Key!=='GENERAL_CORPORATE';return[`請以中長期價值投資角度研究 ${x.Ticker}，不要直接下買賣指令。`,special?`專用模型：${x.Industry_Model_Key}；分數：${f(x.Industry_Model_Score)}；覆蓋：${f(x.Industry_Model_Coverage,1,'%')}；資料信心：${f(x.Data_Confidence_Score)}。`:`Quant 分數：${f(x.Long_Term_Score)}；品質：${f(x.Quality_Score)}；價值：${f(x.Value_Score)}；資本配置：${f(x.Capital_Allocation_Score)}。`,`主題標籤：${themeText}。受益層級：${layerText}。請判斷它是一階、二階或三階受益者，還是只是被題材蹭到。`,special?`專用指標：${x.Industry_Model_Metrics_JSON||'待查'}；警示：${x.Data_Quality_Flags||'無'}。`:`Real FCF Yield：${f(x.Real_FCF_Yield_pct,2,'%')}；ICR：${f(x.ICR,2,'x')}；ROIC：${f(x.ROIC_pct,2,'%')}。`,`債務來源：${x.Debt_Source_Method||'待查'}；ICR 口徑：${x.ICR_Method||'待查'}。`,'請用最新官方財報回答：','1. 三句話投資論點。','2. 最強反方論點。','3. thesis 失效條件。','4. 悲觀、基準、樂觀情境。','5. 核對該產業專用 KPI、現金流與資產負債表警訊。','6. 股數稀釋與管理層資本配置。','7. 與 QQQ/VOO 的重疊，以及額外持有理由。','8. 主題供應鏈位置、訂單能見度、瓶頸、二階受益是否已開始進財報，以及是否已反映在估值。','9. 尚無法確認的監管、產業或公司自訂揭露。'].join('\n')}
 async function copy(t){try{await navigator.clipboard.writeText(t)}catch{let a=document.createElement('textarea');a.value=t;document.body.append(a);a.select();document.execCommand('copy');a.remove()}alert('已複製 AI 研究提示。')}
 function openDetail(t){let x=map.get(t)||{Ticker:t,Status:'尚未在本次篩選資料',Theme_Tags:[],Theme_Ids:[],Theme_Layer_Map:{},Theme_Layer_Tags:[]},s=sec(x),related=themeIds(x).map(id=>themeMap.get(id)).filter(Boolean);$('#detailTitle').textContent=x.Ticker;$('#detailBody').innerHTML=`<div class="actions"><button id="dw">${watch.has(t)?'移除追蹤':'加入追蹤'}</button><button id="cp">複製 AI 研究提示</button>${s?`<a target="_blank" rel="noopener" href="${s}">SEC 官方財報</a>`:''}<a target="_blank" rel="noopener" href="${yahoo(t,'financials')}">財務報表頁</a><a target="_blank" rel="noopener" href="${yahoo(t)}">市場資料頁</a></div><div class="section"><h3>主題擴散鏈位置</h3><div class="box">${layerBadges(x)}<br><br>${related.map(r=>`<b>${e(r.name)} / ${e(layerMap(x)[r.id]||'待判斷')}</b><br>${e(r.thesis)}<br>要問：${(r.questions||[]).map(e).join('；')}`).join('<br><br>')||'尚無主題標籤，請從基本面而非題材開始。'}</div></div><div class="section"><h3>模型結論</h3><div class="box">${e(x.Scoring_Framework||x.Model_Route||'未分類')} / ${e(x.Decision_State||'待查')}<br>${e(x.Research_Action||x.Verdict||x.Status||'待查')}</div></div>${specializedPanel(x)}<div class="section"><h3>財務與風險指標</h3><div class="grid">${fields.map(a=>`<div class="metric"><small>${a[0]}</small><b>${f(x[a[1]],2,a[2]||'')}</b></div>`).join('')}</div></div><div class="section"><h3>資料品質與待查事項</h3><div class="box">債務來源：${e(x.Debt_Source_Method||'待查')}<br>ICR 口徑：${e(x.ICR_Method||'待查')}<br>${e(x.GM_Diagnosis||'')}<br>${e(x.Data_Quality_Flags||'無資料品質警示')}<br>${e(x.Data_Confidence_Reasons||'無信心降級原因')}<br>${e(x.Agent_Tasks||'請從 SEC 官方財報開始查核。')}</div></div>`;$('#dw').onclick=()=>toggle(t);$('#cp').onclick=()=>copy(prompt(x));if(!$('#detail').open)$('#detail').showModal()}
+const integrityLabels={VALID:'有效數值',ESTIMATED:'估計值',MISSING:'缺資料',NOT_APPLICABLE:'不適用',ABSTAIN:'暫不判斷',STALE:'資料過舊',INVALID:'計算無效'},integrityTotals=(data.stats||{}).metric_status_counts||{};$('#integritySummary').innerHTML=Object.entries(integrityLabels).map(([k,label])=>`<span><small>${e(label)}</small><b>${e(integrityTotals[k]||0)}</b></span>`).join('');
 $('#total').textContent=data.stats.total;$('#eligible').textContent=data.stats.eligible;$('#shortlist').textContent=data.stats.shortlist;$('#updated').textContent='資料更新：'+new Date(data.generated_at).toLocaleString('zh-TW')+' · 本網站僅供研究，不是投資建議。';renderEmerging();renderThemes();['#search','#view','#theme','#min'].forEach(s=>$(s).oninput=render);$('#refresh').onclick=()=>{$('#theme').value='';render()};$('#add').onclick=()=>{let t=norm($('#addTicker').value);if(t){watch.add(t);$('#addTicker').value='';save();render();openDetail(t)}};$('#addTicker').onkeydown=a=>{if(a.key==='Enter')$('#add').click()};$('#export').onclick=()=>{let text=[...watch].sort().join('\n'),a=document.createElement('a');a.href=URL.createObjectURL(new Blob([text+(text?'\n':'')],{type:'text/plain;charset=utf-8'}));a.download='alpha-engine-watchlist.txt';a.click();URL.revokeObjectURL(a.href)};$('#close').onclick=()=>$('#detail').close();save();render();
 </script></body></html>'''
 

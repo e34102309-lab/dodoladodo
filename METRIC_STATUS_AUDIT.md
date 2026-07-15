@@ -7,6 +7,9 @@
 3. Trend averages accepted every numeric-looking value and candidate rules used `value or 0`, hiding missingness and coverage.
 4. `Real_FCF_Yield_pct` used enterprise value as its denominator even though the label did not identify the denominator.
 5. Net-cash interest coverage was represented as infinity, even though the correct display state is non-binding/not applicable.
+6. A non-empty SEC series without a usable annual/quarterly chain could fall through to a derived annual value of zero.
+7. SEC-reported zero SBC could be overwritten by a positive Yahoo fallback, while absent Yahoo SBC, price, market cap, or EBITDA first became zero.
+8. REIT goodwill, intangibles, property gains, impairment, and tax gaps were coalesced to zero before FFO/EBITDAre calculation.
 
 ## B. Changed Files
 
@@ -18,6 +21,7 @@
 - `validate_mode_c_outputs.py`: CSV, metadata, evidence, dashboard, and trend invariants.
 - `.github/workflows/alpha_hunt.yml`: compile the contract and validate the final dashboard.
 - `tests/`: regression fixtures and edge-condition coverage.
+- `mode_c_fixture_pipeline.py`: deterministic end-to-end GLW/PGR/IFNNY output pipeline.
 
 ## C. Metric Schema
 
@@ -36,6 +40,8 @@ Every dashboard metric has:
 
 Allowed statuses are `VALID`, `MISSING`, `NOT_APPLICABLE`, `ABSTAIN`, `STALE`, `INVALID`, and `ESTIMATED`. Null statuses cannot carry a value. `VALID` and `ESTIMATED` must carry a finite value. A reported financial zero is retained only when selected evidence supports it.
 
+Contract v2 adds explicit `Maintenance_Real_FCF_B` and `Conservative_Real_FCF_B`, applicable/not-applicable lists, per-row status counts, latest metric date, required/optional gaps, Yahoo/annual/FX fallback flags, estimated-CapEx usage, and a data-complete flag.
+
 ## D. Validation Rules
 
 - CSV values must equal `Metric_Metadata_JSON` values.
@@ -48,10 +54,14 @@ Allowed statuses are `VALID`, `MISSING`, `NOT_APPLICABLE`, `ABSTAIN`, `STALE`, `
 - Trend averages include only `VALID` and separately counted `ESTIMATED` observations.
 - Trend metrics below 50% coverage are null; their groups cannot become emerging candidates.
 - Dashboard stock metadata and values must match the validated screen exactly.
+- Maintenance and conservative FCF amounts are recomputed from OCF, CapEx, and SBC; market-cap and EV yields are recomputed from those amounts.
+- `mode_c_zero_audit.json` classifies every literal important-metric zero and rejects the pipeline when `invalid_zero` is nonzero.
+- Dashboard aggregate integrity counts and per-row audit fields must match the CSV.
+- Trend summaries must have `estimated_included=false` and `used_count == valid_count`.
 
 ## E. Test Coverage
 
-The suite contains 133 tests. New regressions cover GLW missing CapEx, PGR P&C applicability, IFNNY-style ADS reconciliation, evidence-backed true zero, low historical/trend coverage, split-adjusted per-share growth, dashboard null handling, and output consistency.
+The suite contains 142 tests. New regressions cover GLW/PGR/IFNNY end-to-end fixtures, missing SBC, true-zero CapEx, negative FCF, REIT missing adjustments, unusable annual fallback, explicit FCF/yield recomputation, EV-yield suppression when enterprise value is unavailable, zero classification, dashboard integrity filters, and exclusion of estimated trend values.
 
 Existing tests continue to cover missing SBC, negative FCF, net cash with missing interest, non-positive EV, bank/insurance/REIT/utility/cyclical routes, split handling, amendments, and point-in-time decision availability.
 
@@ -59,12 +69,14 @@ Existing tests continue to cover missing SBC, negative FCF, net cash with missin
 
 | Case | Before | After |
 | --- | --- | --- |
-| GLW | Missing general metrics could render `0.00` | FCF, CapEx, and EV/EBITDA are null with `ABSTAIN` |
+| GLW | Missing general metrics could render `0.00` | Live row: FCF, CapEx, and EV/EBITDA are null with `ABSTAIN`; complete deterministic fixture produces auditable positive FCF yields |
 | PGR | Generic corporate fields could appear as zeros beside P&C results | Insurance metrics remain visible; generic FCF, CapEx, and EV/EBITDA are `NOT_APPLICABLE` |
 | IFNNY | Foreign/ADS reconciliation could proceed without explicit FX/ADR metadata | Fixture and runtime gate return `ABSTAIN` with null FX and ADR ratio |
 | FRO | Missing specialized CapEx leaked as `0.0` | Unsupported zero is null with missing/abstain status |
 
 IFNNY is not present in the current 1,209-stock output, so its behavior is enforced by a dedicated fixture rather than claimed as a live-row comparison.
+
+The current 1,209-row backfill classifies 1,430 evidenced/formula zeros, 31,050 not-applicable metric states, and 30,565 missing/abstain/stale/invalid states. `invalid_zero` is zero.
 
 ## G. Known Limits
 
@@ -72,15 +84,17 @@ IFNNY is not present in the current 1,209-stock output, so its behavior is enfor
 - Per-share CAGR requires positive, comparable annual endpoints exactly three years apart. It abstains across missing periods or non-positive bases.
 - Generic corporate EBITDA stress is implemented. Specialized industry stress uses an explicit extension status and does not display generic stress values as zeros; dedicated regulatory/catastrophe/credit stress modules remain future work.
 - Short-interest freshness still depends on the configured market-data source and is not treated as SEC evidence.
+- Goodwill, intangibles, REIT gain/impairment/tax, statutory insurance capital, bank regulatory detail, occupancy, duration gap, and similar company-specific disclosures can still require manual primary-document review. Missing values now abstain instead of becoming zero.
 
 ## H. Reproduce
 
 ```powershell
 & D:\dobird\.venv\Scripts\python.exe -m unittest discover -s tests -q
+& D:\dobird\.venv\Scripts\python.exe mode_c_fixture_pipeline.py --output-dir fixture_output
 & D:\dobird\.venv\Scripts\python.exe mode_c_metric_contract.py
 & D:\dobird\.venv\Scripts\python.exe build_mode_c_dashboard.py
 & D:\dobird\.venv\Scripts\python.exe enhance_dashboard_ui.py public/index.html
-& D:\dobird\.venv\Scripts\python.exe validate_mode_c_outputs.py --dashboard public/data.json
+& D:\dobird\.venv\Scripts\python.exe validate_mode_c_outputs.py --dashboard public/data.json --zero-report mode_c_zero_audit.json
 ```
 
 The local backfill validated 1,209 screen rows, 12 shortlist rows, 164,765 selected evidence records, and 135 trend groups without another SEC fetch.
