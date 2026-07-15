@@ -49,7 +49,7 @@ PowerShell 先測試 20 檔：
 - 中斷、斷線或限流後重跑相同指令即可接續；不要加 `--fresh`。
 - 未完成時只更新 `*.partial.csv`，不覆蓋上次完整 `qualified_universe.csv`。
 - `hunter_audit.csv` 保留全部通過、淘汰與待查原因。
-- GitHub Actions 每週三、五台灣時間 09:00 使用最近一次完整 universe 跑 Mode C；每月 1 日才重跑全市場初篩。push/PR 不重跑耗時初篩。
+- GitHub Actions 每週於美股週四收盤後（台灣時間週五 06:00）使用最近一次完整 universe 跑 Mode C；每月 1 日才重跑全市場初篩。push/PR 不重跑耗時初篩。
 - 平日若 `yf.info` 暫時被限流，只沿用最近一次完整獵人已驗證的 `quoteType`、交易所、sector 與 industry；價格、SBC、負債及財報數字不會由舊 metadata 猜測。
 - 第一層遇到專用產業會跑低誤殺的產業初篩，例如銀行／保險的負淨值、REIT 的已揭露 FFO、utility 的 EBITDA+OCF；不使用一般企業 OCF、毛利與 Debt/EBITDA 規則。Yahoo 欄位不足只會留下警示並交給 SEC 深篩，明確硬性失敗才淘汰。
 - 深篩在價格、流動性或市值前置閘門就停止時，輸出仍保留月度已驗證的 sector/industry 與原始模型 key，不用 dataclass 預設值假裝已跑一般企業模型。fee-based 金融公司只有在 SEC 顯示 loans/assets 至少 20% 且有信用損失準備時，才可透明細分成 `FINANCIAL_LENDER`；`Initial_Industry_Model_Key`、`Model_Route_Refined` 與原因必須寫入輸出。
@@ -120,7 +120,7 @@ python build_mode_c_dashboard.py
 python enhance_dashboard_ui.py public/index.html
 ```
 
-本機產生的網站位於 `public/index.html`。`qualified_universe.csv` 可由本機手動更新；GitHub Actions 每週三、五台灣時間 09:00 以現有 universe 更新 Mode C，每月 1 日才重跑全市場初篩並提交新的 `qualified_universe.csv`。PR 只跑品質檢查。
+本機產生的網站位於 `public/index.html`。`qualified_universe.csv` 可由本機手動更新；GitHub Actions 每週於美股週四收盤後（台灣時間週五 06:00）以現有 universe 更新 Mode C，每月 1 日才重跑全市場初篩並提交新的 `qualified_universe.csv`。PR 只跑品質檢查。
 
 ## 靜態研究網站
 
