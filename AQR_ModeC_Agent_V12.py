@@ -48,6 +48,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 from mode_c_evidence import EVIDENCE_COLUMNS, GLOBAL_EVIDENCE_LEDGER
+from mode_c_metric_contract import annotate_rows, finite_number
 from mode_c_industry_models import (
     SPECIALIZED_MODEL_KEYS,
     IndustryModelEvaluation,
@@ -1512,8 +1513,20 @@ def estimate_maintenance_capex_profile(
         revenue_growth = _revenue_growth_for_year(revenue, latest_year)
 
     maintenance = estimate_maintenance_capex_amount(capex, dna_anchor, revenue_growth)
+    base = min(capex, dna_anchor) if dna_anchor > 0 else capex
+    excess = max(0.0, capex - base)
+    excess_ratio = _maintenance_excess_ratio(revenue_growth)
+    maintenance_low = min(capex, base + excess * max(0.0, excess_ratio - 0.15))
+    maintenance_high = min(capex, base + excess * min(1.0, excess_ratio + 0.15))
     capex_to_dna = safe_div(capex, dna_anchor) if dna_anchor > 0 else np.nan
     growth_capex = max(0.0, capex - maintenance)
+    complete_dna_years = sum(math.isfinite(float(value)) for value in dna.values())
+    if dna_anchor <= 0:
+        confidence = "LOW"
+    elif complete_dna_years >= 3 and math.isfinite(revenue_growth):
+        confidence = "HIGH"
+    else:
+        confidence = "MEDIUM"
     growth_capex_trap = bool(
         math.isfinite(revenue_growth)
         and revenue_growth <= 0.0
@@ -1522,10 +1535,14 @@ def estimate_maintenance_capex_profile(
     )
     return {
         "maintenance_capex_b": maintenance,
+        "maintenance_capex_low_b": maintenance_low,
+        "maintenance_capex_high_b": maintenance_high,
         "growth_capex_b": growth_capex,
+        "dna_anchor_b": dna_anchor,
         "revenue_growth_pct": revenue_growth * 100 if math.isfinite(revenue_growth) else np.nan,
         "capex_to_dna": capex_to_dna,
         "growth_capex_trap": growth_capex_trap,
+        "confidence": confidence,
         "method": (
             "D&A anchored maintenance CapEx; excess CapEx classified by trailing revenue growth"
             if dna_anchor > 0
@@ -1585,6 +1602,80 @@ def calculate_fcf_stability(
         "real_fcf_to_net_income": safe_div(sum(real_fcf_values), total_ni) if total_ni > 0 else np.nan,
         "ocf_3y_cumulative_b": ocf_3y / 1e9 if math.isfinite(ocf_3y) else np.nan,
         "ocf_3y_years": float(len(latest_three)),
+    }
+
+
+def calculate_per_share_growth_3y(
+    sec: SECDataDistiller,
+    df_ocf: pd.DataFrame,
+    df_capex: pd.DataFrame,
+    df_sbc: pd.DataFrame,
+    df_dna: pd.DataFrame,
+    df_rev: pd.DataFrame,
+    df_net_income: pd.DataFrame,
+    df_shares: pd.DataFrame,
+) -> Dict[str, float]:
+    """Calculate split-adjusted annual per-share growth without filling gaps."""
+    ocf = annual_values_by_year(sec, df_ocf, "OCF")
+    capex = annual_values_by_year(sec, df_capex, "CapEx")
+    sbc = annual_values_by_year(sec, df_sbc, "SBC")
+    dna = annual_values_by_year(sec, df_dna, "DnA")
+    revenue = annual_values_by_year(sec, df_rev, "Revenue")
+    net_income = annual_values_by_year(sec, df_net_income, "NetIncome")
+    complete_years = sorted(set(ocf) & set(capex) & set(sbc) & set(revenue) & set(net_income))
+    if not complete_years:
+        return {"fcf_cagr_pct": np.nan, "eps_cagr_pct": np.nan, "years": 0.0}
+    latest_year = complete_years[-1]
+    base_year = latest_year - 3
+    if base_year not in complete_years:
+        return {"fcf_cagr_pct": np.nan, "eps_cagr_pct": np.nan, "years": 0.0}
+
+    share_facts = sec._instant_facts(df_shares)
+    if share_facts.empty or "end" not in share_facts.columns:
+        return {"fcf_cagr_pct": np.nan, "eps_cagr_pct": np.nan, "years": 0.0}
+
+    def shares_for_year(year: int) -> float:
+        candidates = share_facts[pd.to_datetime(share_facts["end"]).dt.year == year]
+        if candidates.empty:
+            return np.nan
+        selected = candidates.sort_values("end").iloc[-1]
+        adjusted, _ = split_adjusted_share_value(
+            sec.ticker,
+            float(selected["val"]),
+            selected.get("end"),
+            selected.get("available_to_model_at", selected.get("filed")),
+            str(selected.get("concept") or ""),
+            sec.decision_timestamp,
+        )
+        sec._mark_rows_used(selected, "SharesOutstanding:per-share-growth")
+        return adjusted / 1e9
+
+    def annual_real_fcf(year: int) -> float:
+        maintenance = estimate_maintenance_capex_amount(
+            abs(capex[year]),
+            _recent_average(dna, year),
+            _revenue_growth_for_year(revenue, year),
+        )
+        return (ocf[year] - maintenance - abs(sbc[year])) / 1e9
+
+    latest_shares = shares_for_year(latest_year)
+    base_shares = shares_for_year(base_year)
+    if not all(math.isfinite(value) and value > 0 for value in (latest_shares, base_shares)):
+        return {"fcf_cagr_pct": np.nan, "eps_cagr_pct": np.nan, "years": 0.0}
+    latest_fcf_ps = safe_div(annual_real_fcf(latest_year), latest_shares)
+    base_fcf_ps = safe_div(annual_real_fcf(base_year), base_shares)
+    latest_eps = safe_div(net_income[latest_year] / 1e9, latest_shares)
+    base_eps = safe_div(net_income[base_year] / 1e9, base_shares)
+
+    def cagr(latest: float, base: float) -> float:
+        if not all(math.isfinite(value) and value > 0 for value in (latest, base)):
+            return np.nan
+        return ((latest / base) ** (1.0 / 3.0) - 1.0) * 100.0
+
+    return {
+        "fcf_cagr_pct": cagr(latest_fcf_ps, base_fcf_ps),
+        "eps_cagr_pct": cagr(latest_eps, base_eps),
+        "years": 3.0,
     }
 
 
@@ -1858,6 +1949,10 @@ def historical_valuation(
         "pe_percentile": np.nan,
         "ev_ebitda_floor": np.nan,
         "pe_floor": np.nan,
+        "valid_years": 0,
+        "total_years": 0,
+        "coverage": 0.0,
+        "coverage_status": "MISSING",
     }
     # Use the first filing for each historical period so later restatements do
     # not introduce look-ahead into the price/multiple history.
@@ -1888,8 +1983,10 @@ def historical_valuation(
         "LongTermDebtNoncurrent",
     }
 
+    candidate_rows = ebit_a.tail(10)
+    total_years = len(candidate_rows)
     rows = []
-    for _, erow in ebit_a.tail(10).iterrows():
+    for _, erow in candidate_rows.iterrows():
         period_end = pd.Timestamp(erow["end"])
         def latest_asof_row(
             frame: pd.DataFrame,
@@ -2098,6 +2195,9 @@ def historical_valuation(
     ev_hist = [r["EV_EBITDA"] for r in rows if math.isfinite(r["EV_EBITDA"]) and r["EV_EBITDA"] > 0]
     pe_hist = [r["PE"] for r in rows if math.isfinite(r["PE"]) and r["PE"] > 0]
     min_history = 5
+    valid_years = len(ev_hist)
+    coverage = valid_years / total_years if total_years else 0.0
+    coverage_status = "VALID" if valid_years >= min_history and coverage >= 0.60 else "MISSING"
     return {
         "ev_ebitda_hist": rows,
         "pe_hist": pe_hist,
@@ -2107,6 +2207,10 @@ def historical_valuation(
         "pe_percentile": percentile_rank(pe_hist, current_pe) if len(pe_hist) >= min_history else np.nan,
         "ev_ebitda_floor": low_percentile(ev_hist) if len(ev_hist) >= min_history else np.nan,
         "pe_floor": low_percentile(pe_hist) if len(pe_hist) >= min_history else np.nan,
+        "valid_years": valid_years,
+        "total_years": total_years,
+        "coverage": coverage,
+        "coverage_status": coverage_status,
     }
 
 def implied_ebitda_cagr(
@@ -3206,6 +3310,8 @@ class ModeCResult:
     Industry_Model_Components_JSON: str = ""
     Industry_Model_Warnings: str = ""
     Industry_Model_Hard_Failures: str = ""
+    Industry_Model_Required_Missing: str = ""
+    Industry_Model_Optional_Missing: str = ""
     Decision_State: str = ""
     Decision_Timestamp: str = ""
     Data_Confidence_Score: float = 100.0
@@ -3220,13 +3326,28 @@ class ModeCResult:
     Debt_Source_Method: str = ""
     Real_FCF_Yield_pct: float = np.nan
     Conservative_Real_FCF_Yield_pct: float = np.nan
+    Maintenance_Real_FCF_to_MarketCap_Yield_pct: float = np.nan
+    Conservative_Real_FCF_to_MarketCap_Yield_pct: float = np.nan
+    Maintenance_Real_FCF_to_EV_Yield_pct: float = np.nan
+    Conservative_Real_FCF_to_EV_Yield_pct: float = np.nan
+    Maintenance_Real_FCF_Yield_Low_pct: float = np.nan
+    Maintenance_Real_FCF_Yield_High_pct: float = np.nan
     TTM_OCF_B: float = np.nan
     Dynamic_CapEx_B: float = np.nan
     Maintenance_CapEx_B: float = np.nan
+    Maintenance_CapEx_Low_B: float = np.nan
+    Maintenance_CapEx_High_B: float = np.nan
+    Maintenance_CapEx_Confidence: str = ""
     Growth_CapEx_B: float = np.nan
     CapEx_to_DnA_x: float = np.nan
     CapEx_Reinvestment_Method: str = ""
     TTM_SBC_B: float = np.nan
+    SBC_Economic_Cost_B: float = np.nan
+    Net_Buyback_Yield_pct: float = np.nan
+    Buyback_Offset_Effective: bool = False
+    Per_Share_FCF_CAGR_3Y_pct: float = np.nan
+    Per_Share_EPS_CAGR_3Y_pct: float = np.nan
+    SBC_Attribution_JSON: str = ""
     ICR: float = np.nan
     ICR_Method: str = ""
     Real_Buyback_B: float = np.nan
@@ -3252,6 +3373,14 @@ class ModeCResult:
     PE_x: float = np.nan
     EV_EBITDA_10Y_Percentile: float = np.nan
     PE_10Y_Percentile: float = np.nan
+    Historical_Valuation_Valid_Years: float = 0.0
+    Historical_Valuation_Total_Years: float = 0.0
+    Historical_Valuation_Coverage: float = np.nan
+    Historical_Valuation_Status: str = ""
+    Point_in_Time_FX_Rate: float = np.nan
+    ADR_Ratio: float = np.nan
+    Industry_Stress_Extension_Status: str = "NOT_IMPLEMENTED"
+    Industry_Stress_Extension_Reason: str = "Generic EBITDA stress is only applicable to GENERAL_CORPORATE"
     EBITDA_Drawdown_15_pct: float = np.nan
     EBITDA_Drawdown_30_pct: float = np.nan
     Stress_ICR_15x: float = np.nan
@@ -4036,6 +4165,8 @@ def run_specialized_mode_c_pipeline(
         Industry_Model_Components_JSON=json.dumps(_specialized_json(evaluation.components), ensure_ascii=False, sort_keys=True),
         Industry_Model_Warnings="; ".join(evaluation.warnings),
         Industry_Model_Hard_Failures="; ".join(evaluation.hard_failures),
+        Industry_Model_Required_Missing="; ".join(evaluation.required_missing),
+        Industry_Model_Optional_Missing="; ".join(evaluation.optional_missing),
         Decision_State=decision_state,
         Decision_Timestamp=decision_timestamp.isoformat(),
         Data_Confidence_Score=float(confidence["score"]),
@@ -4052,10 +4183,13 @@ def run_specialized_mode_c_pipeline(
             else np.nan
         ),
         Debt_Source_Method=debt_method,
-        Real_FCF_Yield_pct=round(float(result_metrics.get("real_fcf_yield_pct")), 2) if is_finite(result_metrics.get("real_fcf_yield_pct")) else np.nan,
         TTM_OCF_B=round(float(result_metrics.get("ocf_ttm_b")), 3) if is_finite(result_metrics.get("ocf_ttm_b")) else np.nan,
         Dynamic_CapEx_B=round(float(result_metrics.get("capex_ttm_b")), 3) if is_finite(result_metrics.get("capex_ttm_b")) else np.nan,
         Maintenance_CapEx_B=round(float(result_metrics.get("maintenance_capex_b")), 3) if is_finite(result_metrics.get("maintenance_capex_b")) else np.nan,
+        Industry_Stress_Extension_Status="NOT_IMPLEMENTED",
+        Industry_Stress_Extension_Reason=(
+            f"{model_key} requires a dedicated industry stress extension; generic EBITDA shock is not displayed"
+        ),
         EBITDA_B=round(float(ebitda_value), 3) if is_finite(ebitda_value) else np.nan,
         ICR=(round(specialized_icr, 2) if math.isfinite(specialized_icr) else specialized_icr),
         ICR_Method=specialized_icr_method,
@@ -4317,6 +4451,16 @@ def _run_mode_c_pipeline_core(
 
 
         shares_sec_now, shares_1y_ago, shares_3y_ago = sec.get_shares_now_1y_3y(df_shares)
+        per_share_growth = calculate_per_share_growth_3y(
+            sec,
+            df_ocf,
+            df_capex,
+            df_sbc,
+            df_dna,
+            df_rev,
+            df_net_income,
+            df_shares,
+        )
         shares_now, shares_source = get_robust_shares(ticker, df_shares, sec, info)
         if shares_source == "SEC":
             latest_share_fact = sec._instant_facts(df_shares).tail(1)
@@ -4505,11 +4649,19 @@ def _run_mode_c_pipeline_core(
             sec, df_capex, df_dna, df_rev, dynamic_capex, dna_ttm
         )
         maintenance_capex = float(capex_profile["maintenance_capex_b"])
+        maintenance_capex_low = float(capex_profile["maintenance_capex_low_b"])
+        maintenance_capex_high = float(capex_profile["maintenance_capex_high_b"])
         growth_capex = float(capex_profile["growth_capex_b"])
         conservative_real_fcf = ocf_ttm - dynamic_capex - sbc_ttm
-        conservative_real_fcf_yield = safe_div(conservative_real_fcf, ev) * 100
         real_fcf = ocf_ttm - maintenance_capex - sbc_ttm
-        real_fcf_yield = safe_div(real_fcf, ev) * 100
+        real_fcf_low = ocf_ttm - maintenance_capex_high - sbc_ttm
+        real_fcf_high = ocf_ttm - maintenance_capex_low - sbc_ttm
+        real_fcf_yield = safe_div(real_fcf, mcap) * 100
+        conservative_real_fcf_yield = safe_div(conservative_real_fcf, mcap) * 100
+        real_fcf_to_ev_yield = safe_div(real_fcf, ev) * 100
+        conservative_real_fcf_to_ev_yield = safe_div(conservative_real_fcf, ev) * 100
+        real_fcf_yield_low = safe_div(real_fcf_low, mcap) * 100
+        real_fcf_yield_high = safe_div(real_fcf_high, mcap) * 100
         maintenance_source_ids = [
             str(payload.get("evidence_id") or "")
             for payload in [capex_evidence, dna_evidence, rev_evidence]
@@ -4521,6 +4673,22 @@ def _run_mode_c_pipeline_core(
             "D&A anchor plus revenue-growth classification of CapEx excess",
             maintenance_source_ids,
             "Maintenance_CapEx:model-input",
+        )
+        maintenance_capex_low_evidence_id = sec._record_derived_from_ids(
+            "Maintenance_CapEx_Low",
+            maintenance_capex_low,
+            "USD_B",
+            "low maintenance scenario: D&A anchor plus lower excess-CapEx allocation",
+            maintenance_source_ids,
+            "Maintenance_CapEx_Low:model-input",
+        )
+        maintenance_capex_high_evidence_id = sec._record_derived_from_ids(
+            "Maintenance_CapEx_High",
+            maintenance_capex_high,
+            "USD_B",
+            "high maintenance scenario: D&A anchor plus higher excess-CapEx allocation",
+            maintenance_source_ids,
+            "Maintenance_CapEx_High:model-input",
         )
         growth_capex_evidence_id = sec._record_derived_from_ids(
             "Growth_CapEx",
@@ -4578,12 +4746,12 @@ def _run_mode_c_pipeline_core(
             "EV_EBITDA:model-input",
         )
         real_fcf_yield_evidence_id = sec._record_derived_from_ids(
-            "Real_FCF_Yield",
+            "Real_FCF_to_MarketCap_Yield",
             real_fcf_yield,
             "percent",
-            "Real FCF / Enterprise Value",
-            [real_fcf_evidence_id, ev_evidence_id],
-            "Real_FCF_Yield:model-input",
+            "Maintenance Real FCF / Market Capitalization",
+            [real_fcf_evidence_id, market_cap_evidence_id],
+            "Real_FCF_to_MarketCap_Yield:model-input",
         )
         pe = safe_div(mcap, net_income_ttm)
         pe_evidence_id = sec._record_derived_from_ids(
@@ -4595,12 +4763,44 @@ def _run_mode_c_pipeline_core(
             "PE:model-input",
         )
         sec._record_derived_from_ids(
-            "Conservative_Real_FCF_Yield",
+            "Conservative_Real_FCF_to_MarketCap_Yield",
             conservative_real_fcf_yield,
+            "percent",
+            "Conservative Real FCF / Market Capitalization",
+            [conservative_fcf_evidence_id, market_cap_evidence_id],
+            "Conservative_Real_FCF_to_MarketCap_Yield:model-input",
+        )
+        sec._record_derived_from_ids(
+            "Real_FCF_to_EV_Yield",
+            real_fcf_to_ev_yield,
+            "percent",
+            "Maintenance Real FCF / Enterprise Value",
+            [real_fcf_evidence_id, ev_evidence_id],
+            "Real_FCF_to_EV_Yield:model-input",
+        )
+        sec._record_derived_from_ids(
+            "Conservative_Real_FCF_to_EV_Yield",
+            conservative_real_fcf_to_ev_yield,
             "percent",
             "Conservative Real FCF / Enterprise Value",
             [conservative_fcf_evidence_id, ev_evidence_id],
-            "Conservative_Real_FCF_Yield:model-input",
+            "Conservative_Real_FCF_to_EV_Yield:model-input",
+        )
+        sec._record_derived_from_ids(
+            "Maintenance_Real_FCF_Yield_Low",
+            real_fcf_yield_low,
+            "percent",
+            "(TTM OCF - high Maintenance CapEx - TTM SBC) / Market Capitalization",
+            [str(ocf_evidence.get("evidence_id") or ""), maintenance_capex_high_evidence_id, sbc_metric_evidence_id, market_cap_evidence_id],
+            "Maintenance_Real_FCF_Yield_Low:model-input",
+        )
+        sec._record_derived_from_ids(
+            "Maintenance_Real_FCF_Yield_High",
+            real_fcf_yield_high,
+            "percent",
+            "(TTM OCF - low Maintenance CapEx - TTM SBC) / Market Capitalization",
+            [str(ocf_evidence.get("evidence_id") or ""), maintenance_capex_low_evidence_id, sbc_metric_evidence_id, market_cap_evidence_id],
+            "Maintenance_Real_FCF_Yield_High:model-input",
         )
         coverage_gate = calculate_interest_coverage_gate(
             ebit_ttm, interest_ttm, total_debt, cash
@@ -4731,6 +4931,33 @@ def _run_mode_c_pipeline_core(
             and math.isfinite(share_change_3y_pct)
             and share_change_3y_pct > 3.0
         )
+        net_buyback_yield = safe_div(real_buyback, mcap) * 100 if mcap > 0 else np.nan
+        buyback_offset_effective = bool(
+            real_buyback > 0
+            and math.isfinite(share_change_pct)
+            and share_change_pct < 0
+            and not share_basis_discontinuity
+        )
+        sbc_attribution = {
+            "economic_cost_b": round(sbc_ttm, 3),
+            "ownership_dilution_1y_pct": round(share_change_pct, 2) if math.isfinite(share_change_pct) else None,
+            "ownership_dilution_3y_pct": round(share_change_3y_pct, 2) if math.isfinite(share_change_3y_pct) else None,
+            "net_buyback_b": round(real_buyback, 3),
+            "net_buyback_yield_pct": round(net_buyback_yield, 2) if math.isfinite(net_buyback_yield) else None,
+            "buyback_offset_effective": buyback_offset_effective,
+            "persistent_dilution_gate": persistent_dilution,
+            "share_basis_discontinuity": share_basis_discontinuity,
+            "per_share_fcf_cagr_3y_pct": (
+                round(float(per_share_growth["fcf_cagr_pct"]), 2)
+                if math.isfinite(float(per_share_growth["fcf_cagr_pct"]))
+                else None
+            ),
+            "per_share_eps_cagr_3y_pct": (
+                round(float(per_share_growth["eps_cagr_pct"]), 2)
+                if math.isfinite(float(per_share_growth["eps_cagr_pct"]))
+                else None
+            ),
+        }
         capital_allocation_score = calculate_capital_allocation_score(
             real_buyback,
             issuance_ttm,
@@ -4748,6 +4975,14 @@ def _run_mode_c_pipeline_core(
                 str(issuance_evidence.get("evidence_id") or ""),
             ],
             "Real_Buyback:model-input",
+        )
+        sec._record_derived_from_ids(
+            "Net_Buyback_Yield",
+            net_buyback_yield,
+            "percent",
+            "(TTM cash repurchases - TTM stock issuance proceeds) / Market Capitalization",
+            [real_buyback_evidence_id, market_cap_evidence_id],
+            "Net_Buyback_Yield:model-input",
         )
         share_history_evidence_ids = GLOBAL_EVIDENCE_LEDGER.selected_evidence_ids(
             ticker, "SharesOutstanding"
@@ -4767,6 +5002,32 @@ def _run_mode_c_pipeline_core(
             "split-adjusted current reported shares / split-adjusted shares three years ago - 1",
             [*share_history_evidence_ids, *sec.share_split_evidence_ids],
             "Share_Count_Change_3Y:model-input",
+        )
+        per_share_source_ids = [
+            *GLOBAL_EVIDENCE_LEDGER.selected_evidence_ids(ticker, "OCF"),
+            *GLOBAL_EVIDENCE_LEDGER.selected_evidence_ids(ticker, "CapEx"),
+            *GLOBAL_EVIDENCE_LEDGER.selected_evidence_ids(ticker, "SBC"),
+            *GLOBAL_EVIDENCE_LEDGER.selected_evidence_ids(ticker, "DnA"),
+            *GLOBAL_EVIDENCE_LEDGER.selected_evidence_ids(ticker, "Revenue"),
+            *GLOBAL_EVIDENCE_LEDGER.selected_evidence_ids(ticker, "NetIncome"),
+            *share_history_evidence_ids,
+            *sec.share_split_evidence_ids,
+        ]
+        per_share_fcf_evidence_id = sec._record_derived_from_ids(
+            "Per_Share_FCF_CAGR_3Y",
+            per_share_growth["fcf_cagr_pct"],
+            "percent",
+            "three-year CAGR of split-adjusted annual Maintenance FCF per share",
+            per_share_source_ids,
+            "Per_Share_FCF_CAGR_3Y:model-input",
+        )
+        per_share_eps_evidence_id = sec._record_derived_from_ids(
+            "Per_Share_EPS_CAGR_3Y",
+            per_share_growth["eps_cagr_pct"],
+            "percent",
+            "three-year CAGR of split-adjusted annual net income per share",
+            per_share_source_ids,
+            "Per_Share_EPS_CAGR_3Y:model-input",
         )
         capital_allocation_evidence_id = sec._record_derived_from_ids(
             "Capital_Allocation_Score",
@@ -4888,6 +5149,19 @@ def _run_mode_c_pipeline_core(
             "percentile rank of current P/E against reconstructed point-in-time history",
             [pe_evidence_id, *hv.get("pe_evidence_ids", [])],
             "PE_10Y_Percentile:model-input",
+        )
+        historical_coverage_evidence_id = sec._record_derived_from_ids(
+            "Historical_Valuation_Coverage",
+            hv["coverage"],
+            "ratio",
+            "valid point-in-time EV/EBITDA years / candidate annual periods",
+            [
+                ev_ebitda_evidence_id,
+                *hv.get("ev_evidence_ids", []),
+                *GLOBAL_EVIDENCE_LEDGER.selected_evidence_ids(ticker, "EBIT"),
+                *GLOBAL_EVIDENCE_LEDGER.selected_evidence_ids(ticker, "DnA"),
+            ],
+            "Historical_Valuation_Coverage:decision-gate",
         )
         ev_floor = hv["ev_ebitda_floor"]
         pe_floor = hv["pe_floor"]
@@ -5111,7 +5385,7 @@ def _run_mode_c_pipeline_core(
             share_change_1y_available=math.isfinite(share_change_pct),
             share_change_3y_available=math.isfinite(share_change_3y_pct),
             roic_available=math.isfinite(roic),
-            valuation_history_available=math.isfinite(hv["ev_ebitda_percentile"]),
+            valuation_history_available=hv["coverage_status"] == "VALID",
             reconciliation_warning=reconciliation_warning,
             sbc_sec_evidence_available=not sbc_external_fallback and bool(sbc_evidence.get("evidence_id")),
             current_shares_sec_evidence_available=shares_source == "SEC",
@@ -5152,7 +5426,9 @@ def _run_mode_c_pipeline_core(
             status = "Fail: 近三年股數持續明顯稀釋"
         elif "雙重惡化" in gm_diag:
             status = "Fail: 營收與毛利同步惡化"
-        if status == "Pass" and bool(confidence["abstain"]):
+        if capex_profile.get("confidence") == "LOW":
+            status = "Abstain: Maintenance CapEx estimate confidence is LOW"
+        elif status == "Pass" and bool(confidence["abstain"]):
             status = f"Abstain: Data confidence {float(confidence['score']):.0f}<{MIN_DATA_CONFIDENCE:.0f}"
         decision_state = "PASS" if status == "Pass" else "ABSTAIN" if status.startswith("Abstain") else "FAIL"
 
@@ -5181,13 +5457,36 @@ def _run_mode_c_pipeline_core(
             Debt_Source_Method=debt_method,
             Real_FCF_Yield_pct=round(real_fcf_yield, 2),
             Conservative_Real_FCF_Yield_pct=round(conservative_real_fcf_yield, 2),
+            Maintenance_Real_FCF_to_MarketCap_Yield_pct=round(real_fcf_yield, 2),
+            Conservative_Real_FCF_to_MarketCap_Yield_pct=round(conservative_real_fcf_yield, 2),
+            Maintenance_Real_FCF_to_EV_Yield_pct=round(real_fcf_to_ev_yield, 2),
+            Conservative_Real_FCF_to_EV_Yield_pct=round(conservative_real_fcf_to_ev_yield, 2),
+            Maintenance_Real_FCF_Yield_Low_pct=round(real_fcf_yield_low, 2),
+            Maintenance_Real_FCF_Yield_High_pct=round(real_fcf_yield_high, 2),
             TTM_OCF_B=round(ocf_ttm, 3),
             Dynamic_CapEx_B=round(dynamic_capex, 3),
             Maintenance_CapEx_B=round(maintenance_capex, 3),
+            Maintenance_CapEx_Low_B=round(maintenance_capex_low, 3),
+            Maintenance_CapEx_High_B=round(maintenance_capex_high, 3),
+            Maintenance_CapEx_Confidence=str(capex_profile["confidence"]),
             Growth_CapEx_B=round(growth_capex, 3),
             CapEx_to_DnA_x=round(float(capex_profile["capex_to_dna"]), 2) if math.isfinite(float(capex_profile["capex_to_dna"])) else np.nan,
             CapEx_Reinvestment_Method=str(capex_profile["method"]),
             TTM_SBC_B=round(sbc_ttm, 3),
+            SBC_Economic_Cost_B=round(sbc_ttm, 3),
+            Net_Buyback_Yield_pct=round(net_buyback_yield, 2) if math.isfinite(net_buyback_yield) else np.nan,
+            Buyback_Offset_Effective=buyback_offset_effective,
+            SBC_Attribution_JSON=json.dumps(sbc_attribution, ensure_ascii=False, sort_keys=True),
+            Per_Share_FCF_CAGR_3Y_pct=(
+                round(float(per_share_growth["fcf_cagr_pct"]), 2)
+                if math.isfinite(float(per_share_growth["fcf_cagr_pct"]))
+                else np.nan
+            ),
+            Per_Share_EPS_CAGR_3Y_pct=(
+                round(float(per_share_growth["eps_cagr_pct"]), 2)
+                if math.isfinite(float(per_share_growth["eps_cagr_pct"]))
+                else np.nan
+            ),
             ICR=round(icr, 2),
             ICR_Method=coverage_mode,
             Real_Buyback_B=round(real_buyback, 3),
@@ -5213,6 +5512,12 @@ def _run_mode_c_pipeline_core(
             PE_x=round(pe, 2) if math.isfinite(pe) else np.nan,
             EV_EBITDA_10Y_Percentile=round(hv["ev_ebitda_percentile"], 1) if math.isfinite(hv["ev_ebitda_percentile"]) else np.nan,
             PE_10Y_Percentile=round(hv["pe_percentile"], 1) if math.isfinite(hv["pe_percentile"]) else np.nan,
+            Historical_Valuation_Valid_Years=float(hv["valid_years"]),
+            Historical_Valuation_Total_Years=float(hv["total_years"]),
+            Historical_Valuation_Coverage=round(float(hv["coverage"]), 3),
+            Historical_Valuation_Status=str(hv["coverage_status"]),
+            Industry_Stress_Extension_Status="IMPLEMENTED",
+            Industry_Stress_Extension_Reason="General corporate EBITDA -15%/-30% stress with debt-service and cash-flow survival gates",
             EBITDA_Drawdown_15_pct=round(dd15, 1),
             EBITDA_Drawdown_30_pct=round(dd30, 1),
             Stress_ICR_15x=round(float(stress_15["icr"]), 2),
@@ -5253,6 +5558,7 @@ def _run_mode_c_pipeline_core(
                 real_fcf_yield_evidence_id,
                 ev_percentile_evidence_id,
                 pe_percentile_evidence_id,
+                historical_coverage_evidence_id,
                 icr_evidence_id,
                 roic_evidence_id,
                 capital_allocation_evidence_id,
@@ -5270,6 +5576,8 @@ def _run_mode_c_pipeline_core(
                 inventory_inflection_evidence_id,
                 share_change_1y_evidence_id,
                 share_change_3y_evidence_id,
+                per_share_fcf_evidence_id,
+                per_share_eps_evidence_id,
                 momentum_evidence_id,
                 *fcf_stability_evidence_ids,
             ]
@@ -5336,6 +5644,10 @@ def run_mode_c_pipeline(
     result.Security_Class_Evidence_Source = str(
         metadata.get("SecurityClassEvidenceSource") or "Manual input without hunter evidence"
     )
+    fx_rate = finite_number(metadata.get("PointInTimeFXRate"))
+    adr_ratio = finite_number(metadata.get("ADRRatio"))
+    result.Point_in_Time_FX_Rate = fx_rate if fx_rate is not None else np.nan
+    result.ADR_Ratio = adr_ratio if adr_ratio is not None else np.nan
     initial_model_key = str(metadata.get("IndustryModelKey") or "")
     has_verified_route = metadata.get("_HasVerifiedRoute") == "True"
     if has_verified_route and not initial_model_key:
@@ -5362,6 +5674,26 @@ def run_mode_c_pipeline(
             result.Scoring_Framework = (
                 f"INDUSTRY_SPECIALIZED_{initial_model_key}_V1"
             )
+    if result.Input_Security_Class == "COMMON_ADS_INFERRED" and (
+        not math.isfinite(result.Point_in_Time_FX_Rate)
+        or not math.isfinite(result.ADR_Ratio)
+        or result.Point_in_Time_FX_Rate <= 0
+        or result.ADR_Ratio <= 0
+    ):
+        result.Status = "Abstain: ADS lacks point-in-time FX rate or ADR ratio"
+        result.Decision_State = "ABSTAIN"
+        result.Long_Term_Score = np.nan
+        result.Long_Term_Eligible = False
+        result.Research_Action = "ABSTAIN_PENDING_ADR_RECONCILIATION"
+        result.Data_Confidence_Reasons = "; ".join(
+            filter(
+                None,
+                [
+                    result.Data_Confidence_Reasons,
+                    "Foreign/ADS valuation cannot be reconciled without point-in-time FX and ADR ratio",
+                ],
+            )
+        )
     return result
 
 
@@ -5477,7 +5809,11 @@ def render_stock_report(r: ModeCResult) -> str:
 
 
 
-def build_agent_payload(results: List[ModeCResult]) -> dict:
+def build_agent_payload(
+    results: List[ModeCResult],
+    metric_metadata_by_ticker: Optional[Mapping[str, Mapping[str, Any]]] = None,
+) -> dict:
+    metric_metadata_by_ticker = metric_metadata_by_ticker or {}
     payload = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "mission": "QQQ 40% + VOO 30% + 最多 30% 主動選股的長期價值研究。只做多、不使用槓桿、期權或放空；模型只產生研究候選，不是自動買入訊號。",
@@ -5573,6 +5909,7 @@ def build_agent_payload(results: List[ModeCResult]) -> dict:
                     "Industry_Model_Coverage": r.Industry_Model_Coverage,
                     "Industry_Model_Metrics_JSON": r.Industry_Model_Metrics_JSON,
                 },
+                "metric_metadata": metric_metadata_by_ticker.get(r.Ticker, {}),
             }
         )
     return payload
@@ -5632,6 +5969,8 @@ def main() -> None:
             "IndustryModelKey",
             "ModelRouteHint",
             "RouteReason",
+            "PointInTimeFXRate",
+            "ADRRatio",
         ):
             value = row.get(field, "")
             metadata[field] = "" if pd.isna(value) else str(value)
@@ -5682,18 +6021,20 @@ def main() -> None:
     rows = [asdict(r) for r in results]
     for row in rows:
         row["Agent_Tasks"] = " | ".join(row.get("Agent_Tasks", []))
-    out_df = pd.DataFrame(rows)
-    out_df.to_csv(OUTPUT_CSV, index=False, encoding="utf-8-sig")
-
     evidence_rows = GLOBAL_EVIDENCE_LEDGER.rows(selected_only=True)
     evidence_df = pd.DataFrame(evidence_rows, columns=EVIDENCE_COLUMNS)
     evidence_df.to_csv(OUTPUT_EVIDENCE_CSV, index=False, encoding="utf-8-sig")
 
+    rows = annotate_rows(rows, evidence_rows)
+    out_df = pd.DataFrame(rows)
+    out_df.to_csv(OUTPUT_CSV, index=False, encoding="utf-8-sig")
+
     # 另存真正需要深入研究的 8–12 檔候選；不足時不拿低品質公司硬湊數。
-    shortlist_rows = [asdict(r) for r in shortlist]
-    for row in shortlist_rows:
-        row["Agent_Tasks"] = " | ".join(row.get("Agent_Tasks", []))
-    shortlist_df = pd.DataFrame(shortlist_rows) if shortlist_rows else out_df.iloc[0:0].copy()
+    shortlist_order = {result.Ticker: index for index, result in enumerate(shortlist)}
+    shortlist_df = out_df[out_df["Ticker"].isin(shortlist_order)].copy()
+    if not shortlist_df.empty:
+        shortlist_df["_shortlist_order"] = shortlist_df["Ticker"].map(shortlist_order)
+        shortlist_df = shortlist_df.sort_values("_shortlist_order").drop(columns="_shortlist_order")
     shortlist_df.to_csv(OUTPUT_SHORTLIST_CSV, index=False, encoding="utf-8-sig")
 
     report = "# Mode C 長期價值研究名單（QQQ 40% + VOO 30% + 最多 30% 主動選股）\n\n"
@@ -5709,7 +6050,11 @@ def main() -> None:
         report += render_stock_report(r) + "\n---\n\n"
     Path(OUTPUT_MD).write_text(report, encoding="utf-8")
 
-    payload = build_agent_payload(shortlist)
+    metric_metadata_by_ticker = {
+        str(row["Ticker"]): json.loads(str(row["Metric_Metadata_JSON"]))
+        for row in rows
+    }
+    payload = build_agent_payload(shortlist, metric_metadata_by_ticker)
     Path(OUTPUT_JSON).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     save_json_cache(CACHE_FILE_SHARES, _VECTOR_CACHE)
 

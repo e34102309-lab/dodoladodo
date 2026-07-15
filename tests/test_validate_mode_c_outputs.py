@@ -6,6 +6,7 @@ from pathlib import Path
 import pandas as pd
 
 from mode_c_evidence import EVIDENCE_COLUMNS
+from mode_c_metric_contract import annotate_dataframe
 from validate_mode_c_outputs import ValidationError, validate_outputs
 
 
@@ -31,12 +32,23 @@ class ModeCOutputValidationTests(unittest.TestCase):
                     "Decision_State": "PASS",
                     "Decision_Timestamp": "2026-01-02T00:00:00",
                     "Data_Confidence_Score": 90.0,
+                    "MarketCap_B": 11.4,
                     "EV_B": 10.0,
+                    "TTM_OCF_B": 1.2,
+                    "Dynamic_CapEx_B": 0.3,
+                    "Maintenance_CapEx_B": 0.2,
+                    "Maintenance_CapEx_Confidence": "HIGH",
+                    "TTM_SBC_B": 0.1,
+                    "Real_FCF_Yield_pct": 7.9,
+                    "ROIC_pct": 18.0,
+                    "EV_EBITDA_x": 8.0,
+                    "Historical_Valuation_Coverage": 0.8,
+                    "Historical_Valuation_Status": "VALID",
                     "Total_Debt_B": 0.10,
                     "Cash_B": 1.50,
                     "Net_Debt_B": -1.40,
                     "Debt_Source_Method": "Yahoo totalDebt current fallback",
-                    "ICR": float("inf"),
+                    "ICR": 999.0,
                     "ICR_Method": "net_cash",
                     "Long_Term_Score": 80.0,
                     "Long_Term_Eligible": True,
@@ -51,9 +63,6 @@ class ModeCOutputValidationTests(unittest.TestCase):
         screen_path = directory / "screen.csv"
         shortlist_path = directory / "shortlist.csv"
         evidence_path = directory / "evidence.csv"
-        screen.to_csv(screen_path, index=False, encoding="utf-8-sig")
-        screen.to_csv(shortlist_path, index=False, encoding="utf-8-sig")
-
         common = {
             column: ""
             for column in EVIDENCE_COLUMNS
@@ -85,6 +94,9 @@ class ModeCOutputValidationTests(unittest.TestCase):
         pd.DataFrame([source, derived], columns=EVIDENCE_COLUMNS).to_csv(
             evidence_path, index=False, encoding="utf-8-sig"
         )
+        screen = annotate_dataframe(screen, [source, derived])
+        screen.to_csv(screen_path, index=False, encoding="utf-8-sig")
+        screen.to_csv(shortlist_path, index=False, encoding="utf-8-sig")
         return screen_path, shortlist_path, evidence_path
 
     def test_valid_outputs_pass_all_invariants(self):
@@ -135,7 +147,7 @@ class ModeCOutputValidationTests(unittest.TestCase):
             screen.loc[0, "Net_Debt_B"] = 1.40
             screen.to_csv(paths[0], index=False, encoding="utf-8-sig")
             screen.to_csv(paths[1], index=False, encoding="utf-8-sig")
-            with self.assertRaisesRegex(ValidationError, "positive-net-debt"):
+            with self.assertRaisesRegex(ValidationError, "net-cash ICR method"):
                 validate_outputs(*paths)
 
     def test_nonpositive_enterprise_value_cannot_be_general_eligible(self):

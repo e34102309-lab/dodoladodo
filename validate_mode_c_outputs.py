@@ -10,6 +10,13 @@ from typing import Any, Dict, Iterable
 
 import pandas as pd
 
+from mode_c_metric_contract import (
+    DISPLAY_METRICS,
+    METRIC_STATUSES,
+    MODEL_APPLICABLE_METRICS,
+    NULL_STATUSES,
+)
+
 
 DEFAULT_SCREEN = "mode_c_screen.csv"
 DEFAULT_SHORTLIST = "mode_c_shortlist.csv"
@@ -50,6 +57,11 @@ SCREEN_COLUMNS = {
     "Share_Count_Change_pct",
     "Share_Count_Change_3Y_pct",
     "Share_Basis_Discontinuity",
+    "Metric_Contract_Version",
+    "Metric_Metadata_JSON",
+    "Required_Missing_Metrics",
+    "Optional_Missing_Metrics",
+    "Metric_Evidence_Coverage",
 }
 
 EVIDENCE_COLUMNS = {
@@ -66,6 +78,24 @@ EVIDENCE_COLUMNS = {
 
 class ValidationError(RuntimeError):
     pass
+
+
+ZERO_EVIDENCE_METRICS = {
+    "MarketCap_B",
+    "EV_B",
+    "TTM_OCF_B",
+    "Dynamic_CapEx_B",
+    "Maintenance_CapEx_B",
+    "TTM_SBC_B",
+    "Real_FCF_Yield_pct",
+    "Conservative_Real_FCF_Yield_pct",
+    "Total_Debt_B",
+    "Cash_B",
+    "Net_Debt_B",
+    "ICR",
+    "ROIC_pct",
+    "EV_EBITDA_x",
+}
 
 
 def _as_bool(value: Any, field: str) -> bool:
@@ -111,6 +141,116 @@ def _require_columns(actual: Iterable[str], required: set[str], label: str) -> N
     missing = sorted(required - set(actual))
     if missing:
         raise ValidationError(f"{label} is missing columns: {', '.join(missing)}")
+
+
+def _parse_metadata(raw: Any, ticker: str) -> Dict[str, Any]:
+    try:
+        metadata = json.loads(str(raw or "{}"))
+    except json.JSONDecodeError as exc:
+        raise ValidationError(f"{ticker} has invalid Metric_Metadata_JSON") from exc
+    if not isinstance(metadata, dict):
+        raise ValidationError(f"{ticker} metric metadata must be an object")
+    return metadata
+
+
+def _validate_metric_contract(screen: pd.DataFrame) -> None:
+    for _, row in screen.iterrows():
+        ticker = str(row["Ticker"])
+        model_key = str(row.get("Industry_Model_Key") or "GENERAL_CORPORATE").upper()
+        metadata = _parse_metadata(row.get("Metric_Metadata_JSON"), ticker)
+        missing_entries = sorted(set(DISPLAY_METRICS) - set(metadata))
+        if missing_entries:
+            raise ValidationError(
+                f"{ticker} metric metadata is incomplete: {', '.join(missing_entries[:5])}"
+            )
+        applicable = MODEL_APPLICABLE_METRICS.get(model_key, frozenset())
+        for metric in DISPLAY_METRICS:
+            meta = metadata[metric]
+            if not isinstance(meta, dict):
+                raise ValidationError(f"{ticker} {metric} metadata is not an object")
+            status = str(meta.get("status") or "").upper()
+            if status not in METRIC_STATUSES:
+                raise ValidationError(f"{ticker} {metric} has invalid status {status!r}")
+            value = _number(meta.get("value"))
+            raw_value = _number(row.get(metric))
+            evidence_ids = meta.get("evidence_ids")
+            if not isinstance(evidence_ids, list):
+                raise ValidationError(f"{ticker} {metric} evidence_ids must be a list")
+            for field in ("reason", "as_of", "source_method"):
+                if field not in meta:
+                    raise ValidationError(f"{ticker} {metric} lacks {field}")
+            if status in NULL_STATUSES:
+                if math.isfinite(value) or math.isfinite(raw_value):
+                    raise ValidationError(
+                        f"{ticker} {metric} exposes a value while status is {status}"
+                    )
+            elif not math.isfinite(value):
+                raise ValidationError(f"{ticker} {metric} status {status} lacks a finite value")
+            elif not math.isfinite(raw_value) or not math.isclose(raw_value, value, abs_tol=1e-9):
+                raise ValidationError(f"{ticker} {metric} CSV value differs from metadata")
+            if metric not in applicable and (
+                status != "NOT_APPLICABLE" or math.isfinite(raw_value)
+            ):
+                raise ValidationError(
+                    f"{ticker} specialized model exposes non-applicable generic metric {metric}"
+                )
+            if (
+                status in {"VALID", "ESTIMATED"}
+                and value == 0.0
+                and metric in ZERO_EVIDENCE_METRICS
+                and (not evidence_ids or not str(meta.get("source_method") or "").strip())
+            ):
+                raise ValidationError(f"{ticker} {metric} true zero lacks evidence")
+        if str(row.get("Decision_State") or "").upper() == "ABSTAIN":
+            if metadata["Long_Term_Score"]["status"] not in NULL_STATUSES:
+                raise ValidationError(f"{ticker} ABSTAIN row has a displayable long-term score")
+        if str(row.get("Input_Security_Class") or "").upper() == "COMMON_ADS_INFERRED":
+            for metric in ("Point_in_Time_FX_Rate", "ADR_Ratio"):
+                if metadata[metric]["status"] not in {"VALID", "ABSTAIN"}:
+                    raise ValidationError(f"{ticker} {metric} must be VALID or ABSTAIN for ADS")
+
+
+def _validate_dashboard(dashboard_path: Path, screen: pd.DataFrame) -> Dict[str, Any]:
+    payload = json.loads(dashboard_path.read_text(encoding="utf-8"))
+    stocks = payload.get("stocks")
+    if not isinstance(stocks, list):
+        raise ValidationError("dashboard stocks must be a list")
+    dashboard_by_ticker = {
+        str(item.get("Ticker") or "").upper(): item
+        for item in stocks
+        if isinstance(item, dict)
+    }
+    if set(dashboard_by_ticker) != set(screen["Ticker"]):
+        raise ValidationError("dashboard ticker set differs from screen")
+    for _, row in screen.iterrows():
+        ticker = str(row["Ticker"])
+        expected = _parse_metadata(row["Metric_Metadata_JSON"], ticker)
+        actual = dashboard_by_ticker[ticker].get("Metric_Metadata")
+        if actual != expected:
+            raise ValidationError(f"{ticker} dashboard metric metadata differs from screen")
+        for metric in DISPLAY_METRICS:
+            expected_value = expected[metric].get("value")
+            actual_value = dashboard_by_ticker[ticker].get(metric)
+            if expected_value is None and actual_value is not None:
+                raise ValidationError(f"{ticker} dashboard fabricates {metric}")
+            if expected_value is not None and _number(actual_value) != _number(expected_value):
+                raise ValidationError(f"{ticker} dashboard value differs for {metric}")
+    groups = payload.get("trend_groups", {})
+    for key, group in groups.items():
+        coverage = group.get("metric_coverage", {})
+        for field, summary in coverage.items():
+            ratio = _number(summary.get("coverage"))
+            if math.isfinite(ratio) and ratio < 0.50 and group.get(field) is not None:
+                raise ValidationError(f"trend group {key} exposes low-coverage {field}")
+    for candidate in payload.get("emerging_candidates", []):
+        ratio = _number(
+            candidate.get("metric_coverage", {})
+            .get("avg_score", {})
+            .get("coverage")
+        )
+        if not math.isfinite(ratio) or ratio < 0.50:
+            raise ValidationError("low-coverage trend group became an emerging candidate")
+    return {"dashboard_rows": len(stocks), "trend_groups": len(groups)}
 
 
 def _validate_screen(
@@ -331,6 +471,21 @@ def _validate_screen(
         bad = screen.loc[invalid_specialized, "Ticker"].tolist()
         raise ValidationError(f"specialized eligible rows violate model gates: {bad}")
 
+    if "Historical_Valuation_Status" in screen.columns:
+        historical_status = (
+            screen["Historical_Valuation_Status"].fillna("").astype(str).str.upper()
+        )
+        invalid_history = eligible & historical_status.ne("") & historical_status.ne("VALID")
+        if invalid_history.any():
+            bad = screen.loc[invalid_history, "Ticker"].tolist()
+            raise ValidationError(f"eligible rows have low point-in-time valuation coverage: {bad}")
+
+    _validate_metric_contract(screen)
+    required_missing = screen["Required_Missing_Metrics"].fillna("").astype(str).str.strip()
+    if (eligible & required_missing.ne("")).any():
+        bad = screen.loc[eligible & required_missing.ne(""), "Ticker"].tolist()
+        raise ValidationError(f"eligible rows have required metric gaps: {bad}")
+
     shortlist = pd.read_csv(shortlist_path, encoding="utf-8-sig")
     _require_columns(shortlist.columns, {"Ticker"}, "shortlist")
     actual_shortlist = shortlist["Ticker"].fillna("").astype(str).str.upper().tolist()
@@ -464,6 +619,7 @@ def validate_outputs(
     screen_path: str | Path = DEFAULT_SCREEN,
     shortlist_path: str | Path = DEFAULT_SHORTLIST,
     evidence_path: str | Path = DEFAULT_EVIDENCE,
+    dashboard_path: str | Path | None = None,
 ) -> Dict[str, Any]:
     paths = [Path(screen_path), Path(shortlist_path), Path(evidence_path)]
     missing = [str(path) for path in paths if not path.is_file()]
@@ -477,6 +633,11 @@ def validate_outputs(
             decision_timestamp,
         )
     )
+    if dashboard_path is not None:
+        dashboard = Path(dashboard_path)
+        if not dashboard.is_file():
+            raise ValidationError(f"missing dashboard file: {dashboard}")
+        summary.update(_validate_dashboard(dashboard, screen))
     return summary
 
 
@@ -485,13 +646,19 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--screen", default=DEFAULT_SCREEN)
     parser.add_argument("--shortlist", default=DEFAULT_SHORTLIST)
     parser.add_argument("--evidence", default=DEFAULT_EVIDENCE)
+    parser.add_argument("--dashboard")
     return parser
 
 
 def main() -> int:
     args = build_parser().parse_args()
     try:
-        summary = validate_outputs(args.screen, args.shortlist, args.evidence)
+        summary = validate_outputs(
+            args.screen,
+            args.shortlist,
+            args.evidence,
+            args.dashboard,
+        )
     except ValidationError as exc:
         print(f"Mode C output validation failed: {exc}")
         return 1

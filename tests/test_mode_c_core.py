@@ -24,6 +24,7 @@ from AQR_ModeC_Agent_V12 import (
     calculate_fcf_stability,
     calculate_financial_stress,
     calculate_interest_coverage_gate,
+    calculate_per_share_growth_3y,
     common_equity_rejection_reason,
     composite_score_for_result,
     dynamic_implied_cagr_limit,
@@ -47,6 +48,54 @@ from mode_c_evidence import GLOBAL_EVIDENCE_LEDGER
 
 
 class ModeCCoreTests(unittest.TestCase):
+    def test_per_share_growth_uses_positive_comparable_annual_endpoints(self):
+        class FakeSec:
+            ticker = "TEST"
+            decision_timestamp = pd.Timestamp("2026-01-02")
+
+            @staticmethod
+            def _annual_facts(frame):
+                return frame.copy()
+
+            @staticmethod
+            def _instant_facts(frame):
+                return frame.copy()
+
+            @staticmethod
+            def _mark_rows_used(*_args, **_kwargs):
+                return []
+
+        def annual(base, latest):
+            return pd.DataFrame(
+                {
+                    "end": pd.to_datetime(["2022-12-31", "2025-12-31"]),
+                    "filed": pd.to_datetime(["2023-02-01", "2026-02-01"]),
+                    "val": [base, latest],
+                }
+            )
+
+        shares = pd.DataFrame(
+            {
+                "end": pd.to_datetime(["2022-12-31", "2025-12-31"]),
+                "filed": pd.to_datetime(["2023-02-01", "2026-02-01"]),
+                "val": [100e6, 100e6],
+                "concept": ["EntityCommonStockSharesOutstanding"] * 2,
+            }
+        )
+        growth = calculate_per_share_growth_3y(
+            FakeSec(),
+            annual(100e6, 200e6),
+            annual(20e6, 40e6),
+            annual(5e6, 10e6),
+            annual(20e6, 30e6),
+            annual(500e6, 800e6),
+            annual(50e6, 100e6),
+            shares,
+        )
+        self.assertEqual(growth["years"], 3.0)
+        self.assertGreater(growth["fcf_cagr_pct"], 25.0)
+        self.assertAlmostEqual(growth["eps_cagr_pct"], 25.992, places=2)
+
     def test_share_facts_are_adjusted_to_a_common_split_basis(self):
         split_data = pd.DataFrame(
             {("Stock Splits", "TEST"): [10.0]},
