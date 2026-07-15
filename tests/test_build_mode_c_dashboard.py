@@ -5,7 +5,12 @@ from pathlib import Path
 
 import pandas as pd
 
-from build_mode_c_dashboard import DASHBOARD_TREND_POLICY_VERSION, build_dashboard
+from build_mode_c_dashboard import (
+    DASHBOARD_TREND_POLICY_VERSION,
+    build_dashboard,
+    build_emerging_candidates,
+    group_snapshot,
+)
 from enhance_dashboard_ui import enhance_dashboard
 
 
@@ -100,6 +105,9 @@ class DashboardTests(unittest.TestCase):
             self.assertIn("clearCandidate", html)
             self.assertIn('value="abstain"', html)
             self.assertIn("m<=0||", html)
+            self.assertIn("v===null||v===undefined||v===''", html)
+            self.assertIn("NOT_APPLICABLE:'不適用'", html)
+            self.assertIn("metricHtml(x, 'Real_FCF_Yield_pct'", html)
             self.assertIn("Industry_Model_Score", html)
             self.assertIn("specializedPanel", html)
             self.assertIn("Industry_Model_Metrics_JSON", html)
@@ -146,6 +154,39 @@ class DashboardTests(unittest.TestCase):
             self.assertIn("APH", second_layer["top"])
             self.assertIn("TEL", second_layer["top"])
             self.assertIn("VSH", second_layer["top"])
+
+    def test_low_metric_coverage_cannot_create_emerging_candidate(self):
+        rows = [
+            {
+                "Ticker": "ONE",
+                "Long_Term_Score": 90.0,
+                "Metric_Metadata": {
+                    "Long_Term_Score": {"status": "VALID", "value": 90.0}
+                },
+            },
+            {
+                "Ticker": "TWO",
+                "Long_Term_Score": None,
+                "Metric_Metadata": {
+                    "Long_Term_Score": {"status": "MISSING", "value": None}
+                },
+            },
+            {
+                "Ticker": "THREE",
+                "Long_Term_Score": None,
+                "Metric_Metadata": {
+                    "Long_Term_Score": {"status": "ABSTAIN", "value": None}
+                },
+            },
+        ]
+        group = group_snapshot("industry:test", "Test", "industry", rows)
+        self.assertIsNone(group["avg_score"])
+        self.assertEqual(group["metric_coverage"]["avg_score"]["valid_count"], 1)
+        self.assertAlmostEqual(group["metric_coverage"]["avg_score"]["coverage"], 1 / 3, places=3)
+        self.assertEqual(
+            build_emerging_candidates({"industry:test": group}, {}),
+            [],
+        )
 
 
 if __name__ == "__main__":

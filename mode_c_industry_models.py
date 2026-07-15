@@ -650,7 +650,7 @@ def evaluate_cyclical_midcycle(raw: Mapping[str, Any]) -> IndustryModelEvaluatio
             "debt_service_method": (
                 "net_cash_non_binding" if fully_cash_covered else "reported_interest"
             ),
-            "real_fcf_yield_pct": _safe_div(real_fcf, valuation_ev) * 100.0,
+            "real_fcf_to_ev_yield_pct": _safe_div(real_fcf, valuation_ev) * 100.0,
         }
     )
     warnings = []
@@ -679,7 +679,7 @@ def evaluate_cyclical_midcycle(raw: Mapping[str, Any]) -> IndustryModelEvaluatio
             25.0,
         ),
         "trough_leverage": (_inverse(metrics["net_debt_to_trough_ebitda_x"], 5.0, 0.0), 20.0),
-        "cash_generation": (_bounded(metrics["real_fcf_yield_pct"], 0.0, 8.0), 15.0),
+        "cash_generation": (_bounded(metrics["real_fcf_to_ev_yield_pct"], 0.0, 8.0), 15.0),
         "cycle_position": (
             0.0 if current <= 0 else _inverse(metrics["current_to_midcycle_x"], 1.6, 0.8),
             10.0,

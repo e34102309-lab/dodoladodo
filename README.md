@@ -19,6 +19,7 @@
 - `qualified_universe.csv`：手動更新並上傳的候選宇宙，至少包含 `Ticker,CIK`。
 - `AQR_ModeC_Agent_V12.py`：價值、品質、預期、資本配置與下檔風險評分引擎。
 - `mode_c_evidence.py`：point-in-time evidence ledger、來源血緣與衍生公式紀錄。
+- `mode_c_metric_contract.py`：統一 `VALID/MISSING/NOT_APPLICABLE/ABSTAIN/STALE/INVALID/ESTIMATED` 指標狀態，防止缺值被顯示成零。
 - `mode_c_routing.py`：第一層與 Mode C 共用的產業模型路由。
 - `mode_c_industry_models.py`：九種專用產業模型的純計算、硬性風險、覆蓋率與信心閘門。
 - `build_mode_c_dashboard.py`：把評分結果整理成不依賴外部 AI 的靜態研究網站。
@@ -118,7 +119,10 @@ export USER_EMAIL="your_email@example.com"
 python AQR_ModeC_Agent_V12.py
 python build_mode_c_dashboard.py
 python enhance_dashboard_ui.py public/index.html
+python validate_mode_c_outputs.py --dashboard public/data.json
 ```
+
+完整的缺值、產業適用性、FCF 分母、CapEx 敏感度與 dashboard 稽核紀錄見 `METRIC_STATUS_AUDIT.md`。
 
 本機產生的網站位於 `public/index.html`。`qualified_universe.csv` 可由本機手動更新；GitHub Actions 每週於美股週四收盤後（台灣時間週五 06:00）以現有 universe 更新 Mode C，每月 1 日才重跑全市場初篩並提交新的 `qualified_universe.csv`。PR 只跑品質檢查。
 

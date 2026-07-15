@@ -10,7 +10,7 @@ from typing import Any
 import pandas as pd
 
 
-DASHBOARD_TREND_POLICY_VERSION = "2026-07-split-adjusted-v1"
+DASHBOARD_TREND_POLICY_VERSION = "2026-07-metric-status-v2"
 
 
 THEME_RULES: list[dict[str, Any]] = [
@@ -123,6 +123,10 @@ def ticker(row: dict[str, Any]) -> str:
 
 
 def as_number(value: Any) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, str) and not value.strip():
+        return None
     try:
         number = float(value)
     except (TypeError, ValueError):
@@ -134,12 +138,44 @@ def score(row: dict[str, Any]) -> float:
     return as_number(row.get("Long_Term_Score")) or -1.0
 
 
-def average(rows: list[dict[str, Any]], field: str) -> float | None:
-    values = [as_number(row.get(field)) for row in rows]
-    values = [value for value in values if value is not None]
-    if not values:
-        return None
-    return round(sum(values) / len(values), 2)
+def parse_object(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    try:
+        parsed = json.loads(str(value or "{}"))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def metric_summary(rows: list[dict[str, Any]], field: str) -> dict[str, Any]:
+    values: list[float] = []
+    valid_count = 0
+    estimated_count = 0
+    for row in rows:
+        metadata = row.get("Metric_Metadata")
+        meta = metadata.get(field, {}) if isinstance(metadata, dict) else {}
+        status = str(meta.get("status") or "").upper()
+        value = as_number(meta.get("value"))
+        if not status:
+            value = as_number(row.get(field))
+            status = "VALID" if value is not None else "MISSING"
+        if status == "VALID" and value is not None:
+            valid_count += 1
+            values.append(value)
+        elif status == "ESTIMATED" and value is not None:
+            estimated_count += 1
+            values.append(value)
+    coverage = len(values) / len(rows) if rows else 0.0
+    average_value = round(sum(values) / len(values), 2) if values else None
+    return {
+        "value": average_value if coverage >= 0.50 else None,
+        "valid_count": valid_count,
+        "estimated_count": estimated_count,
+        "total_count": len(rows),
+        "coverage": round(coverage, 4),
+        "status": "VALID" if coverage >= 0.50 else "MISSING",
+    }
 
 
 def truthy(value: Any) -> bool:
@@ -232,7 +268,11 @@ def build_theme_summary(stocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def group_snapshot(group_key: str, name: str, kind: str, rows: list[dict[str, Any]], theme_id: str | None = None) -> dict[str, Any]:
     ordered = sorted(rows, key=lambda row: (-score(row), ticker(row)))
-    metrics = {metric: average(rows, field) for metric, field in TREND_FIELDS.items()}
+    summaries = {
+        metric: metric_summary(rows, field)
+        for metric, field in TREND_FIELDS.items()
+    }
+    metrics = {metric: summary["value"] for metric, summary in summaries.items()}
     return {
         "key": group_key,
         "name": name,
@@ -242,6 +282,7 @@ def group_snapshot(group_key: str, name: str, kind: str, rows: list[dict[str, An
         "eligible": sum(truthy(row.get("Long_Term_Eligible")) for row in rows),
         "shortlist": sum(bool(row.get("IsShortlist")) for row in rows),
         "top": [ticker(row) for row in ordered[:8]],
+        "metric_coverage": summaries,
         **metrics,
     }
 
@@ -321,14 +362,27 @@ def build_emerging_candidates(groups: dict[str, dict[str, Any]], history: dict[s
     previous_groups = history.get("groups", {}) if isinstance(history.get("groups"), dict) else {}
     candidates: list[dict[str, Any]] = []
     for key, group in groups.items():
+        coverage = group.get("metric_coverage", {})
+        if float(coverage.get("avg_score", {}).get("coverage") or 0.0) < 0.50:
+            continue
         reasons: list[str] = []
         deltas: dict[str, Any] = {}
         signal = 0.0
 
-        if (group.get("avg_score") or 0) >= 70:
+        def covered_value(field: str) -> float | None:
+            summary = coverage.get(field, {}) if isinstance(coverage, dict) else {}
+            if float(summary.get("coverage") or 0.0) < 0.50:
+                return None
+            return as_number(group.get(field))
+
+        avg_score = covered_value("avg_score")
+        avg_revenue = covered_value("avg_revenue_change")
+        avg_margin = covered_value("avg_margin_change")
+        avg_fcf = covered_value("avg_real_fcf_yield")
+        if avg_score is not None and avg_score >= 70:
             reasons.append("群組平均分數達 70 以上")
             signal += 2
-        elif (group.get("avg_score") or 0) >= 65:
+        elif avg_score is not None and avg_score >= 65:
             reasons.append("群組平均分數達 65 以上")
             signal += 1
         if (group.get("eligible") or 0) >= 2:
@@ -340,13 +394,13 @@ def build_emerging_candidates(groups: dict[str, dict[str, Any]], history: dict[s
         if (group.get("shortlist") or 0) >= 1:
             reasons.append("已有公司進入分散 shortlist")
             signal += 1.5
-        if (group.get("avg_revenue_change") or 0) >= 8:
+        if avg_revenue is not None and avg_revenue >= 8:
             reasons.append("三季營收變化平均偏強")
             signal += 1
-        if (group.get("avg_margin_change") or 0) >= 1:
+        if avg_margin is not None and avg_margin >= 1:
             reasons.append("毛利變化平均改善")
             signal += 1
-        if (group.get("avg_real_fcf_yield") or 0) >= 3:
+        if avg_fcf is not None and avg_fcf >= 3:
             reasons.append("Real FCF Yield 具備基本吸引力")
             signal += 1
 
@@ -385,6 +439,7 @@ def build_emerging_candidates(groups: dict[str, dict[str, Any]], history: dict[s
                     "signal_score": round(signal, 2),
                     "reasons": reasons[:6],
                     "metrics": {field: group.get(field) for field in ("count", "eligible", "shortlist", "avg_score", "avg_quality", "avg_revenue_change", "avg_margin_change", "avg_real_fcf_yield")},
+                    "metric_coverage": coverage,
                     "deltas": deltas,
                     "top": group.get("top", []),
                 }
@@ -404,7 +459,18 @@ def build_payload(screen: Path, shortlist: Path, universe: Path, history: Path |
     for row in records(screen):
         symbol = ticker(row)
         if symbol:
-            stocks.append({**row, "Ticker": symbol, "CIK": cik_map.get(symbol, ""), "IsShortlist": symbol in shortlist_set})
+            metadata = parse_object(row.get("Metric_Metadata_JSON"))
+            normalized = {
+                **row,
+                "Ticker": symbol,
+                "CIK": cik_map.get(symbol, ""),
+                "IsShortlist": symbol in shortlist_set,
+                "Metric_Metadata": metadata,
+            }
+            for field, meta in metadata.items():
+                if field in normalized and isinstance(meta, dict):
+                    normalized[field] = clean(meta.get("value"))
+            stocks.append(normalized)
 
     stocks.sort(key=lambda row: (-score(row), ticker(row)))
     for rank, row in enumerate(stocks, 1):
@@ -427,6 +493,7 @@ def build_payload(screen: Path, shortlist: Path, universe: Path, history: Path |
             "previous_generated_at": history_payload.get("generated_at"),
         },
         "emerging_candidates": build_emerging_candidates(groups, history_payload),
+        "trend_groups": groups,
         "themes": build_theme_summary(stocks),
         "stocks": stocks,
     }, groups
@@ -448,7 +515,10 @@ PAGE = r'''<!doctype html>
 <dialog id="detail"><div class="head"><strong id="detailTitle"></strong><button id="close">關閉</button></div><div class="body" id="detailBody"></div></dialog>
 <script id="payload" type="application/json">__DATA__</script><script>
 const data=JSON.parse(document.querySelector('#payload').textContent),stocks=data.stocks||[],themes=data.themes||[],emerging=data.emerging_candidates||[],map=new Map(stocks.map(x=>[x.Ticker,x])),themeMap=new Map(themes.map(x=>[x.id,x])),key='alphaEngineWatchlistV1';let watch=load();
-const $=s=>document.querySelector(s),e=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])),n=v=>{v=Number(v);return Number.isFinite(v)?v:null},f=(v,d=2,s='')=>n(v)===null?'N/A':n(v).toFixed(d)+s,yes=v=>v===true||String(v).toLowerCase()==='true',norm=v=>String(v||'').toUpperCase().replace(/[^A-Z0-9.-]/g,'').slice(0,10),tags=x=>(x.Theme_Tags||[]),themeIds=x=>(x.Theme_Ids||[]),layerMap=x=>(x.Theme_Layer_Map||{}),layerTags=x=>(x.Theme_Layer_Tags||[]);
+const $=s=>document.querySelector(s),e=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])),n=v=>{if(v===null||v===undefined||v===''||typeof v==='boolean')return null;v=Number(v);return Number.isFinite(v)?v:null},f=(v,d=2,s='')=>n(v)===null?'N/A':n(v).toFixed(d)+s,yes=v=>v===true||String(v).toLowerCase()==='true',norm=v=>String(v||'').toUpperCase().replace(/[^A-Z0-9.-]/g,'').slice(0,10),tags=x=>(x.Theme_Tags||[]),themeIds=x=>(x.Theme_Ids||[]),layerMap=x=>(x.Theme_Layer_Map||{}),layerTags=x=>(x.Theme_Layer_Tags||[]);
+const metricStatusLabels={MISSING:'缺資料',NOT_APPLICABLE:'不適用',ABSTAIN:'暫不判定',STALE:'資料過期',INVALID:'無效'};
+function metricText(x,k,d=2,s=''){let m=(x.Metric_Metadata||{})[k]||{},status=String(m.status||'').toUpperCase(),v=Object.prototype.hasOwnProperty.call(m,'value')?m.value:x[k];if(metricStatusLabels[status])return metricStatusLabels[status];let number=n(v),shown=number===null?(v===null||v===undefined||v===''?'缺資料':String(v)):number.toFixed(d)+s;return status==='ESTIMATED'?'估 '+shown:shown}
+function metricHtml(x,k,d=2,s=''){let m=(x.Metric_Metadata||{})[k]||{},tip=[m.status,m.reason,m.as_of,m.source_method,(m.evidence_ids||[]).length?`evidence ${(m.evidence_ids||[]).length}`:''].filter(Boolean).join(' | ');return `<span${tip?` title="${e(tip)}"`:''}>${e(metricText(x,k,d,s))}</span>`}
 function load(){try{return new Set((JSON.parse(localStorage.getItem(key)||'[]')).map(norm).filter(Boolean))}catch{return new Set()}}function save(){localStorage.setItem(key,JSON.stringify([...watch].sort()));$('#watchCount').textContent=watch.size}
 function toggle(t){t=norm(t);if(!t)return;watch.has(t)?watch.delete(t):watch.add(t);save();render()}
 function tagBadges(x){let t=tags(x);return t.length?t.slice(0,2).map(a=>`<span class="badge warn">${e(a)}</span>`).join(''):'<span class="muted">無</span>'}

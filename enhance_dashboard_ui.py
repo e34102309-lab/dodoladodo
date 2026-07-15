@@ -101,11 +101,12 @@ ENHANCEMENT = r'''
     const out = stocks.filter(x => {
       const haystack = [x.Ticker, x.Sector, x.Industry, x.Status, x.Verdict, ...tags(x), ...layerTags(x)].join(' ').toLowerCase();
       return (!query || haystack.includes(query))
-        && (n(x.Long_Term_Score) ?? -1) >= minScore
+        && (minScore <= 0 || (n(x.Long_Term_Score) ?? -1) >= minScore)
         && (!selectedTheme || themeIds(x).includes(selectedTheme))
         && candidateMatches2(x, activeCandidate2)
         && (view !== 'shortlist' || yes(x.IsShortlist))
         && (view !== 'eligible' || yes(x.Long_Term_Eligible))
+        && (view !== 'abstain' || x.Decision_State === 'ABSTAIN')
         && (view !== 'watch' || watch.has(x.Ticker));
     });
     if (view === 'watch' && !activeCandidate2) {
@@ -158,7 +159,7 @@ ENHANCEMENT = r'''
     renderActiveCandidate2();
     document.querySelectorAll('[data-theme]').forEach(card => card.classList.toggle('active', card.dataset.theme === activeTheme));
     document.querySelectorAll('[data-candidate]').forEach(card => card.classList.toggle('active', activeCandidate2 && card.dataset.candidate === activeCandidate2.key));
-    $('#rows').innerHTML = out.map(x => `<tr data-t="${e(x.Ticker)}"><td>${x.Rank || '-'}</td><td><b>${e(x.Ticker)}</b> ${yes(x.IsShortlist) ? '<span class="badge good">Shortlist</span>' : ''}</td><td>${f(x.Long_Term_Score)}</td><td>${e(x.Verdict || x.Status || '待查')}</td><td class="optional">${e(x.Sector || x.Industry || 'N/A')}</td><td class="optional">${tagBadges(x)}</td><td class="optional">${f(x.Real_FCF_Yield_pct, 2, '%')}</td><td><button data-w="${e(x.Ticker)}">${watch.has(x.Ticker) ? '移除' : '加入'}</button></td></tr>`).join('');
+    $('#rows').innerHTML = out.map(x => `<tr data-t="${e(x.Ticker)}"><td>${x.Rank || '-'}</td><td><b>${e(x.Ticker)}</b> ${yes(x.IsShortlist) ? '<span class="badge good">Shortlist</span>' : ''}</td><td>${metricHtml(x, 'Long_Term_Score')}</td><td>${e(x.Verdict || x.Status || '待查')}</td><td class="optional">${e(x.Sector || x.Industry || 'N/A')}</td><td class="optional">${tagBadges(x)}</td><td class="optional">${metricHtml(x, 'Real_FCF_Yield_pct', 2, '%')}</td><td><button data-w="${e(x.Ticker)}">${watch.has(x.Ticker) ? '移除' : '加入'}</button></td></tr>`).join('');
     $('#empty').hidden = out.length > 0;
     document.querySelectorAll('tr[data-t]').forEach(row => row.onclick = event => {
       if (!event.target.dataset.w) openDetail(row.dataset.t);
@@ -167,6 +168,47 @@ ENHANCEMENT = r'''
       event.stopPropagation();
       toggle(button.dataset.w);
     });
+  };
+
+  const fieldLabel2 = (key, label) => {
+    const item = fields.find(field => field[1] === key);
+    if (item) item[0] = label;
+  };
+  fieldLabel2('Real_FCF_Yield_pct', '維護 FCF / 市值');
+  fieldLabel2('Conservative_Real_FCF_Yield_pct', '保守 FCF / 市值');
+  fields.push(
+    ['維護 FCF / EV', 'Maintenance_Real_FCF_to_EV_Yield_pct', '%'],
+    ['保守 FCF / EV', 'Conservative_Real_FCF_to_EV_Yield_pct', '%'],
+    ['Maintenance CapEx 低情境', 'Maintenance_CapEx_Low_B', 'B'],
+    ['Maintenance CapEx 高情境', 'Maintenance_CapEx_High_B', 'B'],
+    ['歷史估值覆蓋率', 'Historical_Valuation_Coverage']
+  );
+
+  const baseOpenDetail2 = openDetail;
+  openDetail = function(ticker) {
+    baseOpenDetail2(ticker);
+    const stock = map.get(ticker);
+    if (!stock) return;
+    const metricSections = [...document.querySelectorAll('#detailBody .section')].filter(section => section.querySelector('.grid'));
+    const financialSection = metricSections.at(-1);
+    (financialSection ? financialSection.querySelectorAll('.metric') : []).forEach((node, index) => {
+      const field = fields[index];
+      if (field) node.querySelector('b').innerHTML = metricHtml(stock, field[1], 2, field[2] || '');
+    });
+    if (metricSections.length > 1) {
+      const componentNames = Object.keys(obj(stock.Industry_Model_Components_JSON));
+      const metricNames = Object.keys(obj(stock.Industry_Model_Metrics_JSON));
+      const specializedKeys = [
+        ...componentNames.map(name => `industry_component.${name}`),
+        ...metricNames.map(name => `industry.${name}`),
+      ];
+      metricSections[0].querySelectorAll('.metric').forEach((node, index) => {
+        const key = specializedKeys[index];
+        if (key) node.querySelector('b').innerHTML = metricHtml(stock, key);
+      });
+    }
+    const qualityBox = document.querySelector('#detailBody .section:last-child .box');
+    if (qualityBox) qualityBox.innerHTML += `<br><br><b>狀態契約稽核</b><br>必要缺值：${e(stock.Required_Missing_Metrics || '無')}<br>選用缺值：${e(stock.Optional_Missing_Metrics || '無')}<br>指標證據覆蓋：${f(stock.Metric_Evidence_Coverage, 2)}<br>Maintenance CapEx 信心：${e(stock.Maintenance_CapEx_Confidence || '不適用')}<br>產業壓力延伸：${e(stock.Industry_Stress_Extension_Status || '待查')} - ${e(stock.Industry_Stress_Extension_Reason || '')}`;
   };
 
   ['#search', '#view', '#min'].forEach(selector => $(selector).oninput = render);
