@@ -9,22 +9,36 @@ from build_mode_c_dashboard import (
     DASHBOARD_TREND_POLICY_VERSION,
     build_dashboard,
     build_emerging_candidates,
+    build_payload,
     group_snapshot,
     metric_summary,
 )
 from enhance_dashboard_ui import enhance_dashboard
+from mode_c_research_priority import RESEARCH_PRIORITY_VERSION
 
 
 class DashboardTests(unittest.TestCase):
     def test_builds_dashboard_with_watchlist_sec_links_theme_radar_and_emerging_candidates(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
-            pd.DataFrame(
+            screen = pd.DataFrame(
                 [
                     {
                         "Ticker": "APH",
                         "Status": "Pass",
                         "Long_Term_Score": 82.5,
+                        "Raw_Model_Score": 82.5,
+                        "Within_Model_Percentile": 100.0,
+                        "Shrunk_Within_Model_Percentile": 56.52,
+                        "Research_Priority_Rank": 1,
+                        "Data_Confidence_Score": 90.0,
+                        "Factor_Coverage": 1.0,
+                        "Research_Action_State": "GLOBAL_RESEARCH_QUEUE",
+                        "Decision_Timestamp": "2026-07-15T00:00:00+00:00",
+                        "Price_Data_Date": "2026-07-14",
+                        "Latest_SEC_Availability_Date": "2026-07-13T20:00:00+00:00",
+                        "Universe_Version": "test-universe",
+                        "Git_Commit": "test-commit",
                         "Long_Term_Eligible": True,
                         "Verdict": "優先研究",
                         "Sector": "Technology",
@@ -40,6 +54,13 @@ class DashboardTests(unittest.TestCase):
                         "Ticker": "TEL",
                         "Status": "Pass",
                         "Long_Term_Score": 78.0,
+                        "Raw_Model_Score": 78.0,
+                        "Within_Model_Percentile": 66.67,
+                        "Shrunk_Within_Model_Percentile": 52.17,
+                        "Research_Priority_Rank": 2,
+                        "Data_Confidence_Score": 85.0,
+                        "Factor_Coverage": 0.9,
+                        "Research_Action_State": "MODEL_ELIGIBLE",
                         "Long_Term_Eligible": True,
                         "Verdict": "研究候選",
                         "Sector": "Technology",
@@ -53,6 +74,13 @@ class DashboardTests(unittest.TestCase):
                         "Ticker": "VSH",
                         "Status": "Pass",
                         "Long_Term_Score": 71.0,
+                        "Raw_Model_Score": 71.0,
+                        "Within_Model_Percentile": 33.33,
+                        "Shrunk_Within_Model_Percentile": 47.83,
+                        "Research_Priority_Rank": 3,
+                        "Data_Confidence_Score": 80.0,
+                        "Factor_Coverage": 0.8,
+                        "Research_Action_State": "MODEL_ELIGIBLE",
                         "Long_Term_Eligible": True,
                         "Verdict": "研究候選",
                         "Sector": "Technology",
@@ -64,7 +92,9 @@ class DashboardTests(unittest.TestCase):
                     },
                     {"Ticker": "TEST", "Status": "Abstain: model unavailable", "Decision_State": "ABSTAIN", "Model_Route": "BANK", "Long_Term_Score": float("nan")},
                 ]
-            ).to_csv(root / "screen.csv", index=False)
+            )
+            screen["Research_Priority_Version"] = RESEARCH_PRIORITY_VERSION
+            screen.to_csv(root / "screen.csv", index=False)
             pd.DataFrame([{"Ticker": "APH"}]).to_csv(root / "shortlist.csv", index=False)
             pd.DataFrame(
                 [
@@ -98,10 +128,10 @@ class DashboardTests(unittest.TestCase):
             html = index.read_text(encoding="utf-8")
             self.assertIn("Alpha Engine 長期價值研究台", html)
             self.assertIn("主題擴散鏈", html)
-            self.assertIn("候選風口偵測", html)
-            self.assertIn("它會自動偵測什麼？", html)
-            self.assertIn("它不會自動做什麼？", html)
-            self.assertIn("點我 → 下面只看這群股票", html)
+            self.assertIn("高分群聚與研究線索", html)
+            self.assertIn("這裡顯示什麼", html)
+            self.assertIn("這裡不代表什麼", html)
+            self.assertIn("清除群聚篩選", html)
             self.assertIn("data-candidate", html)
             self.assertIn("clearCandidate", html)
             self.assertIn('value="abstain"', html)
@@ -112,7 +142,15 @@ class DashboardTests(unittest.TestCase):
             self.assertIn("m<=0||", html)
             self.assertIn("v===null||v===undefined||v===''", html)
             self.assertIn("NOT_APPLICABLE:'不適用'", html)
-            self.assertIn("metricHtml(x, 'Real_FCF_Yield_pct'", html)
+            self.assertIn("metricHtml(x,'Shrunk_Within_Model_Percentile'", html)
+            self.assertIn("Raw_Model_Score", html)
+            self.assertIn("Core_KPI_Summary", html)
+            self.assertIn("模型內百分位，不代表跨模型未來報酬已校準", html)
+            self.assertIn("Top 3 Positive Drivers", html)
+            self.assertIn("Required Missing Metrics", html)
+            self.assertIn("Cross-model calibration", html)
+            self.assertIn("Decision Timestamp", html)
+            self.assertIn("Git Commit", html)
             self.assertIn("Industry_Model_Score", html)
             self.assertIn("specializedPanel", html)
             self.assertIn("Industry_Model_Metrics_JSON", html)
@@ -124,7 +162,7 @@ class DashboardTests(unittest.TestCase):
             self.assertIn("三年拆股因子", html)
             self.assertIn("AI 晶片二階受益鏈", html)
             self.assertIn("二階：瓶頸零組件與設備", html)
-            self.assertIn("待人工確認", html)
+            self.assertIn("RESEARCH_CLUSTER_SIGNAL", html)
             self.assertIn("localStorage", html)
             self.assertIn("複製 AI 研究提示", html)
             self.assertIn("二階受益是否已開始進財報", html)
@@ -135,6 +173,11 @@ class DashboardTests(unittest.TestCase):
             data = json.loads((root / "public" / "data.json").read_text(encoding="utf-8"))
             self.assertEqual(data["stats"]["total"], 4)
             self.assertEqual(data["stats"]["shortlist"], 1)
+            self.assertEqual(data["stats"]["research_queue"], 1)
+            self.assertIn("coverage_medians", data["stats"])
+            self.assertIn("metric_status_ratios", data["stats"])
+            self.assertEqual(data["metadata"]["universe_version"], "test-universe")
+            self.assertEqual(data["stocks"][0]["Core_Metric_Coverage_pct"], 100.0)
             self.assertIsNone(data["stocks"][3]["Long_Term_Score"])
             self.assertEqual(data["trend_baseline"]["status"], "建立基準中")
             saved_history = json.loads(history.read_text(encoding="utf-8"))
@@ -143,7 +186,7 @@ class DashboardTests(unittest.TestCase):
             self.assertIn("metric_status_counts", data["stats"])
             self.assertTrue(data["emerging_candidates"])
             self.assertTrue(
-                any(candidate["status"] == "待人工確認" for candidate in data["emerging_candidates"])
+                any(candidate["status"] == "RESEARCH_CLUSTER_SIGNAL" for candidate in data["emerging_candidates"])
             )
             self.assertTrue(
                 any("Electronic Components" in candidate["name"] for candidate in data["emerging_candidates"])
@@ -165,34 +208,78 @@ class DashboardTests(unittest.TestCase):
         rows = [
             {
                 "Ticker": "ONE",
-                "Long_Term_Score": 90.0,
+                "Shrunk_Within_Model_Percentile": 60.0,
                 "Metric_Metadata": {
-                    "Long_Term_Score": {"status": "VALID", "value": 90.0}
+                    "Shrunk_Within_Model_Percentile": {"status": "VALID", "value": 60.0}
                 },
             },
             {
                 "Ticker": "TWO",
-                "Long_Term_Score": None,
+                "Shrunk_Within_Model_Percentile": None,
                 "Metric_Metadata": {
-                    "Long_Term_Score": {"status": "MISSING", "value": None}
+                    "Shrunk_Within_Model_Percentile": {"status": "MISSING", "value": None}
                 },
             },
             {
                 "Ticker": "THREE",
-                "Long_Term_Score": None,
+                "Shrunk_Within_Model_Percentile": None,
                 "Metric_Metadata": {
-                    "Long_Term_Score": {"status": "ABSTAIN", "value": None}
+                    "Shrunk_Within_Model_Percentile": {"status": "ABSTAIN", "value": None}
                 },
             },
         ]
         group = group_snapshot("industry:test", "Test", "industry", rows)
-        self.assertIsNone(group["avg_score"])
-        self.assertEqual(group["metric_coverage"]["avg_score"]["valid_count"], 1)
-        self.assertAlmostEqual(group["metric_coverage"]["avg_score"]["coverage"], 1 / 3, places=3)
+        self.assertIsNone(group["avg_shrunk_score"])
+        self.assertEqual(group["metric_coverage"]["avg_shrunk_score"]["valid_count"], 1)
+        self.assertAlmostEqual(group["metric_coverage"]["avg_shrunk_score"]["coverage"], 1 / 3, places=3)
         self.assertEqual(
             build_emerging_candidates({"industry:test": group}, {}),
             [],
         )
+
+    def test_legacy_screen_gets_offline_research_priority_upgrade(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            rows = [
+                {
+                    "Ticker": "GEN",
+                    "Industry_Model_Key": "GENERAL_CORPORATE",
+                    "Long_Term_Score": 75.0,
+                    "Long_Term_Eligible": True,
+                    "Decision_State": "PASS",
+                    "Model_Supported": True,
+                    "Data_Confidence_Score": 85.0,
+                },
+                {
+                    "Ticker": "INS",
+                    "Industry_Model_Key": "INSURANCE_P_AND_C",
+                    "Industry_Model_Score": 95.0,
+                    "Long_Term_Eligible": True,
+                    "Decision_State": "PASS",
+                    "Model_Supported": True,
+                    "Data_Confidence_Score": 90.0,
+                    "Combined_Ratio_Source_Status": "SEC_PROXY_UNRECONCILED",
+                },
+            ]
+            pd.DataFrame(rows).to_csv(root / "screen.csv", index=False)
+            pd.DataFrame([{"Ticker": "INS"}]).to_csv(root / "shortlist.csv", index=False)
+            pd.DataFrame(
+                [{"Ticker": "GEN", "CIK": "1"}, {"Ticker": "INS", "CIK": "2"}]
+            ).to_csv(root / "universe.csv", index=False)
+            payload, _ = build_payload(
+                root / "screen.csv",
+                root / "shortlist.csv",
+                root / "universe.csv",
+                history=None,
+            )
+            by_ticker = {row["Ticker"]: row for row in payload["stocks"]}
+            self.assertEqual(
+                by_ticker["GEN"]["Research_Priority_Version"],
+                RESEARCH_PRIORITY_VERSION,
+            )
+            self.assertTrue(by_ticker["GEN"]["Global_Research_Queue"])
+            self.assertTrue(by_ticker["INS"]["Human_KPI_Review_Required"])
+            self.assertFalse(by_ticker["INS"]["Starter_Candidate"])
 
     def test_trends_exclude_estimates_and_preserve_not_applicable(self):
         estimate_rows = [

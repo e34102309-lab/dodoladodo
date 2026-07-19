@@ -30,12 +30,17 @@ class ModeCLongTermRuleTests(unittest.TestCase):
         ast.parse(self.industry_models)
 
     def test_quality_first_weighting_and_capital_allocation(self):
-        self.assertIn("quality_score * 0.35", self.mode_c)
-        self.assertIn("value_score * 0.30", self.mode_c)
-        self.assertIn("expectations_score * 0.20", self.mode_c)
-        self.assertIn("momentum_score * 0.05", self.mode_c)
-        self.assertIn("inflection_score * 0.05", self.mode_c)
-        self.assertIn("r.Capital_Allocation_Score * 0.05", self.mode_c)
+        for marker in (
+            '"quality": (quality_score, 35.0, True)',
+            '"value": (value_score, 30.0, True)',
+            '"expectations": (expectations_score, 20.0, True)',
+            '"momentum": (momentum_score, 5.0, True)',
+            '"inventory_inflection": (',
+            '"capital_allocation": (',
+            "weighted_sum / available_weight",
+            '"factor_coverage": round(safe_div(available_weight, applicable_weight, 0.0), 4)',
+        ):
+            self.assertIn(marker, self.mode_c)
 
     def test_cash_flow_and_return_on_capital_metrics_exist(self):
         for marker in (

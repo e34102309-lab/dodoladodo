@@ -4,6 +4,7 @@ import unittest
 from mode_c_industry_models import (
     SPECIALIZED_MODEL_KEYS,
     assess_specialized_data_confidence,
+    calculate_p_and_c_stress,
     evaluate_industry_model,
     initial_screen_industry,
 )
@@ -123,6 +124,64 @@ class IndustryModelTests(unittest.TestCase):
                 "market_cap_b": 20,
                 "revenue_growth_pct": 8,
             },
+            "ALTERNATIVE_ASSET_MANAGER": {
+                "revenue_ttm_b": 10,
+                "ocf_ttm_b": 3,
+                "net_income_ttm_b": 2,
+                "debt_b": 3,
+                "cash_b": 2,
+                "ebitda_ttm_b": 3.5,
+                "fee_related_earnings_b": 3,
+                "management_fee_revenue_b": 7,
+                "fee_paying_aum_b": 500,
+                "aum_growth_pct": 12,
+                "organic_net_flows_pct": 7,
+                "permanent_capital_pct": 55,
+                "compensation_expense_b": 3,
+            },
+            "TRADITIONAL_ASSET_MANAGER": {
+                "revenue_ttm_b": 10,
+                "ocf_ttm_b": 3,
+                "net_income_ttm_b": 2,
+                "debt_b": 3,
+                "cash_b": 2,
+                "ebitda_ttm_b": 3.5,
+                "management_fee_revenue_b": 8,
+                "aum_b": 700,
+                "aum_growth_pct": 8,
+                "organic_net_flows_pct": 4,
+                "permanent_capital_pct": 20,
+                "compensation_expense_b": 3,
+            },
+            "INSURANCE_LINKED_ASSET_MANAGER": {
+                "revenue_ttm_b": 10,
+                "ocf_ttm_b": 3,
+                "net_income_ttm_b": 2,
+                "debt_b": 3,
+                "cash_b": 2,
+                "ebitda_ttm_b": 3.5,
+                "fee_related_earnings_b": 3,
+                "insurance_assets_pct": 65,
+                "permanent_capital_pct": 70,
+                "fee_paying_aum_b": 500,
+                "aum_growth_pct": 8,
+                "organic_net_flows_pct": 4,
+                "compensation_expense_b": 3,
+            },
+            "OTHER_FEE_FINANCIAL": {
+                "revenue_ttm_b": 10,
+                "ocf_ttm_b": 3,
+                "net_income_ttm_b": 2,
+                "debt_b": 3,
+                "cash_b": 2,
+                "ebitda_ttm_b": 3.5,
+                "management_fee_revenue_b": 8,
+                "aum_b": 700,
+                "aum_growth_pct": 8,
+                "organic_net_flows_pct": 4,
+                "permanent_capital_pct": 20,
+                "compensation_expense_b": 3,
+            },
         }
 
     def test_every_registered_specialized_model_can_pass_a_healthy_case(self):
@@ -161,6 +220,89 @@ class IndustryModelTests(unittest.TestCase):
         result = evaluate_industry_model("BANK", bank)
         self.assertEqual(result.decision, "FAIL")
         self.assertTrue(any("well-capitalized" in reason for reason in result.hard_failures))
+
+    def test_p_and_c_prefers_company_ratio_and_labels_unreconciled_proxy(self):
+        reported = self.healthy_samples()["INSURANCE_P_AND_C"]
+        reported["company_reported_combined_ratio_pct"] = 91.0
+        result = evaluate_industry_model("INSURANCE_P_AND_C", reported)
+        self.assertEqual(result.metrics["combined_ratio_source_status"], "COMPANY_REPORTED")
+        self.assertAlmostEqual(result.metrics["combined_ratio_for_model_pct"], 91.0)
+
+        proxy_only = self.healthy_samples()["INSURANCE_P_AND_C"]
+        proxy_result = evaluate_industry_model("INSURANCE_P_AND_C", proxy_only)
+        self.assertEqual(
+            proxy_result.metrics["combined_ratio_source_status"],
+            "SEC_PROXY_UNRECONCILED",
+        )
+        self.assertLessEqual(proxy_result.components["underwriting_profitability"], 75.0)
+        self.assertTrue(any("human kpi review" in warning.lower() for warning in proxy_result.warnings))
+
+    def test_p_and_c_regressions_keep_company_kpis_separate(self):
+        acgl = self.healthy_samples()["INSURANCE_P_AND_C"]
+        acgl.update(
+            {
+                "company_reported_combined_ratio_pct": 86.0,
+                "monthly_combined_ratio_pct": 82.0,
+                "quarterly_combined_ratio_pct": 86.0,
+                "reserve_development_to_premium_pct": -1.5,
+                "catastrophe_loss_ratio_pct": 3.2,
+            }
+        )
+        acgl_result = evaluate_industry_model("INSURANCE_P_AND_C", acgl)
+        self.assertEqual(acgl_result.metrics["combined_ratio_for_model_pct"], 86.0)
+        self.assertEqual(acgl_result.metrics["monthly_combined_ratio_pct"], 82.0)
+        self.assertEqual(acgl_result.metrics["reserve_development_to_premium_pct"], -1.5)
+        self.assertEqual(acgl_result.metrics["catastrophe_loss_ratio_pct"], 3.2)
+
+        knsl = self.healthy_samples()["INSURANCE_P_AND_C"]
+        knsl.update(
+            {
+                "company_reported_combined_ratio_pct": 75.0,
+                "premium_growth_pct": 1.0,
+                "market_cap_b": 30.0,
+            }
+        )
+        knsl_result = evaluate_industry_model("INSURANCE_P_AND_C", knsl)
+        self.assertLess(knsl_result.score, 95.0)
+        self.assertTrue(any("premium growth below" in warning.lower() for warning in knsl_result.warnings))
+
+    def test_pgr_monthly_ratio_cannot_replace_quarterly_normalized_ratio(self):
+        pgr = self.healthy_samples()["INSURANCE_P_AND_C"]
+        pgr.update(
+            {
+                "company_reported_combined_ratio_pct": 84.0,
+                "monthly_combined_ratio_pct": 84.0,
+                "quarterly_combined_ratio_pct": 92.0,
+                "policy_count_growth_pct": 7.0,
+            }
+        )
+        result = evaluate_industry_model("INSURANCE_P_AND_C", pgr)
+        self.assertEqual(result.metrics["monthly_combined_ratio_pct"], 84.0)
+        self.assertEqual(result.metrics["quarterly_combined_ratio_pct"], 92.0)
+        self.assertEqual(result.metrics["combined_ratio_for_model_pct"], 92.0)
+        self.assertEqual(result.metrics["combined_ratio_period_for_model"], "QUARTERLY")
+        self.assertIn("policy_count_growth", result.components)
+
+    def test_p_and_c_stress_abstains_when_core_inputs_are_missing(self):
+        missing = calculate_p_and_c_stress({"premium_growth_pct": 10.0})
+        self.assertEqual(missing["p_and_c_stress_status"], "ABSTAIN")
+        self.assertTrue(math.isnan(missing["p_and_c_stress_pretax_income_moderate_b"]))
+
+        complete = calculate_p_and_c_stress(
+            {
+                "premiums_earned_ttm_b": 20.0,
+                "company_reported_combined_ratio_pct": 90.0,
+                "premium_growth_pct": 8.0,
+                "net_investment_income_ttm_b": 1.8,
+                "invested_assets_b": 40.0,
+                "investment_yield_pct": 4.5,
+                "pretax_income_ttm_b": 3.5,
+                "equity_b": 10.0,
+                "assets_b": 50.0,
+            }
+        )
+        self.assertEqual(complete["p_and_c_stress_status"], "PASS")
+        self.assertTrue(complete["p_and_c_stress_survival_moderate"])
 
     def test_known_hard_failure_dominates_an_unrelated_missing_metric(self):
         bank = self.healthy_samples()["BANK"]
@@ -266,6 +408,10 @@ class IndustryModelTests(unittest.TestCase):
         deferred = initial_screen_industry("REIT_EQUITY", {})
         self.assertEqual(deferred["decision"], "PASS")
         self.assertTrue(deferred["warnings"])
+        asset_manager = initial_screen_industry(
+            "ALTERNATIVE_ASSET_MANAGER", {"ebitda": -1, "operatingCashflow": -1}
+        )
+        self.assertEqual(asset_manager["decision"], "DROP")
 
     def test_routing_covers_specialized_subtypes(self):
         cases = [
@@ -276,13 +422,27 @@ class IndustryModelTests(unittest.TestCase):
             (("Real Estate", "REIT - Mortgage"), "REIT_MORTGAGE"),
             (("Utilities", "Utilities - Regulated Electric"), "REGULATED_UTILITY"),
             (("Energy", "Oil & Gas E&P"), "CYCLICAL_MIDCYCLE"),
-            (("Financial Services", "Asset Management"), "FINANCIAL_FEE"),
+            (("Financial Services", "Asset Management"), "OTHER_FEE_FINANCIAL"),
         ]
         for (sector, industry), model_key in cases:
             with self.subTest(model_key=model_key):
                 route = route_industry_model(sector, industry)
                 self.assertTrue(route["supported"])
                 self.assertEqual(route["model_key"], model_key)
+
+    def test_asset_manager_ticker_refines_the_subtype(self):
+        self.assertEqual(
+            route_industry_model("Financial Services", "Asset Management", ticker="BX")["model_key"],
+            "ALTERNATIVE_ASSET_MANAGER",
+        )
+        self.assertEqual(
+            route_industry_model("Financial Services", "Asset Management", ticker="BAM")["model_key"],
+            "INSURANCE_LINKED_ASSET_MANAGER",
+        )
+        self.assertEqual(
+            route_industry_model("Financial Services", "Asset Management", ticker="AMG")["model_key"],
+            "TRADITIONAL_ASSET_MANAGER",
+        )
 
     def test_nonregulated_utility_and_defense_are_not_forced_into_midcycle_models(self):
         merchant = route_industry_model("Utilities", "Utilities - Independent Power Producers")

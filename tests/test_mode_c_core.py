@@ -18,6 +18,7 @@ from AQR_ModeC_Agent_V12 import (
     analyze_dsi_signal,
     annual_values_by_year,
     apply_long_term_framework,
+    assess_inventory_factor_applicability,
     assess_data_confidence,
     build_agent_verification_plan,
     calc_dsi_series,
@@ -25,12 +26,16 @@ from AQR_ModeC_Agent_V12 import (
     calculate_financial_stress,
     calculate_interest_coverage_gate,
     calculate_per_share_growth_3y,
+    calculate_roic_capital_metrics,
     common_equity_rejection_reason,
     composite_score_for_result,
     dynamic_implied_cagr_limit,
     estimate_maintenance_capex_amount,
+    estimate_maintenance_capex_profile,
+    maintenance_fcf_research_warnings,
     get_upcoming_earnings,
     historical_valuation,
+    historical_valuation_quantile,
     hydrate_info_cache_from_verified_universe,
     implied_ebitda_cagr,
     minimum_positive_fcf_years,
@@ -352,6 +357,8 @@ class ModeCCoreTests(unittest.TestCase):
         self.assertEqual(result.Sector, "Financial Services")
         self.assertEqual(result.Scoring_Framework, "INDUSTRY_SPECIALIZED_BANK_V1")
         self.assertFalse(result.Model_Route_Refined)
+        self.assertEqual(result.Decision_State, "ABSTAIN")
+        self.assertEqual(result.Decision_Reason_Code, "MISSING_MARKET_DATA")
 
     def test_reit_capex_mapping_excludes_property_acquisitions(self):
         tags = SECDataDistiller("research@example.com").config["RealEstateCapEx"]
@@ -375,774 +382,4 @@ class ModeCCoreTests(unittest.TestCase):
                 return frame
 
             @classmethod
-            def _mark_rows_used(cls, rows, role):
-                cls.selected_roles.append(role)
-                return []
-
-            @staticmethod
-            def _record_derived_from_ids(*args, **kwargs):
-                return ""
-
-        facts = pd.DataFrame(
-            [
-                {"end": pd.Timestamp("2024-12-31"), "val": 100e9},
-                {"end": pd.Timestamp("2025-12-31"), "val": 80e9},
-            ]
-        )
-        self.assertTrue(math.isnan(_specialized_ppe_capex_proxy(FakeSec(), facts, 10.0)))
-        self.assertEqual(FakeSec.selected_roles, [])
-
-    def test_specialized_market_cap_fallback_has_no_general_pipeline_locals(self):
-        source = inspect.getsource(run_specialized_mode_c_pipeline)
-        self.assertNotIn("tasks.append", source)
-        self.assertNotIn("physical_check =", source)
-
-    def test_prefetched_earnings_timestamp_avoids_calendar_request(self):
-        now = pd.Timestamp("2026-07-11T00:00:00Z")
-        event = pd.Timestamp("2026-07-20T12:00:00Z")
-        events = get_upcoming_earnings(
-            "TEST",
-            {"earningsTimestamp": int(event.timestamp())},
-            now=now,
-        )
-        self.assertEqual(events, ["Earnings: 2026-07-20"])
-
-    def test_debt_components_avoid_double_counting(self):
-        consolidated = _compose_total_debt(
-            100.0,
-            "DebtAndFinanceLeaseObligations",
-            debt_current=5.0,
-            debt_current_concept="LongTermDebtCurrent",
-            commercial_paper=3.0,
-            finance_lease=2.0,
-        )
-        synthesized = _compose_total_debt(
-            90.0,
-            "LongTermDebtNoncurrent",
-            debt_current=4.0,
-            debt_current_concept="LongTermDebtCurrent",
-            other_short_term=1.0,
-            commercial_paper=5.0,
-            finance_lease=1.0,
-        )
-        notes_payable = _compose_total_debt(
-            25.0,
-            "NotesPayable",
-            debt_current=4.0,
-            debt_current_concept="LongTermDebtCurrent",
-            commercial_paper=0.4,
-            finance_lease=0.1,
-        )
-        lease_in_current_debt = _compose_total_debt(
-            90.0,
-            "LongTermDebtNoncurrent",
-            debt_current=5.0,
-            debt_current_concept="LongTermDebtAndFinanceLeaseObligationsCurrent",
-            finance_lease=10.0,
-        )
-        self.assertEqual(consolidated, 100.0)
-        self.assertEqual(synthesized, 101.0)
-        self.assertAlmostEqual(notes_payable, 25.5)
-        self.assertEqual(lease_in_current_debt, 95.0)
-
-    def test_specialized_debt_ignores_stale_broad_short_term_tag(self):
-        class FakeSEC:
-            decision_timestamp = pd.Timestamp("2026-07-11")
-            selected_roles = []
-
-            @staticmethod
-            def _instant_facts(frame):
-                return SECDataDistiller._instant_facts(frame)
-
-            @classmethod
-            def _mark_rows_used(cls, rows, role):
-                cls.selected_roles.append(role)
-                return []
-
-        def instant(value, end, concept, priority=0):
-            return pd.DataFrame(
-                [{
-                    "val": value * 1e9,
-                    "end": pd.Timestamp(end),
-                    "concept": concept,
-                    "concept_priority": priority,
-                    "filed": pd.Timestamp(end),
-                }]
-            )
-
-        debt, _, sources = _specialized_total_debt(
-            FakeSEC(),
-            {
-                "DebtTotal": instant(90, "2026-03-31", "LongTermDebtNoncurrent"),
-                "DebtCurrent": instant(4, "2026-03-31", "LongTermDebtCurrent"),
-                "DebtShortTermTotal": instant(99, "2025-06-30", "ShortTermBorrowings"),
-                "DebtOtherShortTerm": instant(1, "2026-03-31", "OtherShortTermBorrowings"),
-                "DebtCommercialPaper": instant(5, "2026-03-31", "CommercialPaper"),
-            },
-        )
-        self.assertEqual(debt, 100.0)
-        self.assertNotIn("DebtShortTermTotal", sources)
-        self.assertIn("DebtCommercialPaper", sources)
-        self.assertEqual(
-            set(FakeSEC.selected_roles),
-            {
-                "DebtTotal:latest-debt-component",
-                "DebtCurrent:latest-debt-component",
-                "DebtOtherShortTerm:latest-debt-component",
-                "DebtCommercialPaper:latest-debt-component",
-            },
-        )
-
-    def test_average_balance_uses_year_ago_not_previous_quarter(self):
-        facts = pd.DataFrame(
-            {
-                "end": pd.to_datetime(
-                    ["2024-12-31", "2025-03-31", "2025-06-30", "2025-12-31"]
-                ),
-                "val": [100e9, 110e9, 120e9, 140e9],
-            }
-        )
-
-        class FakeSEC:
-            selected = None
-
-            @staticmethod
-            def _instant_facts(frame):
-                return frame
-
-            def _mark_rows_used(self, rows, role):
-                self.selected = rows
-
-        sec = FakeSEC()
-        average = _specialized_average_balance(sec, facts, "Equity")
-        self.assertAlmostEqual(average, 120.0)
-        self.assertEqual(len(sec.selected), 2)
-
-    def test_balance_growth_rejects_a_multiyear_value_as_year_over_year(self):
-        facts = pd.DataFrame(
-            [
-                {"end": pd.Timestamp("2023-12-31"), "val": 100.0},
-                {"end": pd.Timestamp("2025-12-31"), "val": 130.0},
-            ]
-        )
-        value = _specialized_balance_growth_pct(
-            SECDataDistiller("research@example.com"),
-            facts,
-            "PPENet",
-        )
-        self.assertTrue(math.isnan(value))
-
-    def test_cyclical_ebitda_history_requires_consecutive_annual_periods(self):
-        class FakeSEC:
-            selected = []
-
-            @staticmethod
-            def _annual_facts(frame):
-                return frame
-
-            @classmethod
-            def _mark_rows_used(cls, row, role):
-                cls.selected.append((row["end"], role))
-
-        ends = pd.to_datetime(
-            ["2021-12-31", "2023-12-31", "2024-12-31", "2025-12-31"]
-        )
-        ebit = pd.DataFrame({"end": ends, "val": [1e9, 2e9, 3e9, 4e9]})
-        dna = pd.DataFrame({"end": ends, "val": [0.5e9] * 4})
-        history = _specialized_ebitda_history(FakeSEC(), ebit, dna)
-        self.assertEqual(history, [2.5, 3.5, 4.5])
-
-    def test_share_change_requires_explicit_one_and_three_year_windows(self):
-        sec = SECDataDistiller(
-            "research@example.com",
-            ticker="TEST",
-            cik="1",
-            decision_timestamp=pd.Timestamp("2026-01-01", tz="UTC"),
-        )
-        facts = pd.DataFrame(
-            [
-                {"end": pd.Timestamp("2020-12-31"), "val": 80e6},
-                {"end": pd.Timestamp("2022-12-31"), "val": 90e6},
-                {"end": pd.Timestamp("2025-12-31"), "val": 100e6},
-            ]
-        )
-        current, one_year, three_year = sec.get_shares_now_1y_3y(facts)
-        self.assertEqual(current, 0.1)
-        self.assertEqual(one_year, 0.0)
-        self.assertEqual(three_year, 0.09)
-
-    def test_fiscal_year_is_normalized_to_integer(self):
-        facts = pd.DataFrame(
-            [{
-                "val": 1.0,
-                "end": "2025-12-31",
-                "filed": "2026-02-01",
-                "fy": 2025.0,
-                "fp": "FY",
-                "form": "10-K",
-            }]
-        )
-        cleaned = SECDataDistiller._clean_facts(facts)
-        self.assertEqual(str(cleaned.loc[0, "fy"]), "2025")
-
-    def test_ytd_selection_uses_latest_period_and_best_duration(self):
-        facts = pd.DataFrame(
-            [
-                {"fy": 2025, "fp": "Q2", "end": pd.Timestamp("2024-06-30"), "duration_days": 181, "val": 90, "filed": pd.Timestamp("2025-08-01"), "concept_priority": 0},
-                {"fy": 2025, "fp": "Q2", "end": pd.Timestamp("2025-06-30"), "duration_days": 181, "val": 120, "filed": pd.Timestamp("2025-08-01"), "concept_priority": 0},
-                {"fy": 2025, "fp": "Q2", "end": pd.Timestamp("2025-06-30"), "duration_days": 92, "val": 999, "filed": pd.Timestamp("2025-08-01"), "concept_priority": 0},
-            ]
-        )
-        selected = SECDataDistiller._select_ytd(facts, 2025, "Q2")
-        self.assertEqual(float(selected["val"]), 120.0)
-
-    def test_annual_history_keys_by_period_end_not_filing_fy(self):
-        facts = pd.DataFrame(
-            [
-                {"fy": 2025, "fp": "FY", "form": "10-K", "end": pd.Timestamp("2024-12-31"), "duration_days": 365, "val": 100, "filed": pd.Timestamp("2026-02-01"), "concept_priority": 0},
-                {"fy": 2025, "fp": "FY", "form": "10-K", "end": pd.Timestamp("2025-12-31"), "duration_days": 365, "val": 120, "filed": pd.Timestamp("2026-02-01"), "concept_priority": 0},
-            ]
-        )
-        values = annual_values_by_year(SECDataDistiller("research@example.com"), facts)
-        self.assertEqual(values, {2024: 100.0, 2025: 120.0})
-
-    def test_companyfacts_is_cached_and_merges_concept_history(self):
-        payload = {
-            "facts": {
-                "us-gaap": {
-                    "Revenues": {"units": {"USD": [{"end": "2023-12-31", "val": 100, "form": "10-K", "fp": "FY", "fy": 2023, "filed": "2024-02-01"}]}},
-                    "RevenueFromContractWithCustomerExcludingAssessedTax": {"units": {"USD": [{"end": "2024-12-31", "val": 120, "form": "10-K", "fp": "FY", "fy": 2024, "filed": "2025-02-01"}]}},
-                }
-            }
-        }
-
-        class FakeResponse:
-            def json(self):
-                return payload
-
-            def __bool__(self):
-                return True
-
-        class FakeSession:
-            def __init__(self):
-                self.calls = 0
-
-            def get(self, url, headers):
-                self.calls += 1
-                return FakeResponse()
-
-        sec = SECDataDistiller("research@example.com")
-        sec.session = FakeSession()
-        first = sec.fetch_concept("1", "Revenue")
-        second = sec.fetch_concept("1", "Revenue")
-        self.assertEqual(sec.session.calls, 1)
-        self.assertEqual(set(first["concept"]), {"Revenues", "RevenueFromContractWithCustomerExcludingAssessedTax"})
-        self.assertEqual(len(second), 2)
-
-    def test_historical_valuation_can_use_first_filing_without_lookahead(self):
-        raw = pd.DataFrame(
-            [
-                {"start": "2024-01-01", "end": "2024-12-31", "val": 100, "form": "10-K", "fp": "FY", "fy": 2024, "filed": "2025-02-01", "accn": "original"},
-                {"start": "2024-01-01", "end": "2024-12-31", "val": 110, "form": "10-K", "fp": "FY", "fy": 2024, "filed": "2026-02-01", "accn": "restated"},
-            ]
-        )
-        cleaned = SECDataDistiller._clean_facts(raw)
-        first = SECDataDistiller._annual_facts(cleaned, latest_filed=False)
-        latest = SECDataDistiller._annual_facts(cleaned, latest_filed=True)
-        self.assertEqual(len(cleaned), 2)
-        self.assertEqual(float(first.iloc[0]["val"]), 100.0)
-        self.assertEqual(float(latest.iloc[0]["val"]), 110.0)
-
-    def test_foreign_annual_filings_are_valid_annual_facts(self):
-        rows = []
-        for index, form in enumerate(["20-F", "40-F"], start=1):
-            rows.append(
-                {
-                    "start": f"202{index + 2}-01-01",
-                    "end": f"202{index + 2}-12-31",
-                    "val": index * 1e9,
-                    "form": form,
-                    "fp": "FY",
-                    "fy": 2022 + index,
-                    "filed": f"202{index + 3}-03-01",
-                    "accn": f"foreign-{index}",
-                }
-            )
-        facts = SECDataDistiller._clean_facts(pd.DataFrame(rows))
-        annual = SECDataDistiller._annual_facts(facts)
-        self.assertEqual(annual["form"].tolist(), ["20-F", "40-F"])
-
-        value, method, _ = SECDataDistiller("research@example.com").ttm_flow(
-            facts,
-            normalized_metric="TTM_Revenue",
-        )
-        self.assertEqual(value, 2.0)
-        self.assertIn("40-F", method)
-        self.assertIn("fallback annual", method)
-
-    def test_stale_core_facts_are_not_treated_as_current(self):
-        required = {
-            "Current": pd.DataFrame({"end": [pd.Timestamp("2025-12-31")]}),
-            "Stale": pd.DataFrame({"end": [pd.Timestamp("2023-12-31")]}),
-        }
-        stale = stale_required_fact_names(
-            required,
-            pd.Timestamp("2026-07-12"),
-        )
-        self.assertEqual(stale, ["Stale"])
-
-        domestic = pd.DataFrame(
-            {"end": [pd.Timestamp("2025-03-31")], "form": ["10-Q"]}
-        )
-        foreign = pd.DataFrame(
-            {"end": [pd.Timestamp("2025-03-31")], "form": ["20-F"]}
-        )
-        self.assertEqual(
-            stale_required_fact_names(
-                {"Domestic": domestic, "Foreign": foreign},
-                pd.Timestamp("2026-07-12"),
-            ),
-            ["Domestic"],
-        )
-
-    def test_latest_balance_returns_the_selected_concept(self):
-        facts = pd.DataFrame(
-            [
-                {"end": pd.Timestamp("2025-12-31"), "filed": pd.Timestamp("2026-02-01"), "val": 80e9, "concept": "LongTermDebt", "concept_priority": 4},
-                {"end": pd.Timestamp("2025-12-31"), "filed": pd.Timestamp("2026-02-01"), "val": 100e9, "concept": "DebtCurrentAndLongTerm", "concept_priority": 0},
-            ]
-        )
-        value, concept = SECDataDistiller("research@example.com").latest_balance_with_concept(facts)
-        self.assertEqual(value, 100.0)
-        self.assertEqual(concept, "DebtCurrentAndLongTerm")
-
-    def test_only_major_exchange_common_equity_is_accepted(self):
-        valid = {
-            "quoteType": "EQUITY",
-            "exchange": "NMS",
-            "sector": "Technology",
-            "industry": "Software - Infrastructure",
-        }
-        self.assertEqual(common_equity_rejection_reason("MSFT", valid), "")
-        self.assertEqual(common_equity_rejection_reason("BRK-B", valid), "")
-        self.assertIn(
-            "éæ¨™æº–æ™®é€šè‚¡ä»£è™Ÿ",
-            common_equity_rejection_reason("BAC-PL", valid),
-        )
-        self.assertIn(
-            "éæ™®é€šè‚¡å•†å“",
-            common_equity_rejection_reason("SPY", {**valid, "quoteType": "ETF"}),
-        )
-        self.assertIn(
-            "éä¸»è¦ç¾åœ‹äº¤æ˜“æ‰€",
-            common_equity_rejection_reason("ASMLF", {**valid, "exchange": "PNK"}),
-        )
-
-    def test_verified_universe_metadata_survives_empty_daily_yahoo_info(self):
-        universe = pd.DataFrame(
-            [
-                {
-                    "Ticker": "BRK-B",
-                    "CIK": "0001067983",
-                    "Status": "Pass",
-                    "SECExchange": "NYSE",
-                    "Sector": "Financial Services",
-                    "Industry": "Insurance - Diversified",
-                }
-            ]
-        )
-        with patch("AQR_ModeC_Agent_V12._INFO_CACHE", {"BRK-B": {}}):
-            hydrate_info_cache_from_verified_universe(universe)
-            info = safe_yf_info("BRK-B")
-        self.assertEqual(info["quoteType"], "EQUITY")
-        self.assertEqual(info["exchange"], "NYQ")
-        self.assertEqual(info["sector"], "Financial Services")
-        self.assertTrue(info["_verifiedUniverseMetadataFallback"])
-        self.assertIn("sector", info["_verifiedUniverseMetadataFallbackFields"])
-        self.assertEqual(common_equity_rejection_reason("BRK-B", info), "")
-
-    def test_industry_routing_abstains_when_specialized_model_is_missing(self):
-        self.assertEqual(route_industry_model("", "")["route"], "UNKNOWN")
-        self.assertFalse(route_industry_model("Technology", "")["supported"])
-        self.assertEqual(route_industry_model("Financial Services", "Banks - Regional")["route"], "BANK")
-        self.assertTrue(route_industry_model("Financial Services", "Insurance - Property & Casualty")["supported"])
-        self.assertEqual(
-            route_industry_model("Financial Services", "Insurance - Property & Casualty")["model_key"],
-            "INSURANCE_P_AND_C",
-        )
-        self.assertEqual(route_industry_model("Real Estate", "REIT - Retail")["route"], "REIT")
-        self.assertEqual(route_industry_model("Energy", "Oil & Gas E&P")["route"], "CYCLICAL_MIDCYCLE")
-        self.assertTrue(route_industry_model("Technology", "Software - Infrastructure")["supported"])
-
-    def test_low_point_in_time_coverage_causes_abstain(self):
-        confidence = assess_data_confidence(
-            {"selected_source_count": 10, "accepted_at_ratio": 0.0},
-            {"OCF": "TTM=latest 10-K", "Revenue": "TTM=latest 10-K"},
-            share_change_1y_available=True,
-            share_change_3y_available=True,
-            roic_available=True,
-            valuation_history_available=True,
-            reconciliation_warning=False,
-            sbc_sec_evidence_available=True,
-            current_shares_sec_evidence_available=True,
-        )
-        self.assertTrue(confidence["abstain"])
-        self.assertLess(confidence["score"], 70.0)
-
-    def test_share_basis_discontinuity_forces_low_confidence(self):
-        confidence = assess_data_confidence(
-            {"selected_source_count": 10, "accepted_at_ratio": 1.0},
-            {"OCF": "TTM=latest 10-K"},
-            share_change_1y_available=True,
-            share_change_3y_available=True,
-            roic_available=True,
-            valuation_history_available=True,
-            reconciliation_warning=False,
-            sbc_sec_evidence_available=True,
-            current_shares_sec_evidence_available=True,
-            share_basis_discontinuity=True,
-        )
-        self.assertTrue(confidence["abstain"])
-        self.assertLess(confidence["score"], 70.0)
-
-    def test_non_sec_debt_fallback_reduces_confidence(self):
-        confidence = assess_data_confidence(
-            {
-                "selected_source_count": 20,
-                "accepted_at_ratio": 1.0,
-                "fallback_tag_ratio": 0.0,
-                "period_anomaly_count": 0,
-            },
-            {"OCF": "TTM=latest 10-K", "Revenue": "TTM=latest 10-K"},
-            share_change_1y_available=True,
-            share_change_3y_available=True,
-            roic_available=True,
-            valuation_history_available=True,
-            reconciliation_warning=False,
-            sbc_sec_evidence_available=True,
-            current_shares_sec_evidence_available=True,
-            debt_sec_evidence_available=False,
-        )
-        self.assertEqual(confidence["score"], 80.0)
-        self.assertFalse(confidence["abstain"])
-        self.assertTrue(any("Total debt" in reason for reason in confidence["reasons"]))
-
-        net_cash_confidence = assess_data_confidence(
-            {
-                "selected_source_count": 20,
-                "accepted_at_ratio": 1.0,
-                "fallback_tag_ratio": 0.0,
-                "period_anomaly_count": 0,
-            },
-            {"OCF": "TTM=latest 10-K", "Revenue": "TTM=latest 10-K"},
-            share_change_1y_available=True,
-            share_change_3y_available=True,
-            roic_available=True,
-            valuation_history_available=True,
-            reconciliation_warning=False,
-            sbc_sec_evidence_available=True,
-            current_shares_sec_evidence_available=True,
-            debt_sec_evidence_available=False,
-            debt_fully_cash_covered=True,
-        )
-        self.assertEqual(net_cash_confidence["score"], 90.0)
-
-    def test_tax_rate_assumption_reduces_confidence(self):
-        kwargs = {
-            "evidence_stats": {
-                "selected_source_count": 20,
-                "accepted_at_ratio": 1.0,
-                "fallback_tag_ratio": 0.0,
-                "period_anomaly_count": 0,
-            },
-            "ttm_methods": {},
-            "share_change_1y_available": True,
-            "share_change_3y_available": True,
-            "roic_available": True,
-            "valuation_history_available": True,
-            "reconciliation_warning": False,
-            "sbc_sec_evidence_available": True,
-            "current_shares_sec_evidence_available": True,
-        }
-        reported = assess_data_confidence(**kwargs)
-        assumed = assess_data_confidence(
-            **kwargs,
-            tax_rate_sec_evidence_available=False,
-        )
-        self.assertEqual(reported["score"] - assumed["score"], 5.0)
-        self.assertTrue(any("tax rate" in reason for reason in assumed["reasons"]))
-
-    def test_cash_interest_proxy_reduces_confidence(self):
-        kwargs = {
-            "evidence_stats": {
-                "selected_source_count": 20,
-                "accepted_at_ratio": 1.0,
-                "fallback_tag_ratio": 0.0,
-                "period_anomaly_count": 0,
-            },
-            "ttm_methods": {},
-            "share_change_1y_available": True,
-            "share_change_3y_available": True,
-            "roic_available": True,
-            "valuation_history_available": True,
-            "reconciliation_warning": False,
-            "sbc_sec_evidence_available": True,
-            "current_shares_sec_evidence_available": True,
-        }
-        reported = assess_data_confidence(**kwargs)
-        cash_proxy = assess_data_confidence(
-            **kwargs,
-            interest_cash_proxy_used=True,
-        )
-        self.assertEqual(reported["score"] - cash_proxy["score"], 10.0)
-        self.assertTrue(any("cash interest" in reason for reason in cash_proxy["reasons"]))
-
-    def test_zero_valuation_percentile_is_best_not_missing(self):
-        cheapest = ModeCResult(
-            Ticker="AAA",
-            Status="Pass",
-            EV_EBITDA_10Y_Percentile=0.0,
-            Implied_EBITDA_CAGR_3Y_pct=12.0,
-        )
-        expensive = ModeCResult(
-            Ticker="BBB",
-            Status="Pass",
-            EV_EBITDA_10Y_Percentile=99.0,
-            Implied_EBITDA_CAGR_3Y_pct=12.0,
-        )
-        self.assertLess(
-            composite_score_for_result(cheapest),
-            composite_score_for_result(expensive),
-        )
-
-    def test_missing_growth_estimate_is_penalized(self):
-        missing = ModeCResult(
-            Ticker="AAA",
-            Status="Pass",
-            EV_EBITDA_10Y_Percentile=20.0,
-            Implied_EBITDA_CAGR_3Y_pct=math.nan,
-        )
-        complete = ModeCResult(
-            Ticker="BBB",
-            Status="Pass",
-            EV_EBITDA_10Y_Percentile=20.0,
-            Implied_EBITDA_CAGR_3Y_pct=12.0,
-        )
-        self.assertGreater(
-            composite_score_for_result(missing),
-            composite_score_for_result(complete),
-        )
-
-    def test_maintenance_capex_uses_dna_anchor_and_revenue_growth(self):
-        self.assertAlmostEqual(estimate_maintenance_capex_amount(100.0, 60.0, 0.20), 68.0)
-        self.assertAlmostEqual(estimate_maintenance_capex_amount(100.0, 60.0, -0.05), 92.0)
-
-    def test_dynamic_cagr_limit_tracks_roic_and_margin_trend(self):
-        self.assertEqual(dynamic_implied_cagr_limit(28.0, 1.5), 40.8)
-        self.assertEqual(dynamic_implied_cagr_limit(22.0, 0.5), 35.2)
-        self.assertEqual(dynamic_implied_cagr_limit(30.0, -2.5), 15.0)
-
-    def test_reverse_valuation_includes_required_return(self):
-        self.assertAlmostEqual(implied_ebitda_cagr(100.0, 10.0, 10.0, years=3, required_return=0.10), 0.10)
-
-    def test_financial_stress_recalculates_icr_with_fixed_dna(self):
-        healthy = calculate_financial_stress(8.0, 10.0, 2.0, 20.0, 0.0, 5.0, 0.20, 0.30)
-        weak = calculate_financial_stress(8.0, 10.0, 4.0, 20.0, 0.0, 5.0, 0.20, 0.30)
-        self.assertAlmostEqual(healthy["icr"], 2.5)
-        self.assertAlmostEqual(healthy["real_fcf_b"], 2.6)
-        self.assertTrue(healthy["survives"])
-        self.assertFalse(weak["survives"])
-
-        cash_burn = calculate_financial_stress(
-            8.0, 10.0, 2.0, 20.0, 0.0, 1.0, 0.20, 0.30
-        )
-        net_cash_runway = calculate_financial_stress(
-            8.0, 10.0, 0.0, 1.0, 5.0, 1.0, 0.20, 0.30
-        )
-        self.assertFalse(cash_burn["cash_flow_survives"])
-        self.assertFalse(cash_burn["survives"])
-        self.assertTrue(net_cash_runway["cash_flow_survives"])
-        self.assertTrue(net_cash_runway["survives"])
-
-    def test_net_cash_does_not_require_missing_interest_evidence(self):
-        gate = calculate_interest_coverage_gate(1.0, 0.0, 0.10, 1.50)
-        stress = calculate_financial_stress(
-            1.0, 1.2, 0.0, 0.10, 1.50, 0.8, 0.21, 0.30
-        )
-        self.assertEqual(gate["mode"], "net_cash")
-        self.assertFalse(gate["missing_critical"])
-        self.assertTrue(math.isinf(gate["icr"]))
-        self.assertTrue(math.isinf(stress["icr"]))
-        self.assertTrue(stress["survives"])
-
-        reported_interest = calculate_interest_coverage_gate(1.0, 0.8, 0.10, 1.50)
-        self.assertEqual(reported_interest["mode"], "net_cash")
-        self.assertTrue(math.isinf(reported_interest["icr"]))
-
-    def test_inventory_inflection_requires_seasonal_confirmation(self):
-        idx = pd.date_range("2024-03-31", periods=6, freq="QE")
-        confirmed = analyze_dsi_signal(pd.Series([100, 90, 110, 95, 80, 70], index=idx))
-        seasonal_only = analyze_dsi_signal(pd.Series([100, 60, 110, 95, 80, 70], index=idx))
-        self.assertTrue(confirmed["inflection"])
-        self.assertFalse(seasonal_only["inflection"])
-        unseasoned = analyze_dsi_signal(pd.Series([95, 80, 70], index=idx[-3:]))
-        self.assertFalse(unseasoned["inflection"])
-
-    def test_dsi_uses_average_inventory_over_the_ttm_period(self):
-        inventory = pd.DataFrame(
-            {
-                "end": pd.to_datetime(["2024-12-31", "2025-12-31"]),
-                "val": [80.0, 100.0],
-            }
-        )
-        cogs = pd.Series(
-            [100.0, 100.0, 100.0, 100.0],
-            index=pd.to_datetime(
-                ["2025-03-31", "2025-06-30", "2025-09-30", "2025-12-31"]
-            ),
-        )
-        dsi = calc_dsi_series(inventory, cogs)
-        self.assertEqual(len(dsi), 1)
-        self.assertAlmostEqual(float(dsi.iloc[-1]), 82.125)
-
-    def test_fcf_history_requires_sbc_evidence_and_consecutive_ocf_years(self):
-        ocf = {2021: 4e9, 2023: 3e9, 2025: 1e9}
-        capex = {2021: 1e9, 2023: 1e9, 2025: 0.2e9}
-        sbc = {2025: 0.1e9}
-        dna = {2021: 0.5e9, 2023: 0.5e9, 2025: 0.5e9}
-        revenue = {2021: 8e9, 2023: 9e9, 2025: 10e9}
-        net_income = {2021: 1e9, 2023: 1e9, 2025: 1e9}
-        with patch(
-            "AQR_ModeC_Agent_V12.annual_values_by_year",
-            side_effect=[ocf, capex, sbc, dna, revenue, net_income],
-        ):
-            result = calculate_fcf_stability(
-                SECDataDistiller("research@example.com"),
-                *[pd.DataFrame()] * 6,
-            )
-        self.assertEqual(result["years_available"], 1.0)
-        self.assertEqual(result["positive_years"], 1.0)
-        self.assertEqual(result["ocf_3y_years"], 1.0)
-        self.assertEqual(result["ocf_3y_cumulative_b"], 1.0)
-
-    def test_short_interest_age_is_explicit(self):
-        now = pd.Timestamp("2026-07-10", tz="UTC")
-        observed = pd.Timestamp("2026-06-30", tz="UTC").timestamp()
-        self.assertAlmostEqual(short_interest_data_age_days({"dateShortInterest": observed}, now=now), 10.0)
-
-    def _good_candidate(self, ticker="GOOD", sector="Technology"):
-        return ModeCResult(
-            Ticker=ticker,
-            Status="Pass",
-            Sector=sector,
-            Real_FCF_Yield_pct=8.0,
-            ICR=10.0,
-            Share_Count_Change_pct=-1.0,
-            Share_Count_Change_3Y_pct=-3.0,
-            Dilution_Illusion=False,
-            Persistent_Dilution=False,
-            ROIC_pct=18.0,
-            ROCE_pct=22.0,
-            OCF_3Y_Cumulative_B=5.0,
-            OCF_3Y_Years=3.0,
-            Real_FCF_Positive_Years_5Y=5.0,
-            Real_FCF_Years_Available=5.0,
-            Real_FCF_Margin_Std_5Y_pct=3.0,
-            OCF_to_NetIncome_5Y=1.1,
-            Real_FCF_to_NetIncome_5Y=0.8,
-            Capital_Allocation_Score=85.0,
-            EV_EBITDA_10Y_Percentile=10.0,
-            EBITDA_Drawdown_30_pct=-20.0,
-            Stress_ICR_30x=5.0,
-            NetDebt_to_Stress_EBITDA_30x=1.0,
-            Stress_Survival_30=True,
-            GM_Diagnosis="ä¸­æ€§ï¼šä¸‰å­£è¶¨å‹¢æœªçµ¦å‡ºæ˜ç¢ºé€†é¢¨è¨Šè™Ÿ",
-            Implied_EBITDA_CAGR_3Y_pct=10.0,
-            Momentum_12M_pct=15.0,
-            Data_Quality_Flags="OK",
-        )
-
-    def test_quality_and_value_raise_long_term_score(self):
-        good = apply_long_term_framework(self._good_candidate())
-        weak = self._good_candidate(ticker="WEAK")
-        weak.Real_FCF_Yield_pct = 1.0
-        weak.ICR = 1.5
-        weak.Share_Count_Change_pct = 3.0
-        weak.EV_EBITDA_10Y_Percentile = 85.0
-        weak.EBITDA_Drawdown_30_pct = -65.0
-        weak.GM_Diagnosis = "çµæ§‹æ€§åƒ¹å€¼é™·é˜±ï¼šç‡Ÿæ”¶æœªå´©ä½†æ¯›åˆ©é€£çºŒå¤±è¡€"
-        weak = apply_long_term_framework(weak)
-        self.assertGreater(good.Long_Term_Score, weak.Long_Term_Score)
-        self.assertTrue(good.Long_Term_Eligible)
-        self.assertFalse(weak.Long_Term_Eligible)
-        self.assertEqual(good.Suggested_Starter_Weight_pct_Total, STARTER_WEIGHT_PCT_TOTAL)
-
-    def test_three_or_four_year_fcf_history_requires_sixty_percent_positive(self):
-        candidate = self._good_candidate(ticker="MIXEDFCF")
-        candidate.Real_FCF_Years_Available = 4.0
-        candidate.Real_FCF_Positive_Years_5Y = 2.0
-        candidate = apply_long_term_framework(candidate)
-        self.assertEqual(minimum_positive_fcf_years(4.0), 3)
-        self.assertFalse(candidate.Long_Term_Eligible)
-
-    def test_single_year_dilution_warns_but_persistent_dilution_excludes(self):
-        clean = apply_long_term_framework(self._good_candidate())
-
-        warning = self._good_candidate(ticker="WARN")
-        warning.Dilution_Illusion = True
-        warning = apply_long_term_framework(warning)
-        self.assertTrue(warning.Long_Term_Eligible)
-        self.assertLess(warning.Long_Term_Score, clean.Long_Term_Score)
-
-        persistent = self._good_candidate(ticker="DILUTE")
-        persistent.Persistent_Dilution = True
-        persistent.Share_Count_Change_3Y_pct = 5.0
-        persistent = apply_long_term_framework(persistent)
-        self.assertFalse(persistent.Long_Term_Eligible)
-        self.assertEqual(persistent.Suggested_Starter_Weight_pct_Total, 0.0)
-
-    def test_data_confidence_is_a_gate_not_an_extra_score_factor(self):
-        candidate = self._good_candidate(ticker="LOWCONF")
-        candidate.Data_Confidence_Score = 60.0
-        candidate.Decision_State = "ABSTAIN"
-        candidate = apply_long_term_framework(candidate)
-        self.assertFalse(candidate.Long_Term_Eligible)
-        self.assertEqual(candidate.Verdict, "æš«ä¸åˆ¤æ–·ï¼šè³‡æ–™ä¿¡å¿ƒä¸è¶³æˆ–æ¨¡å‹ä¸é©ç”¨")
-
-    def test_shortlist_defaults_to_score_first_without_sector_cap(self):
-        results = []
-        for idx in range(5):
-            r = self._good_candidate(ticker=f"TECH{idx}", sector="Technology")
-            r.Long_Term_Eligible = True
-            r.Long_Term_Score = 95.0 - idx
-            results.append(r)
-        for idx in range(3):
-            r = self._good_candidate(ticker=f"HLTH{idx}", sector="Healthcare")
-            r.Long_Term_Eligible = True
-            r.Long_Term_Score = 85.0 - idx
-            results.append(r)
-
-        shortlist = select_diversified_shortlist(results, target_size=4)
-        self.assertEqual([r.Ticker for r in shortlist], ["TECH0", "TECH1", "TECH2", "TECH3"])
-
-    def test_shortlist_can_still_accept_explicit_sector_cap(self):
-        results = []
-        for idx in range(5):
-            r = self._good_candidate(ticker=f"TECH{idx}", sector="Technology")
-            r.Long_Term_Eligible = True
-            r.Long_Term_Score = 95.0 - idx
-            results.append(r)
-        for idx in range(3):
-            r = self._good_candidate(ticker=f"HLTH{idx}", sector="Healthcare")
-            r.Long_Term_Eligible = True
-            r.Long_Term_Score = 85.0 - idx
-            results.append(r)
-
-        shortlist = select_diversified_shortlist(results, target_size=4, max_per_sector=2)
-        self.assertEqual(len(shortlist), 4)
-        self.assertLessEqual(sum(r.Sector == "Technology" for r in shortlist), 2)
-        self.assertLessEqual(sum(r.Sector == "Healthcare" for r in shortlist), 2)
-
-
-if __name__ == "__main__":
-    unittest.main()
+            def _mark_rows_used(ï½{¶‰Ëkºwµçp4(€€€€€€€€¤4(4(€€€‘•˜Ñ•ÍÑ}µ…¥¹Ñ•¹…¹•}…Á•á}ÕÍ•Í}‘¹…}…¹¡½É}…¹‘}É•Ù•¹Õ•}É½İÑ ¡Í•±˜¤è(€€€€€€€Í•±˜¹…ÍÍ•ÉÑ±µ½ÍÑÅÕ…°¡•ÍÑ¥µ…Ñ•}µ…¥¹Ñ•¹…¹•}…Á•á}…µ½Õ¹Ğ ÄÀÀ¸À°€ØÀ¸À°€À¸ÈÀ¤°€Øà¸À¤(€€€€€€€Í•±˜¹…ÍÍ•ÉÑ±µ½ÍÑÅÕ…°¡•ÍÑ¥µ…Ñ•}µ…¥¹Ñ•¹…¹•}…Á•á}…µ½Õ¹Ğ ÄÀÀ¸À°€ØÀ¸À°€´À¸ÀÔ¤°€äÈ¸À¤((€€€‘•˜Ñ•ÍÑ}µ…¥¹Ñ•¹…¹•}…Á•á}ÁÉ½™¥±•}•áÁ½Í•Í}É…¹•}…¹‘}½¹™¥‘•¹”¡Í•±˜¤è(€€€€€€€±…ÍÌ…­•M•Œè(€€€€€€€€€€€ÍÑ…Ñ¥µ•Ñ¡½(€€€€€€€€€€€‘•˜ÅÕ…ÉÑ•É±å}Í•É¥•Ì¡™É…µ”°µ•ÑÉ¥Œ¤è(€€€€€€€€€€€€€€€É•ÑÕÉ¸Á¹M•É¥•Ì (€€€€€€€€€€€€€€€€€€€lÈÀ¸Át€¨€Ğ€¬lÈÔ¸Át€¨€Ğ°(€€€€€€€€€€€€€€€€€€€¥¹‘•àõÁ¹‘…Ñ•}É…¹” ˆÈÀÈĞ´ÀÌ´ÌÄˆ°Á•É¥½‘Ìôà°™É•Äô‰Eˆ¤°(€€€€€€€€€€€€€€€€¤((€€€€€€€İ¥Ñ Á…Ñ  (€€€€€€€€€€€€‰EI}5½‘•}•¹Ñ}XÄÈ¹…¹¹Õ…±}Ù…±Õ•Í}‰å}å•…Èˆ°(€€€€€€€€€€€Í¥‘•}•™™•Ğõ±…µ‰‘„Í•Œ°™É…µ”°µ•ÑÉ¥Œè€ (€€€€€€€€€€€€€€€ìÈÀÈÌè€ÔÁ”ä°€ÈÀÈĞè€ÔÕ”ä°€ÈÀÈÔè€ØÁ”åô(€€€€€€€€€€€€€€€¥˜µ•ÑÉ¥Œ€ôô€‰¹ˆ(€€€€€€€€€€€€€€€•±Í”ìÈÀÈĞè€àÁ”ä°€ÈÀÈÔè€ÄÀÁ”åô(€€€€€€€€€€€€¤°(€€€€€€€€¤è(€€€€€€€€€€€ÁÉ½™¥±”€ô•ÍÑ¥µ…Ñ•}µ…¥¹Ñ•¹…¹•}…Á•á}ÁÉ½™¥±” (€€€€€€€€€€€€€€€…­•M•Œ ¤°Á¹…Ñ…É…µ” ¤°Á¹…Ñ…É…µ” ¤°Á¹…Ñ…É…µ” ¤°€ÄÀÀ¸À°€ØÀ¸À(€€€€€€€€€€€€¤(€€€€€€€Í•±˜¹…ÍÍ•ÉÑÅÕ…°¡ÁÉ½™¥±•l‰½¹™¥‘•¹”‰t°€‰!% ˆ¤(€€€€€€€Í•±˜¹…ÍÍ•ÉÑ1•ÍÌ¡ÁÉ½™¥±•l‰µ…¥¹Ñ•¹…¹•}…Á•á}±½İ}ˆ‰t°ÁÉ½™¥±•l‰µ…¥¹Ñ•¹…¹•}…Á•á}ˆ‰t¤(€€€€€€€Í•±˜¹…ÍÍ•ÉÑ1•ÍÌ¡ÁÉ½™¥±•l‰µ…¥¹Ñ•¹…¹•}…Á•á}ˆ‰t°ÁÉ½™¥±•l‰µ…¥¹Ñ•¹…¹•}…Á•á}¡¥¡}ˆ‰t¤(€€€€€€€Í•±˜¹…ÍÍ•ÉÑ±µ½ÍÑÅÕ…° (€€€€€€€€€€€ÁÉ½™¥±•l‰É½İÑ¡}…Á•á}ˆ‰t°(€€€€€€€€€€€€ÄÀÀ¸À€´ÁÉ½™¥±•l‰µ…¥¹Ñ•¹…¹•}…Á•á}ˆ‰t°(€€€€€€€€¤((€€€€€€€İ¥Ñ Á…Ñ  (€€€€€€€€€€€€‰EI}5½‘•}•¹Ñ}XÄÈ¹…¹¹Õ…±}Ù…±Õ•Í}‰å}å•…Èˆ°(€€€€€€€€€€€Í¥‘•}•™™•Ğõ±…µ‰‘„Í•Œ°™É…µ”°µ•ÑÉ¥Œè€ (€€€€€€€€€€€€€€€ìÈÀÈÔè€ØÁ”åô¥˜µ•ÑÉ¥Œ€ôô€‰¹ˆ•±Í”ìÈÀÈĞè€àÁ”ä°€ÈÀÈÔè€ÄÀÁ”åô(€€€€€€€€€€€€¤°(€€€€€€€€¤è(€€€€€€€€€€€µ•‘¥Õµ}½¹™¥‘•¹”€ô•ÍÑ¥µ…Ñ•}µ…¥¹Ñ•¹…¹•}…Á•á}ÁÉ½™¥±” (€€€€€€€€€€€€€€€…­•M•Œ ¤°Á¹…Ñ…É…µ” ¤°Á¹…Ñ…É…µ” ¤°Á¹…Ñ…É…µ” ¤°€ÄÀÀ¸À°€ØÀ¸À(€€€€€€€€€€€€¤(€€€€€€€Í•±˜¹…ÍÍ•ÉÑÅÕ…°¡µ•‘¥Õµ}½¹™¥‘•¹•l‰½¹™¥‘•¹”‰t°€‰5%U4ˆ¤((€€€€€€€İ¥Ñ Á…Ñ  ‰EI}5½‘•}•¹Ñ}XÄÈ¹…¹¹Õ…±}Ù…±Õ•Í}‰å}å•…Èˆ°É•ÑÕÉ¹}Ù…±Õ”õíô¤è(€€€€€€€€€€€±½İ}½¹™¥‘•¹”€ô•ÍÑ¥µ…Ñ•}µ…¥¹Ñ•¹…¹•}…Á•á}ÁÉ½™¥±” (€€€€€€€€€€€€€€€…­•M•Œ ¤°Á¹…Ñ…É…µ” ¤°Á¹…Ñ…É…µ” ¤°Á¹…Ñ…É…µ” ¤°€ÄÀÀ¸À°µ…Ñ ¹¹…¸(€€€€€€€€€€€€¤(€€€€€€€Í•±˜¹…ÍÍ•ÉÑÅÕ…°¡±½İ}½¹™¥‘•¹•l‰½¹™¥‘•¹”‰t°€‰1=\ˆ¤(€€€€€€€Í•±˜¹…ÍÍ•ÉÑÅÕ…°¡±½İ}½¹™¥‘•¹•l‰µ…¥¹Ñ•¹…¹•}…Á•á}ˆ‰t°€ÄÀÀ¸À¤(4(€€€‘•˜Ñ•ÍÑ}‘å¹…µ¥}…É}±¥µ¥Ñ}ÑÉ…­Í}É½¥}…¹‘}µ…É¥¹}ÑÉ•¹¡Í•±˜¤è(€€€€€€€Í•±˜¹…ÍÍ•ÉÑÅÕ…°¡‘å¹…µ¥}¥µÁ±¥•‘}…É}±¥µ¥Ğ Èà¸À°€Ä¸Ô¤°€ĞÀ¸à¤4(€€€€€€€Í•±˜¹…ÍÍ•ÉÑÅÕ…°¡‘å¹…µ¥}¥µÁ±¥•‘}…É}±¥µ¥Ğ ÈÈ¸À°€À¸Ô¤°€ÌÔ¸È¤4(€€€€€€€Í•±˜¹…ÍÍ•ÉÑÅÕ…°¡‘å¹…µ¥}¥µÁ±¥•‘}…É}±¥µ¥Ğ ÌÀ¸À°€´È¸Ô¤°€ÄÔ¸À¤((€€€‘•˜Ñ•ÍÑ}É½¥}ÕÍ•Í}…Ù•É…•}…Á¥Ñ…±}…¹‘}µ…É­Í}•¹‘¥¹}™…±±‰…¬¡Í•±˜¤è(€€€€€€€…Ù•É…•€ô…±Õ±…Ñ•}É½¥}…Á¥Ñ…±}µ•ÑÉ¥Ì ÈÀ¸À°€ÄÀÀ¸À°€ÌÀÀ¸À°€ÈÀ¸À°€ØÀ¸À¤(€€€€€€€Í•±˜¹…ÍÍ•ÉÑÅÕ…°¡…Ù•É…•‘l‰…Á¥Ñ…±}µ•Ñ¡½‰t°€‰	%99%9}9%9}YIˆ¤(€€€€€€€Í•±˜¹…ÍÍ•ÉÑ±µ½ÍÑÅÕ…°¡…Ù•É…•‘l‰…Ù•É…•}É½¥}ÁĞ‰t°€ÄÀ¸À¤(€€€€€€€Í•±˜¹…ÍÍ•ÉÑ±µ½ÍÑÅÕ…°¡…Ù•É…•‘l‰•¹‘¥¹}É½¥}ÁĞ‰t°€ÈÀ¸À€¼€ÌÀÀ¸À€¨€ÄÀÀ¸À¤(€€€€€€€Í•±˜¹…ÍÍ•ÉÑ±µ½ÍÑÅÕ…°¡…Ù•É…•‘l‰•á±Õ‘¥¹}½½‘İ¥±±}É½¥}ÁĞ‰t°€ÄÈ¸Ô¤((€€€€€€€™…±±‰…¬€ô…±Õ±…Ñ•}É½¥}…Á¥Ñ…±}µ•ÑÉ¥Ì ÈÀ¸À°µ…Ñ ¹¹…¸°€ÌÀÀ¸À¤(€€€€€€€Í•±˜¹…ÍÍ•ÉÑÅÕ…°¡™…±±‰…­l‰…Á¥Ñ…±}µ•Ñ¡½‰t°€‰9%9}A%Q1}11	-}MQ%5Qˆ¤(€€€€€€€Í•±˜¹…ÍÍ•ÉÑ±µ½ÍÑÅÕ…°¡™…±±‰…­l‰…Ù•É…•}É½¥}ÁĞ‰t°™…±±‰…­l‰•¹‘¥¹}É½¥}ÁĞ‰t¤((€€€‘•˜Ñ•ÍÑ}µ…¥¹Ñ•¹…¹•}™™}É¥Í­}…Í•Í}‰•½µ•}µ…¹Õ…±}É•Í•…É¡}Ñ…Í­Ì¡Í•±˜¤è(€€€€€€€İ…É¹¥¹Ì€ôµ…¥¹Ñ•¹…¹•}™™}É•Í•…É¡}İ…É¹¥¹Ì ´À¸Ä°€´Ä¸È°€Ğ¸Ä¤(€€€€€€€Í•±˜¹…ÍÍ•ÉÑÅÕ…°¡±•¸¡İ…É¹¥¹Ì¤°€Ì¤(€€€€€€€Í•±˜¹…ÍÍ•ÉÑQÉÕ”¡…¹ä ‰±½İ•Èµ‰½Õ¹ˆ¥¸İ…É¹¥¹œ™½Èİ…É¹¥¹œ¥¸İ…É¹¥¹Ì¤¤(€€€€€€€Í•±˜¹…ÍÍ•ÉÑQÉÕ”¡…¹ä ‰½¹Í•ÉÙ…Ñ¥Ù”ˆ¥¸İ…É¹¥¹œ™½Èİ…É¹¥¹œ¥¸İ…É¹¥¹Ì¤¤(€€€€€€€Í•±˜¹…ÍÍ•ÉÑQÉÕ”¡…¹ä ‰Í•¹Í¥Ñ¥Ù¥Ñäˆ¥¸İ…É¹¥¹œ™½Èİ…É¹¥¹œ¥¸İ…É¹¥¹Ì¤¤(4(€€€‘•˜Ñ•ÍÑ}É•Ù•ÉÍ•}Ù…±Õ…Ñ¥½¹}¥¹±Õ‘•Í}É•ÅÕ¥É•‘}É•ÑÕÉ¸¡Í•±˜¤è4(€€€€€€€Í•±˜¹…ÍÍ•ÉÑ±µ½ÍÑÅÕ…°¡¥µÁ±¥•‘}•‰¥Ñ‘…}…È ÄÀÀ¸À°€ÄÀ¸À°€ÄÀ¸À°å•…ÉÌôÌ°É•ÅÕ¥É•‘}É•ÑÕÉ¸ôÀ¸ÄÀ¤°€À¸ÄÀ¤4(4(€€€‘•˜Ñ•ÍÑ}™¥¹…¹¥…±}ÍÑÉ•ÍÍ}É•…±Õ±…Ñ•Í}¥É}İ¥Ñ¡}™¥á•‘}‘¹„¡Í•±˜¤è4(€€€€€€€¡•…±Ñ¡ä€ô…±Õ±…Ñ•}™¥¹…¹¥…±}ÍÑÉ•ÍÌ à¸À°€ÄÀ¸À°€È¸À°€ÈÀ¸À°€À¸À°€Ô¸À°€À¸ÈÀ°€À¸ÌÀ¤4(€€€€€€€İ•…¬€ô…±Õ±…Ñ•}™¥¹…¹¥…±}ÍÑÉ•ÍÌ à¸À°€ÄÀ¸À°€Ğ¸À°€ÈÀ¸À°€À¸À°€Ô¸À°€À¸ÈÀ°€À¸ÌÀ¤4(€€€€€€€Í•±˜¹…ÍÍ•ÉÑ±µ½ÍÑÅÕ…°¡¡•…±Ñ¡ål‰¥È‰t°€È¸Ô¤4(€€€€€€€Í•±˜¹…ÍÍ•ÉÑ±µ½ÍÑÅÕ…°¡¡•…±Ñ¡ål‰É•…±}™™}ˆ‰t°€È¸Ø¤4(€€€€€€€Í•±˜¹…ÍÍ•ÉÑQÉÕ”¡¡•…±Ñ¡ål‰ÍÕÉÙ¥Ù•Ì‰t¤4(€€€€€€€Í•±˜¹…ÍÍ•ÉÑ…±Í”¡İ•…­l‰ÍÕÉÙ¥Ù•Ì‰t¤4(4(€€€€€€€…Í¡}‰ÕÉ¸€ô…±Õ±…Ñ•}™¥¹…¹¥…±}ÍÑÉ•ÍÌ 4(€€€€€€€€€€€€à¸À°€ÄÀ¸À°€È¸À°€ÈÀ¸À°€À¸À°€Ä¸À°€À¸ÈÀ°€À¸ÌÀ4(€€€€€€€€¤4(€€€€€€€¹•Ñ}…Í¡}ÉÕ¹İ…ä€ô…±Õ±…Ñ•}™¥¹…¹¥…±}ÍÑÉ•ÍÌ 4(€€€€€€€€€€€€à¸À°€ÄÀ¸À°€À¸À°€Ä¸À°€Ô¸À°€Ä¸À°€À¸ÈÀ°€À¸ÌÀ4(€€€€€€€€¤4(€€€€€€€Í•±˜¹…ÍÍ•ÉÑ…±Í”¡…Í¡}‰ÕÉ¹l‰…Í¡}™±½İ}ÍÕÉÙ¥Ù•Ì‰t¤4(€€€€€€€Í•±˜¹…ÍÍ•ÉÑ…±Í”¡…Í¡}‰ÕÉ¹l‰ÍÕÉÙ¥Ù•Ì‰t¤4(€€€€€€€Í•±˜¹…ÍÍ•ÉÑQÉÕ”¡¹•Ñ}…Í¡}ÉÕ¹İ…ål‰…Í¡}™±½İ}ÍÕÉÙ¥Ù•Ì‰t¤4(€€€€€€€Í•±˜¹…ÍÍ•ÉÑQÉÕ”¡¹•Ñ}…Í¡}ÉÕ¹İ…ål‰ÍÕÉÙ¥Ù•Ì‰t¤4(4(€€€‘•˜Ñ•ÍÑ}¹•Ñ}…Í¡}‘½•Í}¹½Ñ}É•ÅÕ¥É•}µ¥ÍÍ¥¹}¥¹Ñ•É•ÍÑ}•Ù¥‘•¹”¡Í•±˜¤è4(€€€€€€€…Ñ”€ô…±Õ±…Ñ•}¥¹Ñ•É•ÍÑ}½Ù•É…•}…Ñ” Ä¸À°€À¸À°€À¸ÄÀ°€Ä¸ÔÀ¤4(€€€€€€€ÍÑÉ•ÍÌ€ô…±Õ±…Ñ•}™¥¹…¹¥…±}ÍÑÉ•ÍÌ 4(€€€€€€€€€€€€Ä¸À°€Ä¸È°€À¸À°€À¸ÄÀ°€Ä¸ÔÀ°€À¸à°€À¸ÈÄ°€À¸ÌÀ4(€€€€€€€€¤4(€€€€€€€Í•±˜¹…ÍÍ•ÉÑÅÕ…°¡…Ñ•l‰µ½‘”‰t°€‰¹•Ñ}…Í ˆ¤4(€€€€€€€Í•±˜¹…ÍÍ•ÉÑ…±Í”¡…Ñ•l‰µ¥ÍÍ¥¹}É¥Ñ¥…°‰t¤4(€€€€€€€Í•±˜¹…ÍÍ•ÉÑQÉÕ”¡µ…Ñ ¹¥Í¥¹˜¡…Ñ•l‰¥È‰t¤¤4(€€€€€€€Í•±˜¹…ÍÍ•ÉÑQÉÕ”¡µ…Ñ ¹¥Í¥¹˜¡ÍÑÉ•ÍÍl‰¥È‰t¤¤4(€€€€€€€Í•±˜¹…ÍÍ•ÉÑQÉÕ”¡ÍÑÉ•ÍÍl‰ÍÕÉÙ¥Ù•Ì‰t¤4(4(€€€€€€€É•Á½ÉÑ•‘}¥¹Ñ•É•ÍĞ€ô…±Õ±…Ñ•}¥¹Ñ•É•ÍÑ}½Ù•É…•}…Ñ” Ä¸À°€À¸à°€À¸ÄÀ°€Ä¸ÔÀ¤4(€€€€€€€Í•±˜¹…ÍÍ•ÉÑÅÕ…°¡É•Á½ÉÑ•‘}¥¹Ñ•É•ÍÑl‰µ½‘”‰t°€‰¹•Ñ}…Í ˆ¤4(€€€€€€€Í•±˜¹…ÍÍ•ÉÑQÉÕ”¡µ…Ñ ¹¥Í¥¹˜¡É•Á½ÉÑ•‘}¥¹Ñ•É•ÍÑl‰¥È‰t¤¤4(4(€€€‘•˜Ñ•ÍÑ}¥¹Ù•¹Ñ½Éå}¥¹™±•Ñ¥½¹}É•ÅÕ¥É•Í}Í•…Í½¹…±}½¹™¥Éµ…Ñ¥½¸¡Í•±˜¤è4(€€€€€€€¥‘à€ôÁ¹‘…Ñ•}É…¹” ˆÈÀÈĞ´ÀÌ´ÌÄˆ°Á•É¥½‘ÌôØ°™É•Äô‰Eˆ¤4(€€€€€€€½¹™¥Éµ•€ô…¹…±åé•}‘Í¥}Í¥¹…°¡Á¹M•É¥•Ì¡lÄÀÀ°€äÀ°€ÄÄÀ°€äÔ°€àÀ°€ÜÁt°¥¹‘•àõ¥‘à¤¤4(€€€€€€€Í•…Í½¹…±}½¹±ä€ô…¹…±åé•}‘Í¥}Í¥¹…°¡Á¹M•É¥•Ì¡lÄÀÀ°€ØÀ°€ÄÄÀ°€äÔ°€àÀ°€ÜÁt°¥¹‘•àõ¥‘à¤¤4(€€€€€€€Í•±˜¹…ÍÍ•ÉÑQÉÕ”¡½¹™¥Éµ•‘l‰¥¹™±•Ñ¥½¸‰t¤4(€€€€€€€Í•±˜¹…ÍÍ•ÉÑ…±Í”¡Í•…Í½¹…±}½¹±ål‰¥¹™±•Ñ¥½¸‰t¤4(€€€€€€€Õ¹Í•…Í½¹•€ô…¹…±åé•}‘Í¥}Í¥¹…°¡Á¹M•É¥•Ì¡läÔ°€àÀ°€ÜÁt°¥¹‘•àõ¥‘ál´Ìét¤¤4(€€€€€€€Í•±˜¹…ÍÍ•ÉÑ…±Í”¡Õ¹Í•…Í½¹•‘l‰¥¹™±•Ñ¥½¸‰t¤4(4(€€€‘•˜Ñ•ÍÑ}‘Í¥}ÕÍ•Í}…Ù•É…•}¥¹Ù•¹Ñ½Éå}½Ù•É}Ñ¡•}ÑÑµ}Á•É¥½¡Í•±˜¤è(€€€€€€€¥¹Ù•¹Ñ½Éä€ôÁ¹…Ñ…É…µ” 4(€€€€€€€€€€€ì4(€€€€€€€€€€€€€€€€‰•¹ˆèÁ¹Ñ½}‘…Ñ•Ñ¥µ”¡lˆÈÀÈĞ´ÄÈ´ÌÄˆ°€ˆÈÀÈÔ´ÄÈ´ÌÄ‰t¤°4(€€€€€€€€€€€€€€€€‰Ù…°ˆèlàÀ¸À°€ÄÀÀ¸Át°4(€€€€€€€€€€€ô4(€€€€€€€€¤4(€€€€€€€½Ì€ôÁ¹M•É¥•Ì 4(€€€€€€€€€€€lÄÀÀ¸À°€ÄÀÀ¸À°€ÄÀÀ¸À°€ÄÀÀ¸Át°4(€€€€€€€€€€€¥¹‘•àõÁ¹Ñ½}‘…Ñ•Ñ¥µ” 4(€€€€€€€€€€€€€€€lˆÈÀÈÔ´ÀÌ´ÌÄˆ°€ˆÈÀÈÔ´ÀØ´ÌÀˆ°€ˆÈÀÈÔ´Àä´ÌÀˆ°€ˆÈÀÈÔ´ÄÈ´ÌÄ‰t4(€€€€€€€€€€€€¤°4(€€€€€€€€¤4(€€€€€€€‘Í¤€ô…±}‘Í¥}Í•É¥•Ì¡¥¹Ù•¹Ñ½Éä°½Ì¤4(€€€€€€€Í•±˜¹…ÍÍ•ÉÑÅÕ…°¡±•¸¡‘Í¤¤°€Ä¤4(€€€€€€€Í•±˜¹…ÍÍ•ÉÑ±µ½ÍÑÅÕ…°¡™±½…Ğ¡‘Í¤¹¥±½l´Åt¤°€àÈ¸ÄÈÔ¤((€€€‘•˜Ñ•ÍÑ}‘Í¥}¥Í}¹½Ñ}¹•ÕÑÉ…±¥é•‘}İ¡•¹}¥¹Ù•¹Ñ½Éå}¥Í}¹½Ñ}…ÁÁ±¥…‰±”¡Í•±˜¤è(€€€€€€€Í½™Ñİ…É”€ô…ÍÍ•ÍÍ}¥¹Ù•¹Ñ½Éå}™…Ñ½É}…ÁÁ±¥…‰¥±¥Ñä (€€€€€€€€€€€€‰Q•¡¹½±½äˆ°€‰M½™Ñİ…É”€´ÁÁ±¥…Ñ¥½¸ˆ°µ…Ñ ¹¹…¸°€ÄÀ¸À°€Ô¸À(€€€€€€€€¤(€€€€€€€¥µµ…Ñ•É¥…°€ô…ÍÍ•ÍÍ}¥¹Ù•¹Ñ½Éå}™…Ñ½É}…ÁÁ±¥…‰¥±¥Ñä (€€€€€€€€€€€€‰%¹‘ÕÍÑÉ¥…±Ìˆ°€‰MÁ•¥…±Ñä%¹‘ÕÍÑÉ¥…°5…¡¥¹•Éäˆ°€À¸ÀÄ°€ÄÀ¸À°€ÈÀ¸À(€€€€€€€€¤(€€€€€€€µ…Ñ•É¥…°€ô…ÍÍ•ÍÍ}¥¹Ù•¹Ñ½Éå}™…Ñ½É}…ÁÁ±¥…‰¥±¥Ñä (€€€€€€€€€€€€‰%¹‘ÕÍÑÉ¥…±Ìˆ°€‰MÁ•¥…±Ñä%¹‘ÕÍÑÉ¥…°5…¡¥¹•Éäˆ°€È¸À°€ÄÀ¸À°€ÈÀ¸À(€€€€€€€€¤(€€€€€€€Í•±˜¹…ÍÍ•ÉÑÅÕ…°¡Í½™Ñİ…É•l‰ÍÑ…ÑÕÌ‰t°€‰9=Q}AA1%	1ˆ¤(€€€€€€€Í•±˜¹…ÍÍ•ÉÑÅÕ…°¡¥µµ…Ñ•É¥…±l‰ÍÑ…ÑÕÌ‰t°€‰9=Q}AA1%	1ˆ¤(€€€€€€€Í•±˜¹…ÍÍ•ÉÑÅÕ…°¡µ…Ñ•É¥…±l‰ÍÑ…ÑÕÌ‰t°€‰Y1%ˆ¤((€€€‘•˜Ñ•ÍÑ}¡¥ÍÑ½É¥…±}Ù…±Õ…Ñ¥½¹}ÅÕ…¹Ñ¥±•}¡…¹•Í}İ¥Ñ¡}Í…µÁ±•}Í¥é”¡Í•±˜¤è(€€€€€€€Í•±˜¹…ÍÍ•ÉÑQÉÕ”¡µ…Ñ ¹¥Í¹…¸¡¡¥ÍÑ½É¥…±}Ù…±Õ…Ñ¥½¹}ÅÕ…¹Ñ¥±” Ğ¤¤¤(€€€€€€€Í•±˜¹…ÍÍ•ÉÑÅÕ…°¡¡¥ÍÑ½É¥…±}Ù…±Õ…Ñ¥½¹}ÅÕ…¹Ñ¥±” Ô¤°€ÈÔ¸À¤(€€€€€€€Í•±˜¹…ÍÍ•ÉÑÅÕ…°¡¡¥ÍÑ½É¥…±}Ù…±Õ…Ñ¥½¹}ÅÕ…¹Ñ¥±” à¤°€ÈÀ¸À¤(€€€€€€€Í•±˜¹…ÍÍ•ÉÑÅÕ…°¡¡¥ÍÑ½É¥…±}Ù…±Õ…Ñ¥½¹}ÅÕ…¹Ñ¥±” ÄÈ¤°€ÄÔ¸À¤(€€€€€€€Í•±˜¹…ÍÍ•ÉÑÅÕ…°¡¡¥ÍÑ½É¥…±}Ù…±Õ…Ñ¥½¹}ÅÕ…¹Ñ¥±” ÄÔ¤°€ÄÀ¸À¤(4(€€€‘•˜Ñ•ÍÑ}™™}¡¥ÍÑ½Éå}É•ÅÕ¥É•Í}Í‰}•Ù¥‘•¹•}…¹‘}½¹Í•ÕÑ¥Ù•}½™}å•…ÉÌ¡Í•±˜¤è4(€€€€€€€½˜€ôìÈÀÈÄè€Ñ”ä°€ÈÀÈÌè€Í”ä°€ÈÀÈÔè€Å”åô4(€€€€€€€…Á•à€ôìÈÀÈÄè€Å”ä°€ÈÀÈÌè€Å”ä°€ÈÀÈÔè€À¸É”åô4(€€€€€€€Í‰Œ€ôìÈÀÈÔè€À¸Å”åô4(€€€€€€€‘¹„€ôìÈÀÈÄè€À¸Õ”ä°€ÈÀÈÌè€À¸Õ”ä°€ÈÀÈÔè€À¸Õ”åô4(€€€€€€€É•Ù•¹Õ”€ôìÈÀÈÄè€á”ä°€ÈÀÈÌè€å”ä°€ÈÀÈÔè€ÄÁ”åô4(€€€€€€€¹•Ñ}¥¹½µ”€ôìÈÀÈÄè€Å”ä°€ÈÀÈÌè€Å”ä°€ÈÀÈÔè€Å”åô4(€€€€€€€İ¥Ñ Á…Ñ  4(€€€€€€€€€€€€‰EI}5½‘•}•¹Ñ}XÄÈ¹…¹¹Õ…±}Ù…±Õ•Í}‰å}å•…Èˆ°4(€€€€€€€€€€€Í¥‘•}•™™•Ğõm½˜°…Á•à°Í‰Œ°‘¹„°É•Ù•¹Õ”°¹•Ñ}¥¹½µ•t°4(€€€€€€€€¤è4(€€€€€€€€€€€É•ÍÕ±Ğ€ô…±Õ±…Ñ•}™™}ÍÑ…‰¥±¥Ñä 4(€€€€€€€€€€€€€€€M…Ñ…¥ÍÑ¥±±•È ‰É•Í•…É¡•á…µÁ±”¹½´ˆ¤°4(€€€€€€€€€€€€€€€€©mÁ¹…Ñ…É…µ” ¥t€¨€Ø°4(€€€€€€€€€€€€¤4(€€€€€€€Í•±˜¹…ÍÍ•ÉÑÅÕ…°¡É•ÍÕ±Ñl‰å•…ÉÍ}…Ù…¥±…‰±”‰t°€Ä¸À¤4(€€€€€€€Í•±˜¹…ÍÍ•ÉÑÅÕ…°¡É•ÍÕ±Ñl‰Á½Í¥Ñ¥Ù•}å•…ÉÌ‰t°€Ä¸À¤4(€€€€€€€Í•±˜¹…ÍÍ•ÉÑÅÕ…°¡É•ÍÕ±Ñl‰½™|Íå}å•…ÉÌ‰t°€Ä¸À¤4(€€€€€€€Í•±˜¹…ÍÍ•ÉÑÅÕ…°¡É•ÍÕ±Ñl‰½™|Íå}ÕµÕ±…Ñ¥Ù•}ˆ‰t°€Ä¸À¤4(4(€€€‘•˜Ñ•ÍÑ}Í¡½ÉÑ}¥¹Ñ•É•ÍÑ}…•}¥Í}•áÁ±¥¥Ğ¡Í•±˜¤è4(€€€€€€€¹½Ü€ôÁ¹Q¥µ•ÍÑ…µÀ ˆÈÀÈØ´ÀÜ´ÄÀˆ°Ñèô‰UQˆ¤4(€€€€€€€½‰Í•ÉÙ•€ôÁ¹Q¥µ•ÍÑ…µÀ ˆÈÀÈØ´ÀØ´ÌÀˆ°Ñèô‰UQˆ¤¹Ñ¥µ•ÍÑ…µÀ ¤4(€€€€€€€Í•±˜¹…ÍÍ•ÉÑ±µ½ÍÑÅÕ…°¡Í¡½ÉÑ}¥¹Ñ•É•ÍÑ}‘…Ñ…}…•}‘…åÌ¡ì‰‘…Ñ•M¡½ÉÑ%¹Ñ•É•ÍĞˆè½‰Í•ÉÙ•‘ô°¹½Üõ¹½Ü¤°€ÄÀ¸À¤4(4(€€€‘•˜}½½‘}…¹‘¥‘…Ñ”¡Í•±˜°Ñ¥­•Èô‰==ˆ°Í•Ñ½Èô‰Q•¡¹½±½äˆ¤è4(€€€€€€€É•ÑÕÉ¸5½‘•I•ÍÕ±Ğ 4(€€€€€€€€€€€Q¥­•ÈõÑ¥­•È°4(€€€€€€€€€€€MÑ…ÑÕÌô‰A…ÍÌˆ°4(€€€€€€€€€€€M•Ñ½ÈõÍ•Ñ½È°4(€€€€€€€€€€€I•…±}}e¥•±‘}ÁĞôà¸À°4(€€€€€€€€€€€%HôÄÀ¸À°4(€€€€€€€€€€€M¡…É•}½Õ¹Ñ}¡…¹•}ÁĞô´Ä¸À°4(€€€€€€€€€€€M¡…É•}½Õ¹Ñ}¡…¹•|Íe}ÁĞô´Ì¸À°4(€€€€€€€€€€€¥±ÕÑ¥½¹}%±±ÕÍ¥½¸õ…±Í”°4(€€€€€€€€€€€A•ÉÍ¥ÍÑ•¹Ñ}¥±ÕÑ¥½¸õ…±Í”°4(€€€€€€€€€€€I=%}ÁĞôÄà¸À°4(€€€€€€€€€€€I=}ÁĞôÈÈ¸À°4(€€€€€€€€€€€=|Íe}ÕµÕ±…Ñ¥Ù•}ôÔ¸À°4(€€€€€€€€€€€=|Íe}e•…ÉÌôÌ¸À°4(€€€€€€€€€€€I•…±}}A½Í¥Ñ¥Ù•}e•…ÉÍ|ÕdôÔ¸À°4(€€€€€€€€€€€I•…±}}e•…ÉÍ}Ù…¥±…‰±”ôÔ¸À°4(€€€€€€€€€€€I•…±}}5…É¥¹}MÑ‘|Õe}ÁĞôÌ¸À°4(€€€€€€€€€€€=}Ñ½}9•Ñ%¹½µ•|ÕdôÄ¸Ä°4(€€€€€€€€€€€I•…±}}Ñ½}9•Ñ%¹½µ•|ÕdôÀ¸à°4(€€€€€€€€€€€…Á¥Ñ…±}±±½…Ñ¥½¹}M½É”ôàÔ¸À°4(€€€€€€€€€€€Y}	%Q|ÄÁe}A•É•¹Ñ¥±”ôÄÀ¸À°4(€€€€€€€€€€€	%Q}É…İ‘½İ¹|ÌÁ}ÁĞô´ÈÀ¸À°4(€€€€€€€€€€€MÑÉ•ÍÍ}%I|ÌÁàôÔ¸À°4(€€€€€€€€€€€9•Ñ•‰Ñ}Ñ½}MÑÉ•ÍÍ}	%Q|ÌÁàôÄ¸À°4(€€€€€€€€€€€MÑÉ•ÍÍ}MÕÉÙ¥Ù…±|ÌÀõQÉÕ”°4(€€€€€€€€€€€5}¥…¹½Í¥Ìô‹’â·šŸ¾òk’â'–¶¢Ú£–.‹šr«Ö›–ëšb;Šë¦¦Š£¢¢+¢f|ˆ°4(€€€€€€€€€€€%µÁ±¥•‘}	%Q}I|Íe}ÁĞôÄÀ¸À°4(€€€€€€€€€€€5½µ•¹ÑÕµ|ÄÉ5}ÁĞôÄÔ¸À°4(€€€€€€€€€€€…Ñ…}EÕ…±¥Ñå}±…Ìô‰=,ˆ°4(€€€€€€€€¤4(4(€€€‘•˜Ñ•ÍÑ}ÅÕ…±¥Ñå}…¹‘}Ù…±Õ•}É…¥Í•}±½¹}Ñ•Éµ}Í½É”¡Í•±˜¤è4(€€€€€€€½½€ô…ÁÁ±å}±½¹}Ñ•Éµ}™É…µ•İ½É¬¡Í•±˜¹}½½‘}…¹‘¥‘…Ñ” ¤¤4(€€€€€€€İ•…¬€ôÍ•±˜¹}½½‘}…¹‘¥‘…Ñ”¡Ñ¥­•Èô‰],ˆ¤4(€€€€€€€İ•…¬¹I•…±}}e¥•±‘}ÁĞ€ô€Ä¸À4(€€€€€€€İ•…¬¹%H€ô€Ä¸Ô4(€€€€€€€İ•…¬¹M¡…É•}½Õ¹Ñ}¡…¹•}ÁĞ€ô€Ì¸À4(€€€€€€€İ•…¬¹Y}	%Q|ÄÁe}A•É•¹Ñ¥±”€ô€àÔ¸À4(€€€€€€€İ•…¬¹	%Q}É…İ‘½İ¹|ÌÁ}ÁĞ€ô€´ØÔ¸À4(€€€€€€€İ•…¬¹5}¥…¹½Í¥Ì€ô€‹ÖCš/šŸ–ç–ó¦fß¦bÇ¾òkšRÛšr«–Ò§’öš¾o–"§¦ê3–’Ç¢† ˆ4(€€€€€€€İ•…¬€ô…ÁÁ±å}±½¹}Ñ•Éµ}™É…µ•İ½É¬¡İ•…¬¤4(€€€€€€€Í•±˜¹…ÍÍ•ÉÑÉ•…Ñ•È¡½½¹1½¹}Q•Éµ}M½É”°İ•…¬¹1½¹}Q•Éµ}M½É”¤4(€€€€€€€Í•±˜¹…ÍÍ•ÉÑQÉÕ”¡½½¹1½¹}Q•Éµ}±¥¥‰±”¤4(€€€€€€€Í•±˜¹…ÍÍ•ÉÑ…±Í”¡İ•…¬¹1½¹}Q•Éµ}±¥¥‰±”¤4(€€€€€€€Í•±˜¹…ÍÍ•ÉÑÅÕ…°¡½½¹MÕ•ÍÑ•‘}MÑ…ÉÑ•É}]•¥¡Ñ}ÁÑ}Q½Ñ…°°MQIQI}]%!Q}AQ}Q=Q0¤4(4(€€€‘•˜Ñ•ÍÑ}Ñ¡É••}½É}™½ÕÉ}å•…É}™™}¡¥ÍÑ½Éå}É•ÅÕ¥É•Í}Í¥áÑå}Á•É•¹Ñ}Á½Í¥Ñ¥Ù”¡Í•±˜¤è4(€€€€€€€…¹‘¥‘…Ñ”€ôÍ•±˜¹}½½‘}…¹‘¥‘…Ñ”¡Ñ¥­•Èô‰5%aˆ¤4(€€€€€€€…¹‘¥‘…Ñ”¹I•…±}}e•…ÉÍ}Ù…¥±…‰±”€ô€Ğ¸À4(€€€€€€€…¹‘¥‘…Ñ”¹I•…±}}A½Í¥Ñ¥Ù•}e•…ÉÍ|Õd€ô€È¸À4(€€€€€€€…¹‘¥‘…Ñ”€ô…ÁÁ±å}±½¹}Ñ•Éµ}™É…µ•İ½É¬¡…¹‘¥‘…Ñ”¤4(€€€€€€€Í•±˜¹…ÍÍ•ÉÑÅÕ…°¡µ¥¹¥µÕµ}Á½Í¥Ñ¥Ù•}™™}å•…ÉÌ Ğ¸À¤°€Ì¤4(€€€€€€€Í•±˜¹…ÍÍ•ÉÑ…±Í”¡…¹‘¥‘…Ñ”¹1½¹}Q•Éµ}±¥¥‰±”¤4(4(€€€‘•˜Ñ•ÍÑ}‘¥±ÕÑ¥½¹}¥Í}¹½Ñ}‘½Õ‰±•}½Õ¹Ñ•‘}‰ÕÑ}Á•ÉÍ¥ÍÑ•¹Ñ}‘¥±ÕÑ¥½¹}•á±Õ‘•Ì¡Í•±˜¤è(€€€€€€€±•…¸€ô…ÁÁ±å}±½¹}Ñ•Éµ}™É…µ•İ½É¬¡Í•±˜¹}½½‘}…¹‘¥‘…Ñ” ¤¤((€€€€€€€İ…É¹¥¹œ€ôÍ•±˜¹}½½‘}…¹‘¥‘…Ñ”¡Ñ¥­•Èô‰]I8ˆ¤(€€€€€€€İ…É¹¥¹œ¹¥±ÕÑ¥½¹}%±±ÕÍ¥½¸€ôQÉÕ”(€€€€€€€İ…É¹¥¹œ€ô…ÁÁ±å}±½¹}Ñ•Éµ}™É…µ•İ½É¬¡İ…É¹¥¹œ¤(€€€€€€€Í•±˜¹…ÍÍ•ÉÑQÉÕ”¡İ…É¹¥¹œ¹1½¹}Q•Éµ}±¥¥‰±”¤(€€€€€€€Í•±˜¹…ÍÍ•ÉÑÅÕ…°¡İ…É¹¥¹œ¹1½¹}Q•Éµ}M½É”°±•…¸¹1½¹}Q•Éµ}M½É”¤(€€€€€€€Í•±˜¹…ÍÍ•ÉÑÅÕ…°¡İ…É¹¥¹œ¹¥±ÕÑ¥½¹}½Õ‰±•}½Õ¹Ñ}¡•¬°€‰AMLˆ¤((€€€€€€€¥ÍÍÕ…¹”€ôÍ•±˜¹}½½‘}…¹‘¥‘…Ñ”¡Ñ¥­•Èô‰%MMUˆ¤(€€€€€€€¥ÍÍÕ…¹”¹M¡…É•}½Õ¹Ñ}¡…¹•}ÁĞ€ô€È¸À(€€€€€€€¥ÍÍÕ…¹”¹I•…±}	Õå‰…­}€ô€´À¸Ô(€€€€€€€¥ÍÍÕ…¹”¹…Á¥Ñ…±}±±½…Ñ¥½¹}M½É”€ô€ĞÀ¸À(€€€€€€€¥ÍÍÕ…¹”€ô…ÁÁ±å}±½¹}Ñ•Éµ}™É…µ•İ½É¬¡¥ÍÍÕ…¹”¤(€€€€€€€Í•±˜¹…ÍÍ•ÉÑÅÕ…°¡¥ÍÍÕ…¹”¹=İ¹•ÉÍ¡¥Á}¥±ÕÑ¥½¹}A•¹…±Ñä°€À¸À¤(€€€€€€€Í•±˜¹…ÍÍ•ÉÑÅÕ…°¡¥ÍÍÕ…¹”¹…Á¥Ñ…±}±±½…Ñ¥½¹}A•¹…±Ñä°€ÈÀ¸À¤(€€€€€€€Í•±˜¹…ÍÍ•ÉÑÅÕ…°¡¥ÍÍÕ…¹”¹¥±ÕÑ¥½¹}Q½Ñ…±}M½É•}%µÁ…Ğ°€Ä¸À¤((€€€€€€€Á•ÉÍ¥ÍÑ•¹Ğ€ôÍ•±˜¹}½½‘}…¹‘¥‘…Ñ”¡Ñ¥­•Èô‰%1UQˆ¤(€€€€€€€Á•ÉÍ¥ÍÑ•¹Ğ¹A•ÉÍ¥ÍÑ•¹Ñ}¥±ÕÑ¥½¸€ôQÉÕ”(€€€€€€€Á•ÉÍ¥ÍÑ•¹Ğ¹M¡…É•}½Õ¹Ñ}¡…¹•|Íe}ÁĞ€ô€Ô¸À(€€€€€€€Á•ÉÍ¥ÍÑ•¹Ğ¹…Á¥Ñ…±}±±½…Ñ¥½¹}M½É”€ô€ĞÀ¸À(€€€€€€€Á•ÉÍ¥ÍÑ•¹Ğ€ô…ÁÁ±å}±½¹}Ñ•Éµ}™É…µ•İ½É¬¡Á•ÉÍ¥ÍÑ•¹Ğ¤(€€€€€€€Í•±˜¹…ÍÍ•ÉÑ…±Í”¡Á•ÉÍ¥ÍÑ•¹Ğ¹1½¹}Q•Éµ}±¥¥‰±”¤(€€€€€€€Í•±˜¹…ÍÍ•ÉÑÅÕ…°¡Á•ÉÍ¥ÍÑ•¹Ğ¹MÕ•ÍÑ•‘}MÑ…ÉÑ•É}]•¥¡Ñ}ÁÑ}Q½Ñ…°°€À¸À¤(€€€€€€€Í•±˜¹…ÍÍ•ÉÑÅÕ…°¡Á•ÉÍ¥ÍÑ•¹Ğ¹…Á¥Ñ…±}±±½…Ñ¥½¹}A•¹…±Ñä°€À¸À¤(€€€€€€€Í•±˜¹…ÍÍ•ÉÑÅÕ…°¡Á•ÉÍ¥ÍÑ•¹Ğ¹¥±ÕÑ¥½¹}Q½Ñ…±}M½É•}%µÁ…Ğ°€À¸À¤(4(€€€‘•˜Ñ•ÍÑ}‘…Ñ…}½¹™¥‘•¹•}¥Í}…}…Ñ•}¹½Ñ}…¹}•áÑÉ…}Í½É•}™…Ñ½È¡Í•±˜¤è4(€€€€€€€…¹‘¥‘…Ñ”€ôÍ•±˜¹}½½‘}…¹‘¥‘…Ñ”¡Ñ¥­•Èô‰1=]=9ˆ¤4(€€€€€€€…¹‘¥‘…Ñ”¹…Ñ…}½¹™¥‘•¹•}M½É”€ô€ØÀ¸À4(€€€€€€€…¹‘¥‘…Ñ”¹•¥Í¥½¹}MÑ…Ñ”€ô€‰	MQ%8ˆ4(€€€€€€€…¹‘¥‘…Ñ”€ô…ÁÁ±å}±½¹}Ñ•Éµ}™É…µ•İ½É¬¡…¹‘¥‘…Ñ”¤4(€€€€€€€Í•±˜¹…ÍÍ•ÉÑ…±Í”¡…¹‘¥‘…Ñ”¹1½¹}Q•Éµ}±¥¥‰±”¤4(€€€€€€€Í•±˜¹…ÍÍ•ÉÑÅÕ…°¡…¹‘¥‘…Ñ”¹Y•É‘¥Ğ°€‹šj¯’â7–"“šZß¾òk¢ÎšZg’ş‡–ş’â7¢ÚÏš"[š¢‡–z/’â7¦§R ˆ¤4(4(€€€‘•˜Ñ•ÍÑ}Í¡½ÉÑ±¥ÍÑ}‘•™…Õ±ÑÍ}Ñ½}Í½É•}™¥ÉÍÑ}İ¥Ñ¡½ÕÑ}Í•Ñ½É}…À¡Í•±˜¤è4(€€€€€€€É•ÍÕ±ÑÌ€ômt4(€€€€€€€™½È¥‘à¥¸É…¹” Ô¤è4(€€€€€€€€€€€È€ôÍ•±˜¹}½½‘}…¹‘¥‘…Ñ”¡Ñ¥­•Èõ˜‰Q!í¥‘áôˆ°Í•Ñ½Èô‰Q•¡¹½±½äˆ¤4(€€€€€€€€€€€È¹1½¹}Q•Éµ}±¥¥‰±”€ôQÉÕ”4(€€€€€€€€€€€È¹1½¹}Q•Éµ}M½É”€ô€äÔ¸À€´¥‘à4(€€€€€€€€€€€É•ÍÕ±ÑÌ¹…ÁÁ•¹¡È¤4(€€€€€€€™½È¥‘à¥¸É…¹” Ì¤è4(€€€€€€€€€€€È€ôÍ•±˜¹}½½‘}…¹‘¥‘…Ñ”¡Ñ¥­•Èõ˜‰!1Q!í¥‘áôˆ°Í•Ñ½Èô‰!•…±Ñ¡…É”ˆ¤4(€€€€€€€€€€€È¹1½¹}Q•Éµ}±¥¥‰±”€ôQÉÕ”4(€€€€€€€€€€€È¹1½¹}Q•Éµ}M½É”€ô€àÔ¸À€´¥‘à4(€€€€€€€€€€€É•ÍÕ±ÑÌ¹…ÁÁ•¹¡È¤4(4(€€€€€€€Í¡½ÉÑ±¥ÍĞ€ôÍ•±•Ñ}‘¥Ù•ÉÍ¥™¥•‘}Í¡½ÉÑ±¥ÍĞ¡É•ÍÕ±ÑÌ°Ñ…É•Ñ}Í¥é”ôĞ¤4(€€€€€€€Í•±˜¹…ÍÍ•ÉÑÅÕ…°¡mÈ¹Q¥­•È™½ÈÈ¥¸Í¡½ÉÑ±¥ÍÑt°l‰Q Àˆ°€‰Q Äˆ°€‰Q Èˆ°€‰Q Ì‰t¤4(4(€€€‘•˜Ñ•ÍÑ}Í¡½ÉÑ±¥ÍÑ}…¹}ÍÑ¥±±}…•ÁÑ}•áÁ±¥¥Ñ}Í•Ñ½É}…À¡Í•±˜¤è4(€€€€€€€É•ÍÕ±ÑÌ€ômt4(€€€€€€€™½È¥‘à¥¸É…¹” Ô¤è4(€€€€€€€€€€€È€ôÍ•±˜¹}½½‘}…¹‘¥‘…Ñ”¡Ñ¥­•Èõ˜‰Q!í¥‘áôˆ°Í•Ñ½Èô‰Q•¡¹½±½äˆ¤4(€€€€€€€€€€€È¹1½¹}Q•Éµ}±¥¥‰±”€ôQÉÕ”4(€€€€€€€€€€€È¹1½¹}Q•Éµ}M½É”€ô€äÔ¸À€´¥‘à4(€€€€€€€€€€€É•ÍÕ±ÑÌ¹…ÁÁ•¹¡È¤4(€€€€€€€™½È¥‘à¥¸É…¹” Ì¤è4(€€€€€€€€€€€È€ôÍ•±˜¹}½½‘}…¹‘¥‘…Ñ”¡Ñ¥­•Èõ˜‰!1Q!í¥‘áôˆ°Í•Ñ½Èô‰!•…±Ñ¡…É”ˆ¤4(€€€€€€€€€€€È¹1½¹}Q•Éµ}±¥¥‰±”€ôQÉÕ”4(€€€€€€€€€€€È¹1½¹}Q•Éµ}M½É”€ô€àÔ¸À€´¥‘à4(€€€€€€€€€€€É•ÍÕ±ÑÌ¹…ÁÁ•¹¡È¤4(4(€€€€€€€Í¡½ÉÑ±¥ÍĞ€ôÍ•±•Ñ}‘¥Ù•ÉÍ¥™¥•‘}Í¡½ÉÑ±¥ÍĞ¡É•ÍÕ±ÑÌ°Ñ…É•Ñ}Í¥é”ôĞ°µ…á}Á•É}Í•Ñ½ÈôÈ¤4(€€€€€€€Í•±˜¹…ÍÍ•ÉÑÅÕ…°¡±•¸¡Í¡½ÉÑ±¥ÍĞ¤°€Ğ¤4(€€€€€€€Í•±˜¹…ÍÍ•ÉÑ1•ÍÍÅÕ…°¡ÍÕ´¡È¹M•Ñ½È€ôô€‰Q•¡¹½±½äˆ™½ÈÈ¥¸Í¡½ÉÑ±¥ÍĞ¤°€È¤4(€€€€€€€Í•±˜¹…ÍÍ•ÉÑ1•ÍÍÅÕ…°¡ÍÕ´¡È¹M•Ñ½È€ôô€‰!•…±Ñ¡…É”ˆ™½ÈÈ¥¸Í¡½ÉÑ±¥ÍĞ¤°€È¤4(4(4)¥˜}}¹…µ•}|€ôô€‰}}µ…¥¹}|ˆè4(€€€Õ¹¥ÑÑ•ÍĞ¹µ…¥¸ ¤4(

@@ -16,6 +16,10 @@ SPECIALIZED_MODEL_KEYS = {
     "CYCLICAL_MIDCYCLE",
     "FINANCIAL_LENDER",
     "FINANCIAL_FEE",
+    "ALTERNATIVE_ASSET_MANAGER",
+    "TRADITIONAL_ASSET_MANAGER",
+    "INSURANCE_LINKED_ASSET_MANAGER",
+    "OTHER_FEE_FINANCIAL",
 }
 
 
@@ -195,9 +199,19 @@ def initial_screen_industry(model_key: str, info: Mapping[str, Any]) -> dict:
     elif model_key == "REGULATED_UTILITY":
         if math.isfinite(ebitda) and math.isfinite(ocf) and ebitda <= 0 and ocf <= 0:
             hard_failures.append("both EBITDA and operating cash flow are non-positive")
-    elif model_key == "FINANCIAL_FEE":
+    elif model_key in {
+        "FINANCIAL_FEE",
+        "ALTERNATIVE_ASSET_MANAGER",
+        "TRADITIONAL_ASSET_MANAGER",
+        "INSURANCE_LINKED_ASSET_MANAGER",
+        "OTHER_FEE_FINANCIAL",
+    }:
         if math.isfinite(ebitda) and ebitda <= 0 and math.isfinite(ocf) and ocf <= 0:
             hard_failures.append("fee-business EBITDA and operating cash flow are non-positive")
+        if not math.isfinite(ebitda) or not math.isfinite(ocf):
+            warnings.append(
+                "Yahoo fee-business cash economics are incomplete; defer AUM/FRE/flow KPIs to company filings"
+            )
     elif model_key == "CYCLICAL_MIDCYCLE":
         if math.isfinite(ebitda) and ebitda <= 0:
             warnings.append("current EBITDA is non-positive; trough-survival deep model required")
@@ -293,595 +307,51 @@ def evaluate_insurance_p_and_c(raw: Mapping[str, Any]) -> IndustryModelEvaluatio
     equity = _number(metrics.get("equity_b"))
     net_income = _number(metrics.get("net_income_ttm_b"))
     market_cap = _number(metrics.get("market_cap_b"))
-    metrics.update(
-        {
-            "combined_ratio_proxy_pct": _safe_div(combined_expense, premiums) * 100.0,
-            "loss_ratio_pct": _safe_div(claims, premiums) * 100.0,
-            "equity_to_assets_pct": _safe_div(equity, assets) * 100.0,
-            "roe_pct": _safe_div(
-                net_income,
-                _coalesce_number(metrics.get("average_equity_b"), equity),
-            ) * 100.0,
-            "price_to_book_x": _safe_div(market_cap, equity),
-        }
+    reported_input_combined = _number(
+        metrics.get("company_reported_combined_ratio_pct")
     )
-    combined = _number(metrics["combined_ratio_proxy_pct"])
-    capital_ratio = _number(metrics["equity_to_assets_pct"])
-    hard = []
-    if math.isfinite(premiums) and premiums <= 0:
-        hard.append("earned premiums are non-positive")
-    if math.isfinite(combined) and combined > 110.0:
-        hard.append("combined-ratio proxy exceeds 110%")
-    if math.isfinite(capital_ratio) and capital_ratio < 8.0:
-        hard.append("equity / assets is below 8%")
-    if math.isfinite(net_income) and net_income <= 0:
-        hard.append("TTM net income is non-positive")
-    components = {
-        "underwriting_profitability": (_inverse(combined, 110.0, 90.0), 40.0),
-        "premium_growth": (_bounded(metrics.get("premium_growth_pct"), -5.0, 15.0), 15.0),
-        "reserve_development": (_inverse(metrics.get("reserve_development_to_premium_pct"), 5.0, -2.0), 15.0),
-        "capital_strength": (_bounded(capital_ratio, 8.0, 25.0), 15.0),
-        "roe": (_bounded(metrics["roe_pct"], 0.0, 18.0), 10.0),
-        "valuation": (_inverse(metrics["price_to_book_x"], 3.0, 0.8), 5.0),
-    }
-    return _finish(
-        "INSURANCE_P_AND_C",
-        metrics,
-        components,
-        required=[
-            "premiums_earned_ttm_b",
-            "combined_expense_ttm_b",
-            "assets_b",
-            "equity_b",
-            "net_income_ttm_b",
-        ],
-        optional=[
-            "claims_incurred_ttm_b",
-            "underwriting_expense_ttm_b",
-            "premium_growth_pct",
-            "reserve_development_to_premium_pct",
-            "market_cap_b",
-        ],
-        hard_failures=hard,
+    monthly_combined = _number(metrics.get("monthly_combined_ratio_pct"))
+    quarterly_combined = _number(metrics.get("quarterly_combined_ratio_pct"))
+    trailing_combined = _number(metrics.get("ttm_combined_ratio_pct"))
+    company_reported_combined = _coalesce_number(
+        trailing_combined,
+        _coalesce_number(quarterly_combined, reported_input_combined),
     )
-
-
-def evaluate_insurance_life(raw: Mapping[str, Any]) -> IndustryModelEvaluation:
-    metrics = dict(raw)
-    premiums = _number(metrics.get("premiums_earned_ttm_b"))
+    company_ratio_period = (
+        "TTM"
+        if _finite(trailing_combined)
+        else "QUARTERLY"
+        if _finite(quarterly_combined)
+        else "COMPANY_REPORTED_UNSPECIFIED"
+        if _finite(reported_input_combined)
+        else "MISSING"
+    )
+    proxy_reconciled = bool(metrics.get("sec_proxy_reconciled", False))
+    sec_proxy = _safe_div(combined_expense, premiums) * 100.0
+    reconciliation_difference = (
+        sec_proxy - company_reported_combined
+        if _finite(sec_proxy) and _finite(company_reported_combined)
+        else math.nan
+    )
+    if _finite(company_reported_combined):
+        source_status = "COMPANY_REPORTED"
+        combined_for_model = company_reported_combined
+    elif _finite(sec_proxy) and proxy_reconciled:
+        source_status = "SEC_PROXY_RECONCILED"
+        combined_for_model = sec_proxy
+    elif _finite(sec_proxy):
+        source_status = "SEC_PROXY_UNRECONCILED"
+        combined_for_model = sec_proxy
+    else:
+        source_status = "MISSING"
+        combined_for_model = math.nan
+    invested_assets = _number(metrics.get("invested_assets_b"))
     investment_income = _number(metrics.get("net_investment_income_ttm_b"))
-    benefits = _number(metrics.get("policyholder_benefits_ttm_b"))
-    assets = _number(metrics.get("assets_b"))
-    equity = _number(metrics.get("equity_b"))
-    net_income = _number(metrics.get("net_income_ttm_b"))
-    market_cap = _number(metrics.get("market_cap_b"))
-    operating_inflow = premiums + investment_income
+    investment_yield = _number(metrics.get("investment_yield_pct"))
+    if not _finite(investment_yield):
+        investment_yield = _safe_div(investment_income, invested_assets) * 100.0
     metrics.update(
         {
-            "operating_inflow_ttm_b": operating_inflow,
-            "benefit_ratio_pct": _safe_div(benefits, operating_inflow) * 100.0,
-            "equity_to_assets_pct": _safe_div(equity, assets) * 100.0,
-            "roe_pct": _safe_div(
-                net_income,
-                _coalesce_number(metrics.get("average_equity_b"), equity),
-            ) * 100.0,
-            "price_to_book_x": _safe_div(market_cap, equity),
-        }
-    )
-    hard = []
-    if math.isfinite(premiums) and premiums <= 0:
-        hard.append("earned premiums are non-positive")
-    if math.isfinite(operating_inflow) and operating_inflow <= 0:
-        hard.append("premium plus investment income is non-positive")
-    if _finite(metrics["benefit_ratio_pct"]) and metrics["benefit_ratio_pct"] > 105.0:
-        hard.append("policyholder-benefit ratio exceeds 105% of premium plus investment income")
-    if _finite(metrics["equity_to_assets_pct"]) and metrics["equity_to_assets_pct"] < 3.0:
-        hard.append("equity / assets is below 3%")
-    if math.isfinite(net_income) and net_income <= 0:
-        hard.append("TTM net income is non-positive")
-    components = {
-        "benefit_burden": (_inverse(metrics["benefit_ratio_pct"], 105.0, 65.0), 30.0),
-        "capital_strength": (_bounded(metrics["equity_to_assets_pct"], 3.0, 12.0), 25.0),
-        "roe": (_bounded(metrics["roe_pct"], 0.0, 15.0), 20.0),
-        "premium_growth": (_bounded(metrics.get("premium_growth_pct"), -5.0, 12.0), 15.0),
-        "valuation": (_inverse(metrics["price_to_book_x"], 2.5, 0.7), 10.0),
-    }
-    return _finish(
-        "INSURANCE_LIFE",
-        metrics,
-        components,
-        required=[
-            "premiums_earned_ttm_b",
-            "net_investment_income_ttm_b",
-            "policyholder_benefits_ttm_b",
-            "assets_b",
-            "equity_b",
-            "net_income_ttm_b",
-        ],
-        optional=["premium_growth_pct", "market_cap_b"],
-        hard_failures=hard,
-    )
-
-
-def evaluate_reit_equity(raw: Mapping[str, Any]) -> IndustryModelEvaluation:
-    metrics = dict(raw)
-    net_income = _number(metrics.get("net_income_ttm_b"))
-    dna = abs(_number(metrics.get("real_estate_dna_ttm_b")))
-    gain = _number(metrics.get("gain_on_property_sale_ttm_b"))
-    impairment = abs(_number(metrics.get("real_estate_impairment_ttm_b")))
-    maintenance = abs(_number(metrics.get("maintenance_capex_b")))
-    interest = abs(_number(metrics.get("interest_ttm_b")))
-    tax = _number(metrics.get("tax_ttm_b"))
-    debt = _number(metrics.get("debt_b"))
-    cash = _number(metrics.get("cash_b"))
-    market_cap = _number(metrics.get("market_cap_b"))
-    dividends = abs(_number(metrics.get("dividends_ttm_b")))
-    ffo = net_income + dna - gain + impairment
-    affo = ffo - maintenance
-    ebitdare = net_income + interest + max(tax, 0.0) + dna - gain + impairment
-    net_debt = max(debt - cash, 0.0)
-    metrics.update(
-        {
-            "ffo_proxy_b": ffo,
-            "affo_proxy_b": affo,
-            "ebitdare_proxy_b": ebitdare,
-            "affo_yield_pct": _safe_div(affo, market_cap) * 100.0,
-            "price_to_ffo_x": _safe_div(market_cap, ffo),
-            "dividend_to_affo_pct": _safe_div(dividends, affo) * 100.0,
-            "net_debt_to_ebitdare_x": _safe_div(net_debt, ebitdare),
-            "interest_coverage_x": _interest_coverage(ebitdare, interest, debt),
-        }
-    )
-    hard = []
-    if math.isfinite(ffo) and ffo <= 0:
-        hard.append("Nareit FFO proxy is non-positive")
-    if math.isfinite(affo) and affo <= 0:
-        hard.append("AFFO proxy is non-positive")
-    if _finite(metrics["net_debt_to_ebitdare_x"]) and metrics["net_debt_to_ebitdare_x"] > 8.0:
-        hard.append("net debt / EBITDAre proxy exceeds 8x")
-    if debt > 0 and _finite(metrics["interest_coverage_x"]) and metrics["interest_coverage_x"] < 1.5:
-        hard.append("EBITDAre interest coverage is below 1.5x")
-    if _finite(metrics["dividend_to_affo_pct"]) and metrics["dividend_to_affo_pct"] > 110.0:
-        hard.append("dividends exceed 110% of AFFO proxy")
-    components = {
-        "affo_yield": (_bounded(metrics["affo_yield_pct"], 2.0, 8.0), 25.0),
-        "price_to_ffo": (_inverse(metrics["price_to_ffo_x"], 30.0, 10.0), 20.0),
-        "leverage": (_inverse(metrics["net_debt_to_ebitdare_x"], 8.0, 2.0), 20.0),
-        "interest_coverage": (_bounded(metrics["interest_coverage_x"], 1.5, 5.0), 15.0),
-        "dividend_coverage": (_inverse(metrics["dividend_to_affo_pct"], 110.0, 60.0), 10.0),
-        "lease_revenue_growth": (_bounded(metrics.get("lease_revenue_growth_pct"), -5.0, 10.0), 10.0),
-    }
-    return _finish(
-        "REIT_EQUITY",
-        metrics,
-        components,
-        required=[
-            "net_income_ttm_b",
-            "real_estate_dna_ttm_b",
-            "maintenance_capex_b",
-            "interest_ttm_b",
-            "debt_b",
-            "cash_b",
-            "market_cap_b",
-        ],
-        optional=[
-            "gain_on_property_sale_ttm_b",
-            "real_estate_impairment_ttm_b",
-            "tax_ttm_b",
-            "dividends_ttm_b",
-            "lease_revenue_growth_pct",
-        ],
-        hard_failures=hard,
-    )
-
-
-def evaluate_reit_mortgage(raw: Mapping[str, Any]) -> IndustryModelEvaluation:
-    metrics = dict(raw)
-    assets = _number(metrics.get("assets_b"))
-    equity = _number(metrics.get("equity_b"))
-    net_income = _number(metrics.get("net_income_ttm_b"))
-    recurring_earnings = _number(metrics.get("recurring_earnings_ttm_b"))
-    net_interest_income = _number(metrics.get("net_interest_income_ttm_b"))
-    market_cap = _number(metrics.get("market_cap_b"))
-    dividends = abs(_number(metrics.get("dividends_ttm_b")))
-    metrics.update(
-        {
-            "assets_to_equity_x": _safe_div(assets, equity),
-            "equity_to_assets_pct": _safe_div(equity, assets) * 100.0,
-            "roe_pct": _safe_div(
-                net_income,
-                _coalesce_number(metrics.get("average_equity_b"), equity),
-            ) * 100.0,
-            "price_to_book_x": _safe_div(market_cap, equity),
-            "dividend_payout_pct": _safe_div(dividends, recurring_earnings) * 100.0,
-            "dividend_to_gaap_net_income_pct": _safe_div(dividends, net_income) * 100.0,
-            "dividend_to_gaap_net_interest_income_pct": (
-                _safe_div(dividends, net_interest_income) * 100.0
-            ),
-        }
-    )
-    hard = []
-    warnings = []
-    if _finite(metrics["assets_to_equity_x"]) and metrics["assets_to_equity_x"] > 15.0:
-        hard.append("assets / equity exceeds 15x")
-    if _finite(metrics["equity_to_assets_pct"]) and metrics["equity_to_assets_pct"] < 5.0:
-        hard.append("equity / assets is below 5%")
-    if math.isfinite(net_income) and net_income <= 0:
-        hard.append("TTM net income is non-positive")
-    if (
-        _finite(metrics["dividend_to_gaap_net_income_pct"])
-        and metrics["dividend_to_gaap_net_income_pct"] > 120.0
-    ):
-        warnings.append(
-            "dividend exceeds 120% of GAAP net income; recurring-earnings coverage is authoritative"
-        )
-    components = {
-        "capital_strength": (_bounded(metrics["equity_to_assets_pct"], 5.0, 15.0), 25.0),
-        "leverage": (_inverse(metrics["assets_to_equity_x"], 15.0, 5.0), 20.0),
-        "roe": (_bounded(metrics["roe_pct"], 0.0, 15.0), 20.0),
-        "dividend_coverage": (_inverse(metrics["dividend_payout_pct"], 120.0, 70.0), 15.0),
-        "book_valuation": (_inverse(metrics["price_to_book_x"], 1.5, 0.7), 10.0),
-        "net_interest_income_growth": (_bounded(metrics.get("net_interest_income_growth_pct"), -10.0, 10.0), 10.0),
-    }
-    return _finish(
-        "REIT_MORTGAGE",
-        metrics,
-        components,
-        required=[
-            "assets_b",
-            "equity_b",
-            "net_income_ttm_b",
-            "recurring_earnings_ttm_b",
-            "market_cap_b",
-        ],
-        optional=[
-            "dividends_ttm_b",
-            "net_interest_income_ttm_b",
-            "net_interest_income_growth_pct",
-        ],
-        hard_failures=hard,
-        warnings=warnings,
-    )
-
-
-def evaluate_regulated_utility(raw: Mapping[str, Any]) -> IndustryModelEvaluation:
-    metrics = dict(raw)
-    ebit = _number(metrics.get("ebit_ttm_b"))
-    interest = abs(_number(metrics.get("interest_ttm_b")))
-    debt = _number(metrics.get("debt_b"))
-    equity = _number(metrics.get("equity_b"))
-    ocf = _number(metrics.get("ocf_ttm_b"))
-    capex = abs(_number(metrics.get("capex_ttm_b")))
-    net_income = _number(metrics.get("net_income_ttm_b"))
-    dividends = abs(_number(metrics.get("dividends_ttm_b")))
-    metrics.update(
-        {
-            "interest_coverage_x": _interest_coverage(ebit, interest, debt),
-            "debt_to_capital_pct": _safe_div(debt, debt + equity) * 100.0,
-            "ocf_to_capex_x": _safe_div(ocf, capex),
-            "roe_pct": _safe_div(
-                net_income,
-                _coalesce_number(metrics.get("average_equity_b"), equity),
-            ) * 100.0,
-            "earnings_to_dividend_x": _safe_div(net_income, dividends),
-        }
-    )
-    hard = []
-    if math.isfinite(equity) and equity <= 0:
-        hard.append("book equity is non-positive")
-    if debt > 0 and _finite(metrics["interest_coverage_x"]) and metrics["interest_coverage_x"] < 1.5:
-        hard.append("EBIT interest coverage is below 1.5x")
-    if _finite(metrics["debt_to_capital_pct"]) and metrics["debt_to_capital_pct"] > 75.0:
-        hard.append("debt / total capital exceeds 75%")
-    if math.isfinite(ocf) and ocf <= 0:
-        hard.append("TTM operating cash flow is non-positive")
-    if math.isfinite(net_income) and net_income <= 0:
-        hard.append("TTM net income is non-positive")
-    components = {
-        "interest_coverage": (_bounded(metrics["interest_coverage_x"], 1.5, 5.0), 25.0),
-        "capital_structure": (_inverse(metrics["debt_to_capital_pct"], 75.0, 40.0), 20.0),
-        "capex_funding": (_bounded(metrics["ocf_to_capex_x"], 0.5, 1.2), 20.0),
-        "roe_proxy": (_bounded(metrics["roe_pct"], 3.0, 12.0), 15.0),
-        "regulated_asset_growth_proxy": (_bounded(metrics.get("ppe_growth_pct"), 0.0, 8.0), 10.0),
-        "dividend_coverage": (_bounded(metrics["earnings_to_dividend_x"], 0.8, 1.5), 10.0),
-    }
-    return _finish(
-        "REGULATED_UTILITY",
-        metrics,
-        components,
-        required=[
-            "ebit_ttm_b",
-            "interest_ttm_b",
-            "debt_b",
-            "equity_b",
-            "ocf_ttm_b",
-            "capex_ttm_b",
-            "net_income_ttm_b",
-        ],
-        optional=["ppe_growth_pct", "dividends_ttm_b"],
-        hard_failures=hard,
-    )
-
-
-def evaluate_cyclical_midcycle(raw: Mapping[str, Any]) -> IndustryModelEvaluation:
-    metrics = dict(raw)
-    history = [_number(value) for value in metrics.get("ebitda_history_b", []) if _finite(value)]
-    if len(history) < 5:
-        return IndustryModelEvaluation(
-            model_key="CYCLICAL_MIDCYCLE",
-            decision="ABSTAIN",
-            score=math.nan,
-            metrics=metrics,
-            required_missing=["ebitda_history_b>=5"],
-            warnings=["At least five point-in-time annual EBITDA observations are required"],
-        )
-    midcycle = statistics.median(history)
-    trough = _percentile(history, 0.20)
-    peak = _percentile(history, 0.90)
-    current = _number(metrics.get("current_ebitda_b"))
-    ev = _number(metrics.get("enterprise_value_b"))
-    valuation_ev = ev if math.isfinite(ev) and ev > 0 else math.nan
-    debt = _number(metrics.get("debt_b"))
-    cash = _number(metrics.get("cash_b"))
-    interest = abs(_number(metrics.get("interest_ttm_b")))
-    dna = abs(_number(metrics.get("dna_ttm_b")))
-    real_fcf = _number(metrics.get("real_fcf_ttm_b"))
-    net_debt = max(debt - cash, 0.0)
-    fully_cash_covered = bool(
-        math.isfinite(debt)
-        and math.isfinite(cash)
-        and (debt <= 0.01 or cash >= debt)
-    )
-    trough_ebit = trough - dna
-    trough_interest_coverage = (
-        math.inf
-        if fully_cash_covered
-        else _interest_coverage(trough_ebit, interest, debt)
-    )
-    metrics.update(
-        {
-            "midcycle_ebitda_b": midcycle,
-            "trough_ebitda_b": trough,
-            "peak_ebitda_b": peak,
-            "current_to_midcycle_x": _safe_div(current, midcycle),
-            "ev_to_midcycle_ebitda_x": _safe_div(valuation_ev, midcycle),
-            "net_debt_to_trough_ebitda_x": _safe_div(net_debt, trough),
-            "trough_interest_coverage_x": trough_interest_coverage,
-            "debt_service_method": (
-                "net_cash_non_binding" if fully_cash_covered else "reported_interest"
-            ),
-            "real_fcf_to_ev_yield_pct": _safe_div(real_fcf, valuation_ev) * 100.0,
-        }
-    )
-    warnings = []
-    if math.isfinite(ev) and ev <= 0:
-        metrics["enterprise_value_b"] = math.nan
-        warnings.append(
-            "non-positive enterprise value requires a separate net-cash special-situation model"
-        )
-    hard = []
-    if midcycle <= 0:
-        hard.append("mid-cycle EBITDA is non-positive")
-    if current <= 0 and net_debt > 0:
-        hard.append("current EBITDA is non-positive while net debt remains")
-    if trough <= 0 and net_debt > 0:
-        hard.append("trough EBITDA is non-positive while net debt remains")
-    if not fully_cash_covered and debt > 0 and _finite(metrics["trough_interest_coverage_x"]) and metrics["trough_interest_coverage_x"] < 1.25:
-        hard.append("trough interest coverage is below 1.25x")
-    if _finite(metrics["net_debt_to_trough_ebitda_x"]) and metrics["net_debt_to_trough_ebitda_x"] > 5.0:
-        hard.append("net debt / trough EBITDA exceeds 5x")
-    components = {
-        "midcycle_valuation": (_inverse(metrics["ev_to_midcycle_ebitda_x"], 15.0, 5.0), 30.0),
-        "trough_interest_coverage": (
-            100.0
-            if fully_cash_covered
-            else _bounded(metrics["trough_interest_coverage_x"], 1.25, 5.0),
-            25.0,
-        ),
-        "trough_leverage": (_inverse(metrics["net_debt_to_trough_ebitda_x"], 5.0, 0.0), 20.0),
-        "cash_generation": (_bounded(metrics["real_fcf_to_ev_yield_pct"], 0.0, 8.0), 15.0),
-        "cycle_position": (
-            0.0 if current <= 0 else _inverse(metrics["current_to_midcycle_x"], 1.6, 0.8),
-            10.0,
-        ),
-    }
-    return _finish(
-        "CYCLICAL_MIDCYCLE",
-        metrics,
-        components,
-        required=[
-            "current_ebitda_b",
-            "enterprise_value_b",
-            "debt_b",
-            "cash_b",
-            *([] if fully_cash_covered else ["interest_ttm_b"]),
-            "dna_ttm_b",
-            "real_fcf_ttm_b",
-        ],
-        optional=[],
-        hard_failures=hard,
-        warnings=warnings,
-    )
-
-
-def evaluate_financial_lender(raw: Mapping[str, Any]) -> IndustryModelEvaluation:
-    metrics = dict(raw)
-    assets = _number(metrics.get("assets_b"))
-    equity = _number(metrics.get("tangible_equity_b"))
-    net_income = _number(metrics.get("net_income_ttm_b"))
-    loans = _number(metrics.get("loans_b"))
-    allowance = _number(metrics.get("credit_loss_allowance_b"))
-    market_cap = _number(metrics.get("market_cap_b"))
-    metrics.update(
-        {
-            "tangible_equity_to_assets_pct": _safe_div(equity, assets) * 100.0,
-            "rotce_pct": _safe_div(
-                net_income,
-                _coalesce_number(metrics.get("average_tangible_equity_b"), equity),
-            ) * 100.0,
-            "credit_loss_allowance_to_loans_pct": _safe_div(allowance, loans) * 100.0,
-            "price_to_tangible_book_x": _safe_div(market_cap, equity),
-        }
-    )
-    hard = []
-    if _finite(metrics["tangible_equity_to_assets_pct"]) and metrics["tangible_equity_to_assets_pct"] < 5.0:
-        hard.append("tangible equity / assets is below 5%")
-    if math.isfinite(net_income) and net_income <= 0:
-        hard.append("TTM net income is non-positive")
-    components = {
-        "capital_strength": (_bounded(metrics["tangible_equity_to_assets_pct"], 5.0, 15.0), 30.0),
-        "rotce": (_bounded(metrics["rotce_pct"], 0.0, 18.0), 25.0),
-        "allowance_coverage_proxy": (_bounded(metrics["credit_loss_allowance_to_loans_pct"], 0.5, 2.5), 15.0),
-        "net_interest_income_growth": (_bounded(metrics.get("net_interest_income_growth_pct"), -10.0, 10.0), 15.0),
-        "valuation": (_inverse(metrics["price_to_tangible_book_x"], 2.5, 0.7), 15.0),
-    }
-    return _finish(
-        "FINANCIAL_LENDER",
-        metrics,
-        components,
-        required=[
-            "assets_b",
-            "tangible_equity_b",
-            "net_income_ttm_b",
-            "loans_b",
-            "credit_loss_allowance_b",
-        ],
-        optional=["net_interest_income_growth_pct", "market_cap_b"],
-        hard_failures=hard,
-    )
-
-
-def evaluate_financial_fee(raw: Mapping[str, Any]) -> IndustryModelEvaluation:
-    metrics = dict(raw)
-    revenue = _number(metrics.get("revenue_ttm_b"))
-    ebit = _number(metrics.get("ebit_ttm_b"))
-    ocf = _number(metrics.get("ocf_ttm_b"))
-    net_income = _number(metrics.get("net_income_ttm_b"))
-    equity = _number(metrics.get("tangible_equity_b"))
-    assets = _number(metrics.get("assets_b"))
-    debt = _number(metrics.get("debt_b"))
-    cash = _number(metrics.get("cash_b"))
-    ebitda = _number(metrics.get("ebitda_ttm_b"))
-    market_cap = _number(metrics.get("market_cap_b"))
-    metrics.update(
-        {
-            "operating_margin_pct": _safe_div(ebit, revenue) * 100.0,
-            "rotce_pct": _safe_div(
-                net_income,
-                _coalesce_number(metrics.get("average_tangible_equity_b"), equity),
-            ) * 100.0,
-            "ocf_to_net_income_x": _safe_div(ocf, net_income),
-            "net_debt_to_ebitda_x": _safe_div(max(debt - cash, 0.0), ebitda),
-            "ocf_yield_pct": _safe_div(ocf, market_cap) * 100.0,
-            "tangible_equity_to_assets_pct": _safe_div(equity, assets) * 100.0,
-        }
-    )
-    hard = []
-    if math.isfinite(equity) and equity <= 0:
-        hard.append("tangible equity is non-positive")
-    if math.isfinite(net_income) and net_income <= 0:
-        hard.append("TTM net income is non-positive")
-    if math.isfinite(ocf) and ocf <= 0:
-        hard.append("TTM operating cash flow is non-positive")
-    components = {
-        "operating_margin": (_bounded(metrics["operating_margin_pct"], 5.0, 35.0), 25.0),
-        "rotce": (_bounded(metrics["rotce_pct"], 0.0, 25.0), 20.0),
-        "cash_conversion": (_bounded(metrics["ocf_to_net_income_x"], 0.5, 1.3), 20.0),
-        "revenue_growth": (_bounded(metrics.get("revenue_growth_pct"), -5.0, 15.0), 15.0),
-        "balance_sheet": (_inverse(metrics["net_debt_to_ebitda_x"], 5.0, 0.0), 10.0),
-        "cash_yield": (_bounded(metrics["ocf_yield_pct"], 2.0, 10.0), 10.0),
-    }
-    return _finish(
-        "FINANCIAL_FEE",
-        metrics,
-        components,
-        required=[
-            "revenue_ttm_b",
-            "ebit_ttm_b",
-            "ocf_ttm_b",
-            "net_income_ttm_b",
-            "tangible_equity_b",
-            "assets_b",
-            "debt_b",
-            "cash_b",
-            "ebitda_ttm_b",
-            "market_cap_b",
-        ],
-        optional=["revenue_growth_pct"],
-        hard_failures=hard,
-    )
-
-
-MODEL_EVALUATORS = {
-    "BANK": evaluate_bank,
-    "INSURANCE_P_AND_C": evaluate_insurance_p_and_c,
-    "INSURANCE_LIFE": evaluate_insurance_life,
-    "REIT_EQUITY": evaluate_reit_equity,
-    "REIT_MORTGAGE": evaluate_reit_mortgage,
-    "REGULATED_UTILITY": evaluate_regulated_utility,
-    "CYCLICAL_MIDCYCLE": evaluate_cyclical_midcycle,
-    "FINANCIAL_LENDER": evaluate_financial_lender,
-    "FINANCIAL_FEE": evaluate_financial_fee,
-}
-
-
-def evaluate_industry_model(model_key: str, metrics: Mapping[str, Any]) -> IndustryModelEvaluation:
-    evaluator = MODEL_EVALUATORS.get(str(model_key or "").upper())
-    if evaluator is None:
-        return IndustryModelEvaluation(
-            model_key=str(model_key or "UNKNOWN"),
-            decision="ABSTAIN",
-            score=math.nan,
-            metrics=dict(metrics),
-            required_missing=["implemented model route"],
-            warnings=["No specialized evaluator is registered for this model key"],
-        )
-    return evaluator(metrics)
-
-
-def assess_specialized_data_confidence(
-    evidence_stats: Mapping[str, Any],
-    evaluation: IndustryModelEvaluation,
-    extra_optional_missing: Iterable[str] = (),
-) -> dict:
-    score = 100.0
-    reasons: List[str] = []
-    selected_count = int(evidence_stats.get("selected_source_count") or 0)
-    accepted_ratio = _number(evidence_stats.get("accepted_at_ratio"))
-    fallback_tag_ratio = _number(evidence_stats.get("fallback_tag_ratio"))
-    period_anomalies = int(evidence_stats.get("period_anomaly_count") or 0)
-    if selected_count <= 0:
-        score -= 45.0
-        reasons.append("No selected SEC source facts")
-    elif not math.isfinite(accepted_ratio) or accepted_ratio < 0.50:
-        score -= 35.0
-        reasons.append("Less than half of selected SEC facts have EDGAR acceptance timestamps")
-    elif accepted_ratio < 0.80:
-        score -= 15.0
-        reasons.append("Some selected SEC facts use filing-date availability fallback")
-    if period_anomalies:
-        score -= min(30.0, period_anomalies * 10.0)
-        reasons.append(f"{period_anomalies} selected facts have abnormal periods")
-    if math.isfinite(fallback_tag_ratio) and fallback_tag_ratio >= 0.75:
-        score -= 10.0
-        reasons.append("Most selected facts use alternate XBRL tag mappings")
-    elif math.isfinite(fallback_tag_ratio) and fallback_tag_ratio >= 0.40:
-        score -= 5.0
-        reasons.append("A material share of facts uses alternate XBRL tag mappings")
-    missing_optional = sorted(set(evaluation.optional_missing) | set(extra_optional_missing))
-    if missing_optional:
-        penalty = min(25.0, len(missing_optional) * 4.0)
-        score -= penalty
-        reasons.append("Optional model evidence missing: " + ", ".join(missing_optional))
-    if evaluation.required_missing:
-        score = min(score, 45.0)
-        reasons.append("Required model evidence missing: " + ", ".join(evaluation.required_missing))
-    if evaluation.score_coverage and evaluation.score_coverage < 0.80:
-        score -= min(15.0, (0.80 - evaluation.score_coverage) * 50.0)
-        reasons.append(f"Specialized score coverage is {evaluation.score_coverage:.0%}")
-    score = round(max(0.0, min(100.0, score)), 2)
-    return {
-        "score": score,
-        "abstain": score < 70.0 or evaluation.decision == "ABSTAIN",
-        "reasons": reasons or ["Specialized model evidence coverage is complete"],
-    }
+            "company_reported_combined_ratio_pct": company_reported_combined,
+            "monthly_combined_ratio_pct": monthly_combined,
+            "quarterly_combïû¶‰žËkºwµç@€€€€€€€€€€€‰Á•…­}•‰¥Ñ‘…}ˆˆèÁ•…¬°4(€€€€€€€€€€€€‰ÕÉÉ•¹Ñ}Ñ½}µ¥‘å±•}àˆè}Í…™•}‘¥Ø¡ÕÉÉ•¹Ð°µ¥‘å±”¤°4(€€€€€€€€€€€€‰•Ù}Ñ½}µ¥‘å±•}•‰¥Ñ‘…}àˆè}Í…™•}‘¥Ø¡Ù…±Õ…Ñ¥½¹}•Ø°µ¥‘å±”¤°4(€€€€€€€€€€€€‰¹•Ñ}‘•‰Ñ}Ñ½}ÑÉ½Õ¡}•‰¥Ñ‘…}àˆè}Í…™•}‘¥Ø¡¹•Ñ}‘•‰Ð°ÑÉ½Õ ¤°4(€€€€€€€€€€€€‰ÑÉ½Õ¡}¥¹Ñ•É•ÍÑ}½Ù•É…•}àˆèÑÉ½Õ¡}¥¹Ñ•É•ÍÑ}½Ù•É…”°4(€€€€€€€€€€€€‰‘•‰Ñ}Í•ÉÙ¥•}µ•Ñ¡½ˆè€ 4(€€€€€€€€€€€€€€€€‰¹•Ñ}…Í¡}¹½¹}‰¥¹‘¥¹œˆ¥˜™Õ±±å}…Í¡}½Ù•É••±Í”€‰É•Á½ÉÑ•‘}¥¹Ñ•É•ÍÐˆ4(€€€€€€€€€€€€¤°4(€€€€€€€€€€€€‰É•…±}™™}Ñ½}•Ù}å¥•±‘}ÁÐˆè}Í…™•}‘¥Ø¡É•…±}™˜°Ù…±Õ…Ñ¥½¹}•Ø¤€¨€ÄÀÀ¸À°4(€€€€€€€ô4(€€€€¤4(€€€Ý…É¹¥¹Ì€ômt4(€€€¥˜µ…Ñ ¹¥Í™¥¹¥Ñ”¡•Ø¤…¹•Ø€ðô€Àè4(€€€€€€€µ•ÑÉ¥Íl‰•¹Ñ•ÉÁÉ¥Í•}Ù…±Õ•}ˆ‰t€ôµ…Ñ ¹¹…¸4(€€€€€€€Ý…É¹¥¹Ì¹…ÁÁ•¹ 4(€€€€€€€€€€€€‰¹½¸µÁ½Í¥Ñ¥Ù”•¹Ñ•ÉÁÉ¥Í”Ù…±Õ”É•ÅÕ¥É•Ì„Í•Á…É…Ñ”¹•Ðµ…Í ÍÁ•¥…°µÍ¥ÑÕ…Ñ¥½¸µ½‘•°ˆ4(€€€€€€€€¤4(€€€¡…É€ômt4(€€€¥˜µ¥‘å±”€ðô€Àè4(€€€€€€€¡…É¹…ÁÁ•¹ ‰µ¥µå±”	%Q¥Ì¹½¸µÁ½Í¥Ñ¥Ù”ˆ¤4(€€€¥˜ÕÉÉ•¹Ð€ðô€À…¹¹•Ñ}‘•‰Ð€ø€Àè4(€€€€€€€¡…É¹…ÁÁ•¹ ‰ÕÉÉ•¹Ð	%Q¥Ì¹½¸µÁ½Í¥Ñ¥Ù”Ý¡¥±”¹•Ð‘•‰ÐÉ•µ…¥¹Ìˆ¤4(€€€¥˜ÑÉ½Õ €ðô€À…¹¹•Ñ}‘•‰Ð€ø€Àè4(€€€€€€€¡…É¹…ÁÁ•¹ ‰ÑÉ½Õ 	%Q¥Ì¹½¸µÁ½Í¥Ñ¥Ù”Ý¡¥±”¹•Ð‘•‰ÐÉ•µ…¥¹Ìˆ¤4(€€€¥˜¹½Ð™Õ±±å}…Í¡}½Ù•É•…¹‘•‰Ð€ø€À…¹}™¥¹¥Ñ”¡µ•ÑÉ¥Íl‰ÑÉ½Õ¡}¥¹Ñ•É•ÍÑ}½Ù•É…•}à‰t¤…¹µ•ÑÉ¥Íl‰ÑÉ½Õ¡}¥¹Ñ•É•ÍÑ}½Ù•É…•}à‰t€ð€Ä¸ÈÔè4(€€€€€€€¡…É¹…ÁÁ•¹ ‰ÑÉ½Õ ¥¹Ñ•É•ÍÐ½Ù•É…”¥Ì‰•±½Ü€Ä¸ÈÕàˆ¤4(€€€¥˜}™¥¹¥Ñ”¡µ•ÑÉ¥Íl‰¹•Ñ}‘•‰Ñ}Ñ½}ÑÉ½Õ¡}•‰¥Ñ‘…}à‰t¤…¹µ•ÑÉ¥Íl‰¹•Ñ}‘•‰Ñ}Ñ½}ÑÉ½Õ¡}•‰¥Ñ‘…}à‰t€ø€Ô¸Àè4(€€€€€€€¡…É¹…ÁÁ•¹ ‰¹•Ð‘•‰Ð€¼ÑÉ½Õ 	%Q•á••‘Ì€Õàˆ¤4(€€€½µÁ½¹•¹ÑÌ€ôì4(€€€€€€€€‰µ¥‘å±•}Ù…±Õ…Ñ¥½¸ˆè€¡}¥¹Ù•ÉÍ”¡µ•ÑÉ¥Íl‰•Ù}Ñ½}µ¥‘å±•}•‰¥Ñ‘…}à‰t°€ÄÔ¸À°€Ô¸À¤°€ÌÀ¸À¤°4(€€€€€€€€‰ÑÉ½Õ¡}¥¹Ñ•É•ÍÑ}½Ù•É…”ˆè€ 4(€€€€€€€€€€€€ÄÀÀ¸À4(€€€€€€€€€€€¥˜™Õ±±å}…Í¡}½Ù•É•4(€€€€€€€€€€€•±Í”}‰½Õ¹‘•¡µ•ÑÉ¥Íl‰ÑÉ½Õ¡}¥¹Ñ•É•ÍÑ}½Ù•É…•}à‰t°€Ä¸ÈÔ°€Ô¸À¤°4(€€€€€€€€€€€€ÈÔ¸À°4(€€€€€€€€¤°4(€€€€€€€€‰ÑÉ½Õ¡}±•Ù•É…”ˆè€¡}¥¹Ù•ÉÍ”¡µ•ÑÉ¥Íl‰¹•Ñ}‘•‰Ñ}Ñ½}ÑÉ½Õ¡}•‰¥Ñ‘…}à‰t°€Ô¸À°€À¸À¤°€ÈÀ¸À¤°4(€€€€€€€€‰…Í¡}•¹•É…Ñ¥½¸ˆè€¡}‰½Õ¹‘•¡µ•ÑÉ¥Íl‰É•…±}™™}Ñ½}•Ù}å¥•±‘}ÁÐ‰t°€À¸À°€à¸À¤°€ÄÔ¸À¤°4(€€€€€€€€‰å±•}Á½Í¥Ñ¥½¸ˆè€ 4(€€€€€€€€€€€€À¸À¥˜ÕÉÉ•¹Ð€ðô€À•±Í”}¥¹Ù•ÉÍ”¡µ•ÑÉ¥Íl‰ÕÉÉ•¹Ñ}Ñ½}µ¥‘å±•}à‰t°€Ä¸Ø°€À¸à¤°4(€€€€€€€€€€€€ÄÀ¸À°4(€€€€€€€€¤°4(€€€ô4(€€€É•ÑÕÉ¸}™¥¹¥Í  4(€€€€€€€€‰e1%1}5%e1ˆ°4(€€€€€€€µ•ÑÉ¥Ì°4(€€€€€€€½µÁ½¹•¹ÑÌ°4(€€€€€€€É•ÅÕ¥É•õl4(€€€€€€€€€€€€‰ÕÉÉ•¹Ñ}•‰¥Ñ‘…}ˆˆ°4(€€€€€€€€€€€€‰•¹Ñ•ÉÁÉ¥Í•}Ù…±Õ•}ˆˆ°4(€€€€€€€€€€€€‰‘•‰Ñ}ˆˆ°4(€€€€€€€€€€€€‰…Í¡}ˆˆ°4(€€€€€€€€€€€€¨¡mt¥˜™Õ±±å}…Í¡}½Ù•É••±Í”l‰¥¹Ñ•É•ÍÑ}ÑÑµ}ˆ‰t¤°4(€€€€€€€€€€€€‰‘¹…}ÑÑµ}ˆˆ°4(€€€€€€€€€€€€‰É•…±}™™}ÑÑµ}ˆˆ°4(€€€€€€€t°4(€€€€€€€½ÁÑ¥½¹…°õmt°4(€€€€€€€¡…É‘}™…¥±ÕÉ•Ìõ¡…É°4(€€€€€€€Ý…É¹¥¹ÌõÝ…É¹¥¹Ì°4(€€€€¤4(4(4)‘•˜•Ù…±Õ…Ñ•}™¥¹…¹¥…±}±•¹‘•È¡É…Üè5…ÁÁ¥¹mÍÑÈ°¹åt¤€´ø%¹‘ÕÍÑÉå5½‘•±Ù…±Õ…Ñ¥½¸è4(€€€µ•ÑÉ¥Ì€ô‘¥Ð¡É…Ü¤4(€€€…ÍÍ•ÑÌ€ô}¹Õµ‰•È¡µ•ÑÉ¥Ì¹•Ð ‰…ÍÍ•ÑÍ}ˆˆ¤¤4(€€€•ÅÕ¥Ñä€ô}¹Õµ‰•È¡µ•ÑÉ¥Ì¹•Ð ‰Ñ…¹¥‰±•}•ÅÕ¥Ñå}ˆˆ¤¤4(€€€¹•Ñ}¥¹½µ”€ô}¹Õµ‰•È¡µ•ÑÉ¥Ì¹•Ð ‰¹•Ñ}¥¹½µ•}ÑÑµ}ˆˆ¤¤4(€€€±½…¹Ì€ô}¹Õµ‰•È¡µ•ÑÉ¥Ì¹•Ð ‰±½…¹Í}ˆˆ¤¤4(€€€…±±½Ý…¹”€ô}¹Õµ‰•È¡µ•ÑÉ¥Ì¹•Ð ‰É•‘¥Ñ}±½ÍÍ}…±±½Ý…¹•}ˆˆ¤¤4(€€€µ…É­•Ñ}…À€ô}¹Õµ‰•È¡µ•ÑÉ¥Ì¹•Ð ‰µ…É­•Ñ}…Á}ˆˆ¤¤4(€€€µ•ÑÉ¥Ì¹ÕÁ‘…Ñ” 4(€€€€€€€ì4(€€€€€€€€€€€€‰Ñ…¹¥‰±•}•ÅÕ¥Ñå}Ñ½}…ÍÍ•ÑÍ}ÁÐˆè}Í…™•}‘¥Ø¡•ÅÕ¥Ñä°…ÍÍ•ÑÌ¤€¨€ÄÀÀ¸À°4(€€€€€€€€€€€€‰É½Ñ•}ÁÐˆè}Í…™•}‘¥Ø 4(€€€€€€€€€€€€€€€¹•Ñ}¥¹½µ”°4(€€€€€€€€€€€€€€€}½…±•Í•}¹Õµ‰•È¡µ•ÑÉ¥Ì¹•Ð ‰…Ù•É…•}Ñ…¹¥‰±•}•ÅÕ¥Ñå}ˆˆ¤°•ÅÕ¥Ñä¤°4(€€€€€€€€€€€€¤€¨€ÄÀÀ¸À°4(€€€€€€€€€€€€‰É•‘¥Ñ}±½ÍÍ}…±±½Ý…¹•}Ñ½}±½…¹Í}ÁÐˆè}Í…™•}‘¥Ø¡…±±½Ý…¹”°±½…¹Ì¤€¨€ÄÀÀ¸À°4(€€€€€€€€€€€€‰ÁÉ¥•}Ñ½}Ñ…¹¥‰±•}‰½½­}àˆè}Í…™•}‘¥Ø¡µ…É­•Ñ}…À°•ÅÕ¥Ñä¤°4(€€€€€€€ô4(€€€€¤4(€€€¡…É€ômt4(€€€¥˜}™¥¹¥Ñ”¡µ•ÑÉ¥Íl‰Ñ…¹¥‰±•}•ÅÕ¥Ñå}Ñ½}…ÍÍ•ÑÍ}ÁÐ‰t¤…¹µ•ÑÉ¥Íl‰Ñ…¹¥‰±•}•ÅÕ¥Ñå}Ñ½}…ÍÍ•ÑÍ}ÁÐ‰t€ð€Ô¸Àè4(€€€€€€€¡…É¹…ÁÁ•¹ ‰Ñ…¹¥‰±”•ÅÕ¥Ñä€¼…ÍÍ•ÑÌ¥Ì‰•±½Ü€Ô”ˆ¤4(€€€¥˜µ…Ñ ¹¥Í™¥¹¥Ñ”¡¹•Ñ}¥¹½µ”¤…¹¹•Ñ}¥¹½µ”€ðô€Àè4(€€€€€€€¡…É¹…ÁÁ•¹ ‰QQ4¹•Ð¥¹½µ”¥Ì¹½¸µÁ½Í¥Ñ¥Ù”ˆ¤4(€€€½µÁ½¹•¹ÑÌ€ôì4(€€€€€€€€‰…Á¥Ñ…±}ÍÑÉ•¹Ñ ˆè€¡}‰½Õ¹‘•¡µ•ÑÉ¥Íl‰Ñ…¹¥‰±•}•ÅÕ¥Ñå}Ñ½}…ÍÍ•ÑÍ}ÁÐ‰t°€Ô¸À°€ÄÔ¸À¤°€ÌÀ¸À¤°4(€€€€€€€€‰É½Ñ”ˆè€¡}‰½Õ¹‘•¡µ•ÑÉ¥Íl‰É½Ñ•}ÁÐ‰t°€À¸À°€Äà¸À¤°€ÈÔ¸À¤°4(€€€€€€€€‰…±±½Ý…¹•}½Ù•É…•}ÁÉ½áäˆè€¡}‰½Õ¹‘•¡µ•ÑÉ¥Íl‰É•‘¥Ñ}±½ÍÍ}…±±½Ý…¹•}Ñ½}±½…¹Í}ÁÐ‰t°€À¸Ô°€È¸Ô¤°€ÄÔ¸À¤°4(€€€€€€€€‰¹•Ñ}¥¹Ñ•É•ÍÑ}¥¹½µ•}É½ÝÑ ˆè€¡}‰½Õ¹‘•¡µ•ÑÉ¥Ì¹•Ð ‰¹•Ñ}¥¹Ñ•É•ÍÑ}¥¹½µ•}É½ÝÑ¡}ÁÐˆ¤°€´ÄÀ¸À°€ÄÀ¸À¤°€ÄÔ¸À¤°4(€€€€€€€€‰Ù…±Õ…Ñ¥½¸ˆè€¡}¥¹Ù•ÉÍ”¡µ•ÑÉ¥Íl‰ÁÉ¥•}Ñ½}Ñ…¹¥‰±•}‰½½­}à‰t°€È¸Ô°€À¸Ü¤°€ÄÔ¸À¤°4(€€€ô4(€€€É•ÑÕÉ¸}™¥¹¥Í  4(€€€€€€€€‰%99%1}19Hˆ°4(€€€€€€€µ•ÑÉ¥Ì°4(€€€€€€€½µÁ½¹•¹ÑÌ°4(€€€€€€€É•ÅÕ¥É•õl4(€€€€€€€€€€€€‰…ÍÍ•ÑÍ}ˆˆ°4(€€€€€€€€€€€€‰Ñ…¹¥‰±•}•ÅÕ¥Ñå}ˆˆ°4(€€€€€€€€€€€€‰¹•Ñ}¥¹½µ•}ÑÑµ}ˆˆ°4(€€€€€€€€€€€€‰±½…¹Í}ˆˆ°4(€€€€€€€€€€€€‰É•‘¥Ñ}±½ÍÍ}…±±½Ý…¹•}ˆˆ°4(€€€€€€€t°4(€€€€€€€½ÁÑ¥½¹…°õl‰¹•Ñ}¥¹Ñ•É•ÍÑ}¥¹½µ•}É½ÝÑ¡}ÁÐˆ°€‰µ…É­•Ñ}…Á}ˆ‰t°4(€€€€€€€¡…É‘}™…¥±ÕÉ•Ìõ¡…É°4(€€€€¤4(4(4)‘•˜•Ù…±Õ…Ñ•}™¥¹…¹¥…±}™•”¡É…Üè5…ÁÁ¥¹mÍÑÈ°¹åt¤€´ø%¹‘ÕÍÑÉå5½‘•±Ù…±Õ…Ñ¥½¸è(€€€µ•ÑÉ¥Ì€ô‘¥Ð¡É…Ü¤4(€€€É•Ù•¹Õ”€ô}¹Õµ‰•È¡µ•ÑÉ¥Ì¹•Ð ‰É•Ù•¹Õ•}ÑÑµ}ˆˆ¤¤4(€€€•‰¥Ð€ô}¹Õµ‰•È¡µ•ÑÉ¥Ì¹•Ð ‰•‰¥Ñ}ÑÑµ}ˆˆ¤¤4(€€€½˜€ô}¹Õµ‰•È¡µ•ÑÉ¥Ì¹•Ð ‰½™}ÑÑµ}ˆˆ¤¤4(€€€¹•Ñ}¥¹½µ”€ô}¹Õµ‰•È¡µ•ÑÉ¥Ì¹•Ð ‰¹•Ñ}¥¹½µ•}ÑÑµ}ˆˆ¤¤4(€€€•ÅÕ¥Ñä€ô}¹Õµ‰•È¡µ•ÑÉ¥Ì¹•Ð ‰Ñ…¹¥‰±•}•ÅÕ¥Ñå}ˆˆ¤¤4(€€€…ÍÍ•ÑÌ€ô}¹Õµ‰•È¡µ•ÑÉ¥Ì¹•Ð ‰…ÍÍ•ÑÍ}ˆˆ¤¤4(€€€‘•‰Ð€ô}¹Õµ‰•È¡µ•ÑÉ¥Ì¹•Ð ‰‘•‰Ñ}ˆˆ¤¤4(€€€…Í €ô}¹Õµ‰•È¡µ•ÑÉ¥Ì¹•Ð ‰…Í¡}ˆˆ¤¤4(€€€•‰¥Ñ‘„€ô}¹Õµ‰•È¡µ•ÑÉ¥Ì¹•Ð ‰•‰¥Ñ‘…}ÑÑµ}ˆˆ¤¤4(€€€µ…É­•Ñ}…À€ô}¹Õµ‰•È¡µ•ÑÉ¥Ì¹•Ð ‰µ…É­•Ñ}…Á}ˆˆ¤¤4(€€€µ•ÑÉ¥Ì¹ÕÁ‘…Ñ” 4(€€€€€€€ì4(€€€€€€€€€€€€‰½Á•É…Ñ¥¹}µ…É¥¹}ÁÐˆè}Í…™•}‘¥Ø¡•‰¥Ð°É•Ù•¹Õ”¤€¨€ÄÀÀ¸À°4(€€€€€€€€€€€€‰É½Ñ•}ÁÐˆè}Í…™•}‘¥Ø 4(€€€€€€€€€€€€€€€¹•Ñ}¥¹½µ”°4(€€€€€€€€€€€€€€€}½…±•Í•}¹Õµ‰•È¡µ•ÑÉ¥Ì¹•Ð ‰…Ù•É…•}Ñ…¹¥‰±•}•ÅÕ¥Ñå}ˆˆ¤°•ÅÕ¥Ñä¤°4(€€€€€€€€€€€€¤€¨€ÄÀÀ¸À°4(€€€€€€€€€€€€‰½™}Ñ½}¹•Ñ}¥¹½µ•}àˆè}Í…™•}‘¥Ø¡½˜°¹•Ñ}¥¹½µ”¤°4(€€€€€€€€€€€€‰¹•Ñ}‘•‰Ñ}Ñ½}•‰¥Ñ‘…}àˆè}Í…™•}‘¥Ø¡µ…à¡‘•‰Ð€´…Í °€À¸À¤°•‰¥Ñ‘„¤°4(€€€€€€€€€€€€‰½™}å¥•±‘}ÁÐˆè}Í…™•}‘¥Ø¡½˜°µ…É­•Ñ}…À¤€¨€ÄÀÀ¸À°4(€€€€€€€€€€€€‰Ñ…¹¥‰±•}•ÅÕ¥Ñå}Ñ½}…ÍÍ•ÑÍ}ÁÐˆè}Í…™•}‘¥Ø¡•ÅÕ¥Ñä°…ÍÍ•ÑÌ¤€¨€ÄÀÀ¸À°4(€€€€€€€ô4(€€€€¤4(€€€¡…É€ômt4(€€€¥˜µ…Ñ ¹¥Í™¥¹¥Ñ”¡•ÅÕ¥Ñä¤…¹•ÅÕ¥Ñä€ðô€Àè4(€€€€€€€¡…É¹…ÁÁ•¹ ‰Ñ…¹¥‰±”•ÅÕ¥Ñä¥Ì¹½¸µÁ½Í¥Ñ¥Ù”ˆ¤4(€€€¥˜µ…Ñ ¹¥Í™¥¹¥Ñ”¡¹•Ñ}¥¹½µ”¤…¹¹•Ñ}¥¹½µ”€ðô€Àè4(€€€€€€€¡…É¹…ÁÁ•¹ ‰QQ4¹•Ð¥¹½µ”¥Ì¹½¸µÁ½Í¥Ñ¥Ù”ˆ¤4(€€€¥˜µ…Ñ ¹¥Í™¥¹¥Ñ”¡½˜¤…¹½˜€ðô€Àè4(€€€€€€€¡…É¹…ÁÁ•¹ ‰QQ4½Á•É…Ñ¥¹œ…Í ™±½Ü¥Ì¹½¸µÁ½Í¥Ñ¥Ù”ˆ¤4(€€€½µÁ½¹•¹ÑÌ€ôì4(€€€€€€€€‰½Á•É…Ñ¥¹}µ…É¥¸ˆè€¡}‰½Õ¹‘•¡µ•ÑÉ¥Íl‰½Á•É…Ñ¥¹}µ…É¥¹}ÁÐ‰t°€Ô¸À°€ÌÔ¸À¤°€ÈÔ¸À¤°4(€€€€€€€€‰É½Ñ”ˆè€¡}‰½Õ¹‘•¡µ•ÑÉ¥Íl‰É½Ñ•}ÁÐ‰t°€À¸À°€ÈÔ¸À¤°€ÈÀ¸À¤°4(€€€€€€€€‰…Í¡}½¹Ù•ÉÍ¥½¸ˆè€¡}‰½Õ¹‘•¡µ•ÑÉ¥Íl‰½™}Ñ½}¹•Ñ}¥¹½µ•}à‰t°€À¸Ô°€Ä¸Ì¤°€ÈÀ¸À¤°4(€€€€€€€€‰É•Ù•¹Õ•}É½ÝÑ ˆè€¡}‰½Õ¹‘•¡µ•ÑÉ¥Ì¹•Ð ‰É•Ù•¹Õ•}É½ÝÑ¡}ÁÐˆ¤°€´Ô¸À°€ÄÔ¸À¤°€ÄÔ¸À¤°4(€€€€€€€€‰‰…±…¹•}Í¡••Ðˆè€¡}¥¹Ù•ÉÍ”¡µ•ÑÉ¥Íl‰¹•Ñ}‘•‰Ñ}Ñ½}•‰¥Ñ‘…}à‰t°€Ô¸À°€À¸À¤°€ÄÀ¸À¤°4(€€€€€€€€‰…Í¡}å¥•±ˆè€¡}‰½Õ¹‘•¡µ•ÑÉ¥Íl‰½™}å¥•±‘}ÁÐ‰t°€È¸À°€ÄÀ¸À¤°€ÄÀ¸À¤°4(€€€ô4(€€€É•ÑÕÉ¸}™¥¹¥Í  (€€€€€€€€‰%99%1}ˆ°4(€€€€€€€µ•ÑÉ¥Ì°4(€€€€€€€½µÁ½¹•¹ÑÌ°4(€€€€€€€É•ÅÕ¥É•õl4(€€€€€€€€€€€€‰É•Ù•¹Õ•}ÑÑµ}ˆˆ°4(€€€€€€€€€€€€‰•‰¥Ñ}ÑÑµ}ˆˆ°4(€€€€€€€€€€€€‰½™}ÑÑµ}ˆˆ°4(€€€€€€€€€€€€‰¹•Ñ}¥¹½µ•}ÑÑµ}ˆˆ°4(€€€€€€€€€€€€‰Ñ…¹¥‰±•}•ÅÕ¥Ñå}ˆˆ°4(€€€€€€€€€€€€‰…ÍÍ•ÑÍ}ˆˆ°4(€€€€€€€€€€€€‰‘•‰Ñ}ˆˆ°4(€€€€€€€€€€€€‰…Í¡}ˆˆ°4(€€€€€€€€€€€€‰•‰¥Ñ‘…}ÑÑµ}ˆˆ°4(€€€€€€€€€€€€‰µ…É­•Ñ}…Á}ˆˆ°4(€€€€€€€t°4(€€€€€€€½ÁÑ¥½¹…°õl‰É•Ù•¹Õ•}É½ÝÑ¡}ÁÐ‰t°4(€€€€€€€¡…É‘}™…¥±ÕÉ•Ìõ¡…É°(€€€€¤(()‘•˜}•Ù…±Õ…Ñ•}…ÍÍ•Ñ}µ…¹…•È (€€€É…Üè5…ÁÁ¥¹mÍÑÈ°¹åt°µ½‘•±}­•äèÍÑÈ(¤€´ø%¹‘ÕÍÑÉå5½‘•±Ù…±Õ…Ñ¥½¸è(€€€µ•ÑÉ¥Ì€ô‘¥Ð¡É…Ü¤(€€€É•Ù•¹Õ”€ô}¹Õµ‰•È¡µ•ÑÉ¥Ì¹•Ð ‰É•Ù•¹Õ•}ÑÑµ}ˆˆ¤¤(€€€½˜€ô}¹Õµ‰•È¡µ•ÑÉ¥Ì¹•Ð ‰½™}ÑÑµ}ˆˆ¤¤(€€€¹•Ñ}¥¹½µ”€ô}¹Õµ‰•È¡µ•ÑÉ¥Ì¹•Ð ‰¹•Ñ}¥¹½µ•}ÑÑµ}ˆˆ¤¤(€€€‘•‰Ð€ô}¹Õµ‰•È¡µ•ÑÉ¥Ì¹•Ð ‰‘•‰Ñ}ˆˆ¤¤(€€€…Í €ô}¹Õµ‰•È¡µ•ÑÉ¥Ì¹•Ð ‰…Í¡}ˆˆ¤¤(€€€™••}É•±…Ñ•‘}•…É¹¥¹Ì€ô}¹Õµ‰•È¡µ•ÑÉ¥Ì¹•Ð ‰™••}É•±…Ñ•‘}•…É¹¥¹Í}ˆˆ¤¤(€€€•‰¥Ñ‘„€ô}¹Õµ‰•È¡µ•ÑÉ¥Ì¹•Ð ‰•‰¥Ñ‘…}ÑÑµ}ˆˆ¤¤(€€€µ•ÑÉ¥Ì¹ÕÁ‘…Ñ” (€€€€€€€ì(€€€€€€€€€€€€‰½™}Ñ½}¹•Ñ}¥¹½µ•}àˆè}Í…™•}‘¥Ø¡½˜°¹•Ñ}¥¹½µ”¤°(€€€€€€€€€€€€‰½µÁ•¹Í…Ñ¥½¹}Ñ½}É•Ù•¹Õ•}ÁÐˆè}Í…™•}‘¥Ø (€€€€€€€€€€€€€€€µ•ÑÉ¥Ì¹•Ð ‰½µÁ•¹Í…Ñ¥½¹}•áÁ•¹Í•}ˆˆ¤°É•Ù•¹Õ”(€€€€€€€€€€€€¤(€€€€€€€€€€€€¨€ÄÀÀ¸À°(€€€€€€€€€€€€‰¹•Ñ}‘•‰Ñ}Ñ½}™É•}½É}•‰¥Ñ‘…}àˆè}Í…™•}‘¥Ø (€€€€€€€€€€€€€€€µ…à¡‘•‰Ð€´…Í °€À¸À¤°(€€€€€€€€€€€€€€€™••}É•±…Ñ•‘}•…É¹¥¹Ì(€€€€€€€€€€€€€€€¥˜µ…Ñ ¹¥Í™¥¹¥Ñ”¡™••}É•±…Ñ•‘}•…É¹¥¹Ì¤…¹™••}É•±…Ñ•‘}•…É¹¥¹Ì€ø€À(€€€€€€€€€€€€€€€•±Í”•‰¥Ñ‘„°(€€€€€€€€€€€€¤°(€€€€€€€ô(€€€€¤(€€€É•ÅÕ¥É•‘}‰å}µ½‘•°€ôì(€€€€€€€€‰1QI9Q%Y}MMQ}59Hˆèl(€€€€€€€€€€€€‰™••}É•±…Ñ•‘}•…É¹¥¹Í}ˆˆ°(€€€€€€€€€€€€‰µ…¹…•µ•¹Ñ}™••}É•Ù•¹Õ•}ˆˆ°(€€€€€€€€€€€€‰™••}Á…å¥¹}…Õµ}ˆˆ°(€€€€€€€€€€€€‰…Õµ}É½ÝÑ¡}ÁÐˆ°(€€€€€€€€€€€€‰Á•Éµ…¹•¹Ñ}…Á¥Ñ…±}ÁÐˆ°(€€€€€€€€€€€€‰½µÁ•¹Í…Ñ¥½¹}•áÁ•¹Í•}ˆˆ°(€€€€€€€t°(€€€€€€€€‰QI%Q%=91}MMQ}59Hˆèl(€€€€€€€€€€€€‰µ…¹…•µ•¹Ñ}™••}É•Ù•¹Õ•}ˆˆ°(€€€€€€€€€€€€‰…Õµ}ˆˆ°(€€€€€€€€€€€€‰…Õµ}É½ÝÑ¡}ÁÐˆ°(€€€€€€€€€€€€‰½É…¹¥}¹•Ñ}™±½ÝÍ}ÁÐˆ°(€€€€€€€€€€€€‰½µÁ•¹Í…Ñ¥½¹}•áÁ•¹Í•}ˆˆ°(€€€€€€€t°(€€€€€€€€‰%9MUI9}1%9-}MMQ}59Hˆèl(€€€€€€€€€€€€‰™••}É•±…Ñ•‘}•…É¹¥¹Í}ˆˆ°(€€€€€€€€€€€€‰¥¹ÍÕÉ…¹•}…ÍÍ•ÑÍ}ÁÐˆ°(€€€€€€€€€€€€‰Á•Éµ…¹•¹Ñ}…Á¥Ñ…±}ÁÐˆ°(€€€€€€€€€€€€‰™••}Á…å¥¹}…Õµ}ˆˆ°(€€€€€€€€€€€€‰½µÁ•¹Í…Ñ¥½¹}•áÁ•¹Í•}ˆˆ°(€€€€€€€t°(€€€€€€€€‰=Q!I}}%99%0ˆèl(€€€€€€€€€€€€‰µ…¹…•µ•¹Ñ}™••}É•Ù•¹Õ•}ˆˆ°(€€€€€€€€€€€€‰…Õµ}ˆˆ°(€€€€€€€€€€€€‰½µÁ•¹Í…Ñ¥½¹}•áÁ•¹Í•}ˆˆ°(€€€€€€€t°(€€€ô(€€€É•ÅÕ¥É•€ôl(€€€€€€€€‰É•Ù•¹Õ•}ÑÑµ}ˆˆ°(€€€€€€€€‰½™}ÑÑµ}ˆˆ°(€€€€€€€€‰¹•Ñ}¥¹½µ•}ÑÑµ}ˆˆ°(€€€€€€€€‰‘•‰Ñ}ˆˆ°(€€€€€€€€‰…Í¡}ˆˆ°(€€€€€€€€©É•ÅÕ¥É•‘}‰å}µ½‘•±mµ½‘•±}­•åt°(€€€t(€€€¡…É€ômt(€€€¥˜µ…Ñ ¹¥Í™¥¹¥Ñ”¡¹•Ñ}¥¹½µ”¤…¹¹•Ñ}¥¹½µ”€ðô€Àè(€€€€€€€¡…É¹…ÁÁ•¹ ‰QQ4¹•Ð¥¹½µ”¥Ì¹½¸µÁ½Í¥Ñ¥Ù”ˆ¤(€€€¥˜µ…Ñ ¹¥Í™¥¹¥Ñ”¡½˜¤…¹½˜€ðô€Àè(€€€€€€€¡…É¹…ÁÁ•¹ ‰QQ4½Á•É…Ñ¥¹œ…Í ™±½Ü¥Ì¹½¸µÁ½Í¥Ñ¥Ù”ˆ¤(€€€½µÁ½¹•¹ÑÌ€ôì(€€€€€€€€‰…Õµ}É½ÝÑ ˆè€¡}‰½Õ¹‘•¡µ•ÑÉ¥Ì¹•Ð ‰…Õµ}É½ÝÑ¡}ÁÐˆ¤°€´Ô¸À°€ÄÔ¸À¤°€ÈÀ¸À¤°(€€€€€€€€‰½É…¹¥}¹•Ñ}™±½ÝÌˆè€¡}‰½Õ¹‘•¡µ•ÑÉ¥Ì¹•Ð ‰½É…¹¥}¹•Ñ}™±½ÝÍ}ÁÐˆ¤°€´Ô¸À°€ÄÀ¸À¤°€ÄÔ¸À¤°(€€€€€€€€‰Á•Éµ…¹•¹Ñ}…Á¥Ñ…°ˆè€¡}‰½Õ¹‘•¡µ•ÑÉ¥Ì¹•Ð ‰Á•Éµ…¹•¹Ñ}…Á¥Ñ…±}ÁÐˆ¤°€À¸À°€ÜÔ¸À¤°€ÄÔ¸À¤°(€€€€€€€€‰…Í¡}½¹Ù•ÉÍ¥½¸ˆè€¡}‰½Õ¹‘•¡µ•ÑÉ¥Íl‰½™}Ñ½}¹•Ñ}¥¹½µ•}à‰t°€À¸Ô°€Ä¸Ì¤°€ÈÀ¸À¤°(€€€€€€€€‰½µÁ•¹Í…Ñ¥½¹}‘¥Í¥Á±¥¹”ˆè€¡}¥¹Ù•ÉÍ”¡µ•ÑÉ¥Íl‰½µÁ•¹Í…Ñ¥½¹}Ñ½}É•Ù•¹Õ•}ÁÐ‰t°€ØÀ¸À°€ÈÀ¸À¤°€ÄÔ¸À¤°(€€€€€€€€‰‰…±…¹•}Í¡••Ðˆè€¡}¥¹Ù•ÉÍ”¡µ•ÑÉ¥Íl‰¹•Ñ}‘•‰Ñ}Ñ½}™É•}½É}•‰¥Ñ‘…}à‰t°€Ô¸À°€À¸À¤°€ÄÔ¸À¤°(€€€ô(€€€•Ù…±Õ…Ñ¥½¸€ô}™¥¹¥Í  (€€€€€€€µ½‘•±}­•ä°(€€€€€€€µ•ÑÉ¥Ì°(€€€€€€€½µÁ½¹•¹ÑÌ°(€€€€€€€É•ÅÕ¥É•õÉ•ÅÕ¥É•°(€€€€€€€½ÁÑ¥½¹…°õl(€€€€€€€€€€€€‰Á•É™½Éµ…¹•}™••Í}ˆˆ°(€€€€€€€€€€€€‰É•…±¥é•‘}…ÉÉå}ˆˆ°(€€€€€€€€€€€€‰¹•Ñ}™±½ÝÍ}ˆˆ°(€€€€€€€€€€€€‰¥¹ÍÕÉ…¹•}…ÍÍ•ÑÍ}ÁÐˆ°(€€€€€€€t°(€€€€€€€¡…É‘}™…¥±ÕÉ•Ìõ¡…É°(€€€€€€€Ý…É¹¥¹Ìõl(€€€€€€€€€€€€‰½µÁ…¹äµ‘•™¥¹•U4½I½™±½Ü-A%ÌµÕÍÐ‰”Á½¥¹Ðµ¥¸µÑ¥µ”…¹µ…ä¹½Ð‰”¥¹™•ÉÉ•™É½´@É•Ù•¹Õ”ˆ(€€€€€€€t°(€€€€¤(€€€É•ÑÕÉ¸•Ù…±Õ…Ñ¥½¸(()‘•˜•Ù…±Õ…Ñ•}…±Ñ•É¹…Ñ¥Ù•}…ÍÍ•Ñ}µ…¹…•È¡É…Üè5…ÁÁ¥¹mÍÑÈ°¹åt¤€´ø%¹‘ÕÍÑÉå5½‘•±Ù…±Õ…Ñ¥½¸è(€€€É•ÑÕÉ¸}•Ù…±Õ…Ñ•}…ÍÍ•Ñ}µ…¹…•È¡É…Ü°€‰1QI9Q%Y}MMQ}59Hˆ¤(()‘•˜•Ù…±Õ…Ñ•}ÑÉ…‘¥Ñ¥½¹…±}…ÍÍ•Ñ}µ…¹…•È¡É…Üè5…ÁÁ¥¹mÍÑÈ°¹åt¤€´ø%¹‘ÕÍÑÉå5½‘•±Ù…±Õ…Ñ¥½¸è(€€€É•ÑÕÉ¸}•Ù…±Õ…Ñ•}…ÍÍ•Ñ}µ…¹…•È¡É…Ü°€‰QI%Q%=91}MMQ}59Hˆ¤(()‘•˜•Ù…±Õ…Ñ•}¥¹ÍÕÉ…¹•}±¥¹­•‘}…ÍÍ•Ñ}µ…¹…•È¡É…Üè5…ÁÁ¥¹mÍÑÈ°¹åt¤€´ø%¹‘ÕÍÑÉå5½‘•±Ù…±Õ…Ñ¥½¸è(€€€É•ÑÕÉ¸}•Ù…±Õ…Ñ•}…ÍÍ•Ñ}µ…¹…•È¡É…Ü°€‰%9MUI9}1%9-}MMQ}59Hˆ¤(()‘•˜•Ù…±Õ…Ñ•}½Ñ¡•É}™••}™¥¹…¹¥…°¡É…Üè5…ÁÁ¥¹mÍÑÈ°¹åt¤€´ø%¹‘ÕÍÑÉå5½‘•±Ù…±Õ…Ñ¥½¸è(€€€É•ÑÕÉ¸}•Ù…±Õ…Ñ•}…ÍÍ•Ñ}µ…¹…•È¡É…Ü°€‰=Q!I}}%99%0ˆ¤(4(4)5=1}Y1UQ=IL€ôì4(€€€€‰	9,ˆè•Ù…±Õ…Ñ•}‰…¹¬°4(€€€€‰%9MUI9}A}9}ˆè•Ù…±Õ…Ñ•}¥¹ÍÕÉ…¹•}Á}…¹‘}Œ°4(€€€€‰%9MUI9}1%ˆè•Ù…±Õ…Ñ•}¥¹ÍÕÉ…¹•}±¥™”°4(€€€€‰I%Q}EU%Qdˆè•Ù…±Õ…Ñ•}É•¥Ñ}•ÅÕ¥Ñä°4(€€€€‰I%Q}5=IQˆè•Ù…±Õ…Ñ•}É•¥Ñ}µ½ÉÑ…”°4(€€€€‰IU1Q}UQ%1%Qdˆè•Ù…±Õ…Ñ•}É•Õ±…Ñ•‘}ÕÑ¥±¥Ñä°4(€€€€‰e1%1}5%e1ˆè•Ù…±Õ…Ñ•}å±¥…±}µ¥‘å±”°4(€€€€‰%99%1}19Hˆè•Ù…±Õ…Ñ•}™¥¹…¹¥…±}±•¹‘•È°4(€€€€‰%99%1}ˆè•Ù…±Õ…Ñ•}™¥¹…¹¥…±}™•”°(€€€€‰1QI9Q%Y}MMQ}59Hˆè•Ù…±Õ…Ñ•}…±Ñ•É¹…Ñ¥Ù•}…ÍÍ•Ñ}µ…¹…•È°(€€€€‰QI%Q%=91}MMQ}59Hˆè•Ù…±Õ…Ñ•}ÑÉ…‘¥Ñ¥½¹…±}…ÍÍ•Ñ}µ…¹…•È°(€€€€‰%9MUI9}1%9-}MMQ}59Hˆè•Ù…±Õ…Ñ•}¥¹ÍÕÉ…¹•}±¥¹­•‘}…ÍÍ•Ñ}µ…¹…•È°(€€€€‰=Q!I}}%99%0ˆè•Ù…±Õ…Ñ•}½Ñ¡•É}™••}™¥¹…¹¥…°°)ô(4(4)‘•˜•Ù…±Õ…Ñ•}¥¹‘ÕÍÑÉå}µ½‘•°¡µ½‘•±}­•äèÍÑÈ°µ•ÑÉ¥Ìè5…ÁÁ¥¹mÍÑÈ°¹åt¤€´ø%¹‘ÕÍÑÉå5½‘•±Ù…±Õ…Ñ¥½¸è4(€€€•Ù…±Õ…Ñ½È€ô5=1}Y1UQ=IL¹•Ð¡ÍÑÈ¡µ½‘•±}­•ä½È€ˆˆ¤¹ÕÁÁ•È ¤¤4(€€€¥˜•Ù…±Õ…Ñ½È¥Ì9½¹”è4(€€€€€€€É•ÑÕÉ¸%¹‘ÕÍÑÉå5½‘•±Ù…±Õ…Ñ¥½¸ 4(€€€€€€€€€€€µ½‘•±}­•äõÍÑÈ¡µ½‘•±}­•ä½È€‰U9-9=]8ˆ¤°4(€€€€€€€€€€€‘•¥Í¥½¸ô‰	MQ%8ˆ°4(€€€€€€€€€€€Í½É”õµ…Ñ ¹¹…¸°4(€€€€€€€€€€€µ•ÑÉ¥Ìõ‘¥Ð¡µ•ÑÉ¥Ì¤°4(€€€€€€€€€€€É•ÅÕ¥É•‘}µ¥ÍÍ¥¹œõl‰¥µÁ±•µ•¹Ñ•µ½‘•°É½ÕÑ”‰t°4(€€€€€€€€€€€Ý…É¹¥¹Ìõl‰9¼ÍÁ•¥…±¥é••Ù…±Õ…Ñ½È¥ÌÉ•¥ÍÑ•É•™½ÈÑ¡¥Ìµ½‘•°­•ä‰t°4(€€€€€€€€¤4(€€€É•ÑÕÉ¸•Ù…±Õ…Ñ½È¡µ•ÑÉ¥Ì¤4(4(4)‘•˜…ÍÍ•ÍÍ}ÍÁ•¥…±¥é•‘}‘…Ñ…}½¹™¥‘•¹” 4(€€€•Ù¥‘•¹•}ÍÑ…ÑÌè5…ÁÁ¥¹mÍÑÈ°¹åt°4(€€€•Ù…±Õ…Ñ¥½¸è%¹‘ÕÍÑÉå5½‘•±Ù…±Õ…Ñ¥½¸°4(€€€•áÑÉ…}½ÁÑ¥½¹…±}µ¥ÍÍ¥¹œè%Ñ•É…‰±•mÍÑÉt€ô€ ¤°4(¤€´ø‘¥Ðè4(€€€Í½É”€ô€ÄÀÀ¸À4(€€€É•…Í½¹Ìè1¥ÍÑmÍÑÉt€ômt4(€€€Í•±•Ñ•‘}½Õ¹Ð€ô¥¹Ð¡•Ù¥‘•¹•}ÍÑ…ÑÌ¹•Ð ‰Í•±•Ñ•‘}Í½ÕÉ•}½Õ¹Ðˆ¤½È€À¤4(€€€…•ÁÑ•‘}É…Ñ¥¼€ô}¹Õµ‰•È¡•Ù¥‘•¹•}ÍÑ…ÑÌ¹•Ð ‰…•ÁÑ•‘}…Ñ}É…Ñ¥¼ˆ¤¤4(€€€™…±±‰…­}Ñ…}É…Ñ¥¼€ô}¹Õµ‰•È¡•Ù¥‘•¹•}ÍÑ…ÑÌ¹•Ð ‰™…±±‰…­}Ñ…}É…Ñ¥¼ˆ¤¤4(€€€Á•É¥½‘}…¹½µ…±¥•Ì€ô¥¹Ð¡•Ù¥‘•¹•}ÍÑ…ÑÌ¹•Ð ‰Á•É¥½‘}…¹½µ…±å}½Õ¹Ðˆ¤½È€À¤4(€€€¥˜Í•±•Ñ•‘}½Õ¹Ð€ðô€Àè4(€€€€€€€Í½É”€´ô€ÐÔ¸À4(€€€€€€€É•…Í½¹Ì¹…ÁÁ•¹ ‰9¼Í•±•Ñ•MÍ½ÕÉ”™…ÑÌˆ¤4(€€€•±¥˜¹½Ðµ…Ñ ¹¥Í™¥¹¥Ñ”¡…•ÁÑ•‘}É…Ñ¥¼¤½È…•ÁÑ•‘}É…Ñ¥¼€ð€À¸ÔÀè4(€€€€€€€Í½É”€´ô€ÌÔ¸À4(€€€€€€€É•…Í½¹Ì¹…ÁÁ•¹ ‰1•ÍÌÑ¡…¸¡…±˜½˜Í•±•Ñ•M™…ÑÌ¡…Ù”H…•ÁÑ…¹”Ñ¥µ•ÍÑ…µÁÌˆ¤4(€€€•±¥˜…•ÁÑ•‘}É…Ñ¥¼€ð€À¸àÀè4(€€€€€€€Í½É”€´ô€ÄÔ¸À4(€€€€€€€É•…Í½¹Ì¹…ÁÁ•¹ ‰M½µ”Í•±•Ñ•M™…ÑÌÕÍ”™¥±¥¹œµ‘…Ñ”…Ù…¥±…‰¥±¥Ñä™…±±‰…¬ˆ¤4(€€€¥˜Á•É¥½‘}…¹½µ…±¥•Ìè4(€€€€€€€Í½É”€´ôµ¥¸ ÌÀ¸À°Á•É¥½‘}…¹½µ…±¥•Ì€¨€ÄÀ¸À¤4(€€€€€€€É•…Í½¹Ì¹…ÁÁ•¹¡˜‰íÁ•É¥½‘}…¹½µ…±¥•ÍôÍ•±•Ñ•™…ÑÌ¡…Ù”…‰¹½Éµ…°Á•É¥½‘Ìˆ¤4(€€€¥˜µ…Ñ ¹¥Í™¥¹¥Ñ”¡™…±±‰…­}Ñ…}É…Ñ¥¼¤…¹™…±±‰…­}Ñ…}É…Ñ¥¼€øô€À¸ÜÔè4(€€€€€€€Í½É”€´ô€ÄÀ¸À4(€€€€€€€É•…Í½¹Ì¹…ÁÁ•¹ ‰5½ÍÐÍ•±•Ñ•™…ÑÌÕÍ”…±Ñ•É¹…Ñ”a	I0Ñ…œµ…ÁÁ¥¹Ìˆ¤4(€€€•±¥˜µ…Ñ ¹¥Í™¥¹¥Ñ”¡™…±±‰…­}Ñ…}É…Ñ¥¼¤…¹™…±±‰…­}Ñ…}É…Ñ¥¼€øô€À¸ÐÀè4(€€€€€€€Í½É”€´ô€Ô¸À4(€€€€€€€É•…Í½¹Ì¹…ÁÁ•¹ ‰µ…Ñ•É¥…°Í¡…É”½˜™…ÑÌÕÍ•Ì…±Ñ•É¹…Ñ”a	I0Ñ…œµ…ÁÁ¥¹Ìˆ¤4(€€€µ¥ÍÍ¥¹}½ÁÑ¥½¹…°€ôÍ½ÉÑ•¡Í•Ð¡•Ù…±Õ…Ñ¥½¸¹½ÁÑ¥½¹…±}µ¥ÍÍ¥¹œ¤ðÍ•Ð¡•áÑÉ…}½ÁÑ¥½¹…±}µ¥ÍÍ¥¹œ¤¤4(€€€¥˜µ¥ÍÍ¥¹}½ÁÑ¥½¹…°è4(€€€€€€€Á•¹…±Ñä€ôµ¥¸ ÈÔ¸À°±•¸¡µ¥ÍÍ¥¹}½ÁÑ¥½¹…°¤€¨€Ð¸À¤4(€€€€€€€Í½É”€´ôÁ•¹…±Ñä4(€€€€€€€É•…Í½¹Ì¹…ÁÁ•¹ ‰=ÁÑ¥½¹…°µ½‘•°•Ù¥‘•¹”µ¥ÍÍ¥¹œè€ˆ€¬€ˆ°€ˆ¹©½¥¸¡µ¥ÍÍ¥¹}½ÁÑ¥½¹…°¤¤4(€€€¥˜•Ù…±Õ…Ñ¥½¸¹É•ÅÕ¥É•‘}µ¥ÍÍ¥¹œè4(€€€€€€€Í½É”€ôµ¥¸¡Í½É”°€ÐÔ¸À¤4(€€€€€€€É•…Í½¹Ì¹…ÁÁ•¹ ‰I•ÅÕ¥É•µ½‘•°•Ù¥‘•¹”µ¥ÍÍ¥¹œè€ˆ€¬€ˆ°€ˆ¹©½¥¸¡•Ù…±Õ…Ñ¥½¸¹É•ÅÕ¥É•‘}µ¥ÍÍ¥¹œ¤¤4(€€€¥˜•Ù…±Õ…Ñ¥½¸¹Í½É•}½Ù•É…”…¹•Ù…±Õ…Ñ¥½¸¹Í½É•}½Ù•É…”€ð€À¸àÀè4(€€€€€€€Í½É”€´ôµ¥¸ ÄÔ¸À°€ À¸àÀ€´•Ù…±Õ…Ñ¥½¸¹Í½É•}½Ù•É…”¤€¨€ÔÀ¸À¤4(€€€€€€€É•…Í½¹Ì¹…ÁÁ•¹¡˜‰MÁ•¥…±¥é•Í½É”½Ù•É…”¥Ìí•Ù…±Õ…Ñ¥½¸¹Í½É•}½Ù•É…”è¸À•ôˆ¤4(€€€Í½É”€ôÉ½Õ¹¡µ…à À¸À°µ¥¸ ÄÀÀ¸À°Í½É”¤¤°€È¤4(€€€É•ÑÕÉ¸ì4(€€€€€€€€‰Í½É”ˆèÍ½É”°4(€€€€€€€€‰…‰ÍÑ…¥¸ˆèÍ½É”€ð€ÜÀ¸À½È•Ù…±Õ…Ñ¥½¸¹‘•¥Í¥½¸€ôô€‰	MQ%8ˆ°4(€€€€€€€€‰É•…Í½¹ÌˆèÉ•…Í½¹Ì½Èl‰MÁ•¥…±¥é•µ½‘•°•Ù¥‘•¹”½Ù•É…”¥Ì½µÁ±•Ñ”‰t°4(€€€ô4

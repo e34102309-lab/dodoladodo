@@ -3,7 +3,21 @@ from __future__ import annotations
 from typing import Dict
 
 
-def route_industry_model(sector: str, industry: str) -> Dict[str, object]:
+ASSET_MANAGER_SUBTYPE_BY_TICKER = {
+    "BX": "ALTERNATIVE_ASSET_MANAGER",
+    "ARES": "ALTERNATIVE_ASSET_MANAGER",
+    "OWL": "ALTERNATIVE_ASSET_MANAGER",
+    "TPG": "ALTERNATIVE_ASSET_MANAGER",
+    "KKR": "ALTERNATIVE_ASSET_MANAGER",
+    "BAM": "INSURANCE_LINKED_ASSET_MANAGER",
+    "AMG": "TRADITIONAL_ASSET_MANAGER",
+    "VCTR": "TRADITIONAL_ASSET_MANAGER",
+}
+
+
+def route_industry_model(
+    sector: str, industry: str, ticker: str = ""
+) -> Dict[str, object]:
     sector_text = str(sector or "").strip().lower()
     industry_text = str(industry or "").strip().lower()
     blob = f"{sector_text} {industry_text}"
@@ -43,6 +57,21 @@ def route_industry_model(sector: str, industry: str) -> Dict[str, object]:
             "reason": "Dedicated underwriting, claims, capital and reserve-development model",
         }
     if sector_text in {"financial services", "financials"}:
+        if "asset management" in industry_text:
+            model_key = ASSET_MANAGER_SUBTYPE_BY_TICKER.get(
+                str(ticker or "").upper(),
+                "ALTERNATIVE_ASSET_MANAGER"
+                if any(token in industry_text for token in ("alternative", "private equity", "private credit"))
+                else "TRADITIONAL_ASSET_MANAGER"
+                if "traditional" in industry_text
+                else "OTHER_FEE_FINANCIAL",
+            )
+            return {
+                "route": "ASSET_MANAGEMENT",
+                "model_key": model_key,
+                "supported": True,
+                "reason": "Asset-manager subtype separates alternative, traditional and insurance-linked economics",
+            }
         if any(token in industry_text for token in ["bank", "banks", "savings", "mortgage finance"]):
             if "mortgage finance" in industry_text and "bank" not in industry_text:
                 route = "FINANCIAL_SPECIALTY"

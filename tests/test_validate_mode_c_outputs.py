@@ -7,6 +7,7 @@ import pandas as pd
 
 from mode_c_evidence import EVIDENCE_COLUMNS
 from mode_c_metric_contract import annotate_dataframe
+from mode_c_research_priority import annotate_research_priorities
 from validate_mode_c_outputs import (
     ValidationError,
     _validate_financial_formulas,
@@ -35,6 +36,7 @@ class ModeCOutputValidationTests(unittest.TestCase):
                     "Industry_Model_Score": float("nan"),
                     "Industry_Model_Coverage": float("nan"),
                     "Decision_State": "PASS",
+                    "Decision_Reason_Code": "PASS_MODEL_GATE",
                     "Decision_Timestamp": "2026-01-02T00:00:00",
                     "Data_Confidence_Score": 90.0,
                     "MarketCap_B": 11.4,
@@ -56,6 +58,8 @@ class ModeCOutputValidationTests(unittest.TestCase):
                     "ROIC_pct": 18.0,
                     "EV_EBITDA_x": 8.0,
                     "Historical_Valuation_Coverage": 0.8,
+                    "Historical_Valuation_Valid_Years": 8,
+                    "Historical_Valuation_Quantile_Used": 20.0,
                     "Historical_Valuation_Status": "VALID",
                     "Total_Debt_B": 0.10,
                     "Cash_B": 1.50,
@@ -70,6 +74,17 @@ class ModeCOutputValidationTests(unittest.TestCase):
                     "Share_Count_Change_pct": 1.0,
                     "Share_Count_Change_3Y_pct": 2.0,
                     "Share_Basis_Discontinuity": False,
+                    "DSI_Status": "NOT_APPLICABLE",
+                    "DSI_Score": float("nan"),
+                    "Dilution_Double_Count_Check": "PASS",
+                    "Ownership_Dilution_Penalty": 0.0,
+                    "Capital_Allocation_Penalty": 0.0,
+                    "Persistent_Dilution_Hard_Gate": False,
+                    "Dilution_Total_Score_Impact": 0.0,
+                    "Applicable_Factor_Weight": 95.0,
+                    "Available_Factor_Weight": 95.0,
+                    "Factor_Coverage": 1.0,
+                    "Weight_Renormalized": True,
                 }
             ]
         )
@@ -107,7 +122,8 @@ class ModeCOutputValidationTests(unittest.TestCase):
         pd.DataFrame([source, derived], columns=EVIDENCE_COLUMNS).to_csv(
             evidence_path, index=False, encoding="utf-8-sig"
         )
-        screen = annotate_dataframe(screen, [source, derived])
+        ranked_rows = annotate_research_priorities(screen.to_dict(orient="records"))
+        screen = annotate_dataframe(pd.DataFrame(ranked_rows), [source, derived])
         screen.to_csv(screen_path, index=False, encoding="utf-8-sig")
         screen.to_csv(shortlist_path, index=False, encoding="utf-8-sig")
         return screen_path, shortlist_path, evidence_path
@@ -143,7 +159,16 @@ class ModeCOutputValidationTests(unittest.TestCase):
             screen = pd.read_csv(paths[0], encoding="utf-8-sig")
             screen.loc[0, "Status"] = "Abstain: incomplete evidence"
             screen.loc[0, "Decision_State"] = "ABSTAIN"
+            screen.loc[0, "Decision_Reason_Code"] = "MISSING_REQUIRED_EVIDENCE"
             screen.loc[0, "Long_Term_Eligible"] = False
+            screen.loc[0, "Model_Eligible"] = False
+            screen.loc[0, "Global_Research_Queue"] = False
+            screen.loc[0, "Research_Action_State"] = "SCREENED"
+            screen.loc[0, "Research_Statuses"] = "SCREENED"
+            screen.loc[0, "Model_Peer_Count"] = 0
+            screen.loc[0, "Within_Model_Percentile"] = float("nan")
+            screen.loc[0, "Shrunk_Within_Model_Percentile"] = float("nan")
+            screen.loc[0, "Research_Priority_Rank"] = float("nan")
             screen.to_csv(paths[0], index=False, encoding="utf-8-sig")
             pd.DataFrame(columns=screen.columns).to_csv(
                 paths[1], index=False, encoding="utf-8-sig"

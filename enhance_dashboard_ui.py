@@ -258,13 +258,79 @@ ENHANCEMENT = r'''
 '''
 
 
+MODERN_ENHANCEMENT = r'''
+<script id="researchClusterUiEnhancer">
+(function(){
+  if (window.__researchClusterUiEnhanced) return;
+  window.__researchClusterUiEnhanced = true;
+  const baseline = document.getElementById('baseline');
+  if (baseline && !document.getElementById('researchClusterGuide')) {
+    const guide = document.createElement('div');
+    guide.id = 'researchClusterGuide';
+    guide.className = 'guidegrid';
+    guide.innerHTML = `
+      <div class="guide"><b>這裡顯示什麼</b><small>依模型內收縮百分位、資料信心、核心 KPI 覆蓋與營運趨勢找出研究群聚。</small></div>
+      <div class="guide"><b>這裡不代表什麼</b><small>群聚不是產業輪動預測，也不是跨產業報酬排名；點選後只會縮小研究範圍。</small></div>
+      <div class="guide"><b>版本處理</b><small>排序或指標版本改變時，舊趨勢基準會失效並重新建立。</small></div>`;
+    baseline.insertAdjacentElement('afterend', guide);
+    const filter = document.createElement('div');
+    filter.id = 'activeCandidate';
+    filter.className = 'filterbar';
+    guide.insertAdjacentElement('afterend', filter);
+  }
+
+  const style = document.createElement('style');
+  style.textContent = `.guidegrid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:12px 0}.guide{padding:12px;border:1px solid var(--line);background:#091827}.guide b{display:block;margin-bottom:6px}.guide small{color:var(--muted);line-height:1.5}.emerging-card{cursor:pointer}.emerging-card:hover,.emerging-card.active{border-color:var(--blue)}.filterbar{display:none;align-items:center;gap:8px;padding:12px;margin-top:12px}.filterbar.active{display:flex}@media(max-width:980px){.guidegrid{grid-template-columns:1fr}}`;
+  document.head.appendChild(style);
+
+  const candidateMap = new Map((emerging || []).map(candidate => [candidate.key, candidate]));
+  let activeCandidate = null;
+  const matchesCandidate = (stock, candidate) => {
+    if (!candidate) return true;
+    const parts = String(candidate.key || '').split(':');
+    const kind = parts[0], value = parts.slice(1).join(':');
+    if (kind === 'sector') return String(stock.Sector || '') === value;
+    if (kind === 'industry') return String(stock.Industry || '') === value;
+    if (kind === 'theme_layer') return layerMap(stock)[parts[1]] === parts.slice(2).join(':');
+    return (candidate.top || []).includes(stock.Ticker);
+  };
+  const baseVisible = visible;
+  visible = function(){ return baseVisible().filter(stock => matchesCandidate(stock, activeCandidate)); };
+
+  const renderFilter = () => {
+    const box = document.getElementById('activeCandidate');
+    if (!box) return;
+    if (!activeCandidate) { box.classList.remove('active'); box.innerHTML = ''; return; }
+    box.classList.add('active');
+    box.innerHTML = `目前研究群聚：<strong>${e(activeCandidate.name)}</strong><button id="clearCandidate">清除群聚篩選</button>`;
+    document.getElementById('clearCandidate').onclick = () => { activeCandidate = null; render(); };
+  };
+  const attachCandidateEvents = () => document.querySelectorAll('[data-candidate]').forEach(card => {
+    card.classList.toggle('active', activeCandidate && card.dataset.candidate === activeCandidate.key);
+    card.onclick = () => { activeCandidate = candidateMap.get(card.dataset.candidate) || null; $('#theme').value = ''; render(); document.querySelector('.table')?.scrollIntoView({behavior:'smooth',block:'start'}); };
+  });
+  const baseRender = render;
+  render = function(){ baseRender(); renderFilter(); attachCandidateEvents(); };
+  const baseRenderEmerging = renderEmerging;
+  renderEmerging = function(){ baseRenderEmerging(); attachCandidateEvents(); };
+  $('#refresh').onclick = () => { activeCandidate = null; $('#theme').value = ''; render(); };
+  renderEmerging();
+  render();
+})();
+</script>
+'''
+
+
 def enhance_dashboard(index_path: Path) -> bool:
     html = index_path.read_text(encoding="utf-8")
-    if "emergingThemeUiEnhancer" in html:
+    if "researchClusterUiEnhancer" in html:
         return False
     if "</body>" not in html:
         raise ValueError(f"{index_path} does not look like an HTML dashboard")
-    index_path.write_text(html.replace("</body>", ENHANCEMENT + "</body>", 1), encoding="utf-8")
+    index_path.write_text(
+        html.replace("</body>", MODERN_ENHANCEMENT + "</body>", 1),
+        encoding="utf-8",
+    )
     return True
 
 

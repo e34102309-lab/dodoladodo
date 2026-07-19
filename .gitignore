@@ -25,6 +25,7 @@ mode_c_run.stderr.log
 local_shares_vector_cache.json
 public/
 fixture_output/
+fixture_output_*/
 
 # Local secrets
 .env

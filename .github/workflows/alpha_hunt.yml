@@ -56,13 +56,15 @@ jobs:
           pip install -r ModeC_requirements.txt
 
       - name: Compile Python Sources
-        run: python -m py_compile AQR_ModeC_Agent_V12.py mode_c_evidence.py mode_c_metric_contract.py mode_c_routing.py mode_c_industry_models.py total_market_hunter_v2.py run_mode_c_ai_agent.py build_mode_c_dashboard.py enhance_dashboard_ui.py validate_mode_c_outputs.py mode_c_fixture_pipeline.py
+        run: python -m py_compile AQR_ModeC_Agent_V12.py mode_c_evidence.py mode_c_metric_contract.py mode_c_routing.py mode_c_industry_models.py mode_c_research_priority.py total_market_hunter_v2.py run_mode_c_ai_agent.py build_mode_c_dashboard.py enhance_dashboard_ui.py validate_mode_c_outputs.py mode_c_fixture_pipeline.py
 
       - name: Run Unit Tests
         run: python -m unittest discover -s tests -v
 
   run-mode-c-pipeline:
-    if: github.event_name != 'pull_request'
+    # Pushes and pull requests run only the inexpensive quality job. Network-heavy
+    # research runs are limited to the Thursday/monthly schedules or manual runs.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     needs: quality-checks
     runs-on: ubuntu-latest
     timeout-minutes: 360
@@ -199,6 +201,7 @@ jobs:
           path: |
             mode_c_screen.csv
             mode_c_shortlist.csv
+            mode_c_shortlist_by_model.csv
             mode_c_evidence_ledger.csv
             mode_c_report.md
             mode_c_agent_payload.json
@@ -218,7 +221,7 @@ jobs:
           path: public
 
   deploy-pages:
-    if: github.event_name != 'pull_request' && github.event.repository.private == false
+    if: (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.event.repository.private == false
     needs: run-mode-c-pipeline
     runs-on: ubuntu-latest
     permissions:
