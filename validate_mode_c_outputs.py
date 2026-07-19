@@ -17,6 +17,12 @@ from mode_c_metric_contract import (
     MODEL_APPLICABLE_METRICS,
     NULL_STATUSES,
 )
+from mode_c_research_priority import (
+    CROSS_MODEL_CALIBRATION_STATUS,
+    RESEARCH_PRIORITY_METHOD,
+    RESEARCH_PRIORITY_VERSION,
+    shrunk_percentile,
+)
 
 
 DEFAULT_SCREEN = "mode_c_screen.csv"
@@ -42,6 +48,7 @@ SCREEN_COLUMNS = {
     "Industry_Model_Score",
     "Industry_Model_Coverage",
     "Decision_State",
+    "Decision_Reason_Code",
     "Decision_Timestamp",
     "Data_Confidence_Score",
     "EV_B",
@@ -53,6 +60,34 @@ SCREEN_COLUMNS = {
     "ICR_Method",
     "Long_Term_Score",
     "Long_Term_Eligible",
+    "Raw_Model_Score",
+    "Model_Peer_Count",
+    "Within_Model_Percentile",
+    "Shrunk_Within_Model_Percentile",
+    "Cross_Model_Calibration_Status",
+    "Cross_Model_Comparable",
+    "Research_Priority_Rank",
+    "Research_Priority_Method",
+    "Research_Priority_Version",
+    "Model_Eligible",
+    "Global_Research_Queue",
+    "Human_KPI_Review_Required",
+    "Specialized_Stress_Pending",
+    "Portfolio_Fit_Pending",
+    "Starter_Candidate",
+    "Research_Action_State",
+    "Research_Statuses",
+    "DSI_Status",
+    "DSI_Score",
+    "Applicable_Factor_Weight",
+    "Available_Factor_Weight",
+    "Factor_Coverage",
+    "Weight_Renormalized",
+    "Dilution_Double_Count_Check",
+    "Ownership_Dilution_Penalty",
+    "Capital_Allocation_Penalty",
+    "Persistent_Dilution_Hard_Gate",
+    "Dilution_Total_Score_Impact",
     "Stress_Survival_30",
     "Persistent_Dilution",
     "Share_Count_Change_pct",
@@ -421,6 +456,51 @@ def _validate_dashboard(dashboard_path: Path, screen: pd.DataFrame) -> Dict[str,
     }
     if dashboard_status_counts != expected_status_counts:
         raise ValidationError("dashboard aggregate metric-status counts differ from screen")
+    status_total = sum(expected_status_counts.values())
+    expected_status_ratios = {
+        status: round(count / status_total, 4) if status_total else 0.0
+        for status, count in expected_status_counts.items()
+    }
+    if payload.get("stats", {}).get("metric_status_ratios") != expected_status_ratios:
+        raise ValidationError("dashboard metric-status proportions differ from screen")
+    if payload.get("research_priority_version") != RESEARCH_PRIORITY_VERSION:
+        raise ValidationError("dashboard research-priority model version is stale")
+    if payload.get("score_disclaimer") != "模型內百分位，不代表跨模型未來報酬已校準":
+        raise ValidationError("dashboard omits the cross-model calibration disclaimer")
+    metadata = payload.get("metadata", {})
+    required_metadata = {
+        "decision_timestamp",
+        "price_data_date",
+        "latest_sec_availability_date",
+        "universe_version",
+        "model_version",
+        "git_commit",
+    }
+    if not required_metadata.issubset(metadata) or metadata.get("model_version") != RESEARCH_PRIORITY_VERSION:
+        raise ValidationError("dashboard run metadata is incomplete or stale")
+    baseline = payload.get("trend_baseline", {})
+    previous_policy = baseline.get("previous_policy_version")
+    current_policy = payload.get("trend_policy_version")
+    version_changed = bool(baseline.get("model_version_changed"))
+    if not current_policy or RESEARCH_PRIORITY_VERSION not in str(current_policy):
+        raise ValidationError("dashboard trend policy is not tied to the model version")
+    if previous_policy and previous_policy != current_policy and not version_changed:
+        raise ValidationError("dashboard model-version change did not reset the trend baseline")
+    for ticker, dashboard_row in dashboard_by_ticker.items():
+        core_kpis = dashboard_row.get("Core_KPI_Summary")
+        if not isinstance(core_kpis, list) or len(core_kpis) != 3:
+            raise ValidationError(f"{ticker} dashboard core-KPI summary is incomplete")
+        model_key = str(dashboard_row.get("Industry_Model_Key") or "GENERAL_CORPORATE")
+        labels = " | ".join(str(item.get("label") or "") for item in core_kpis)
+        if model_key != "GENERAL_CORPORATE" and "Maintenance FCF" in labels:
+            raise ValidationError(f"{ticker} specialized dashboard exposes general-company FCF KPI")
+        if (
+            model_key == "INSURANCE_P_AND_C"
+            and str(dashboard_row.get("Combined_Ratio_Source_Status") or "").upper()
+            == "SEC_PROXY_UNRECONCILED"
+            and "proxy; unreconciled" not in labels
+        ):
+            raise ValidationError(f"{ticker} dashboard hides an unreconciled combined-ratio proxy")
     groups = payload.get("trend_groups", {})
     for key, group in groups.items():
         coverage = group.get("metric_coverage", {})
@@ -437,7 +517,7 @@ def _validate_dashboard(dashboard_path: Path, screen: pd.DataFrame) -> Dict[str,
     for candidate in payload.get("emerging_candidates", []):
         ratio = _number(
             candidate.get("metric_coverage", {})
-            .get("avg_score", {})
+            .get("avg_shrunk_score", {})
             .get("coverage")
         )
         if not math.isfinite(ratio) or ratio < 0.50:
@@ -511,6 +591,140 @@ def _validate_screen(
     specialized = screen["Scoring_Framework"].fillna("").astype(str).str.startswith(
         "INDUSTRY_SPECIALIZED_"
     )
+
+    reason_codes = screen["Decision_Reason_Code"].fillna("").astype(str).str.strip()
+    if reason_codes.eq("").any():
+        bad = screen.loc[reason_codes.eq(""), "Ticker"].tolist()
+        raise ValidationError(f"decision reason code is blank: {bad}")
+    insufficient_codes = {
+        "INSUFFICIENT_QUARTERLY_EVIDENCE",
+        "MISSING_COMPANY_REPORTED_KPI",
+        "STALE_CORE_FACTS",
+        "UNRECONCILED_PROXY",
+        "FX_CHAIN_UNAVAILABLE",
+        "MODEL_NOT_APPLICABLE",
+        "SPECIALIZED_STRESS_NOT_AVAILABLE",
+        "MISSING_REQUIRED_EVIDENCE",
+        "XBRL_MAPPING_UNAVAILABLE",
+        "MISSING_MARKET_DATA",
+    }
+    invalid_missing_fail = (states == "FAIL") & reason_codes.isin(insufficient_codes)
+    if invalid_missing_fail.any():
+        bad = screen.loc[invalid_missing_fail, "Ticker"].tolist()
+        raise ValidationError(f"insufficient evidence was mislabeled as FAIL: {bad}")
+    invalid_abstain_reason = (states == "ABSTAIN") & reason_codes.isin(
+        {"MODEL_PASS", "PASS_MODEL_GATE", "FINANCIAL_HARD_GATE"}
+    )
+    invalid_pass_reason = (states == "PASS") & reason_codes.isin(insufficient_codes)
+    if invalid_abstain_reason.any() or invalid_pass_reason.any():
+        bad = screen.loc[invalid_abstain_reason | invalid_pass_reason, "Ticker"].tolist()
+        raise ValidationError(f"decision reason code contradicts decision state: {bad}")
+
+    raw_scores = pd.to_numeric(screen["Raw_Model_Score"], errors="coerce")
+    specialized_raw = pd.to_numeric(screen["Industry_Model_Score"], errors="coerce")
+    expected_raw = scores.where(~specialized, specialized_raw)
+    raw_mismatch = raw_scores.notna() & expected_raw.notna() & (
+        (raw_scores - expected_raw).abs() > 0.011
+    )
+    if raw_mismatch.any():
+        bad = screen.loc[raw_mismatch, "Ticker"].tolist()
+        raise ValidationError(f"raw model score does not match its own model output: {bad}")
+    calibration_status = (
+        screen["Cross_Model_Calibration_Status"].fillna("").astype(str).str.upper()
+    )
+    if set(calibration_status) != {CROSS_MODEL_CALIBRATION_STATUS}:
+        raise ValidationError("cross-model calibration must remain UNCALIBRATED before walk-forward validation")
+    cross_model_comparable = _bool_series(
+        screen["Cross_Model_Comparable"], "Cross_Model_Comparable"
+    )
+    if cross_model_comparable.any():
+        bad = screen.loc[cross_model_comparable, "Ticker"].tolist()
+        raise ValidationError(f"uncalibrated rows claim cross-model comparability: {bad}")
+    if any(
+        forbidden in screen.columns
+        for forbidden in ("Cross_Model_Alpha_Score", "Expected_Return_Score")
+    ):
+        raise ValidationError("uncalibrated outputs expose a forbidden alpha/expected-return score")
+    if set(screen["Research_Priority_Method"].fillna("").astype(str)) != {
+        RESEARCH_PRIORITY_METHOD
+    }:
+        raise ValidationError("global research ranking method is not the shrunk within-model percentile")
+
+    model_keys_for_rank = screen["Industry_Model_Key"].fillna("GENERAL_CORPORATE").astype(str).str.upper()
+    valid_rank = raw_scores.notna() & (states != "ABSTAIN") & model_supported
+    expected_peer_count = valid_rank.groupby(model_keys_for_rank).transform("sum").astype(int)
+    actual_peer_count = pd.to_numeric(screen["Model_Peer_Count"], errors="coerce").fillna(0).astype(int)
+    if (actual_peer_count[valid_rank] != expected_peer_count[valid_rank]).any():
+        bad = screen.loc[valid_rank & (actual_peer_count != expected_peer_count), "Ticker"].tolist()
+        raise ValidationError(f"within-model peer counts are inconsistent: {bad}")
+    expected_percentile = pd.Series(float("nan"), index=screen.index, dtype=float)
+    expected_percentile.loc[valid_rank] = (
+        screen.loc[valid_rank]
+        .assign(_raw=raw_scores[valid_rank].to_numpy())
+        .groupby(model_keys_for_rank[valid_rank])["_raw"]
+        .rank(method="average", pct=True)
+        .mul(100.0)
+    )
+    actual_percentile = pd.to_numeric(screen["Within_Model_Percentile"], errors="coerce")
+    percentile_mismatch = valid_rank & ((actual_percentile - expected_percentile).abs() > 0.011)
+    if percentile_mismatch.any():
+        bad = screen.loc[percentile_mismatch, "Ticker"].tolist()
+        raise ValidationError(f"within-model percentiles use an invalid comparison set: {bad}")
+    expected_shrunk = pd.Series(float("nan"), index=screen.index, dtype=float)
+    for index in screen.index[valid_rank]:
+        expected_shrunk.loc[index] = shrunk_percentile(
+            expected_percentile.loc[index], int(expected_peer_count.loc[index])
+        )
+    actual_shrunk = pd.to_numeric(screen["Shrunk_Within_Model_Percentile"], errors="coerce")
+    shrunk_mismatch = valid_rank & ((actual_shrunk - expected_shrunk).abs() > 0.011)
+    if shrunk_mismatch.any():
+        bad = screen.loc[shrunk_mismatch, "Ticker"].tolist()
+        raise ValidationError(f"small-sample percentile shrinkage is inconsistent: {bad}")
+
+    model_eligible = _bool_series(screen["Model_Eligible"], "Model_Eligible")
+    if (model_eligible != eligible).any():
+        bad = screen.loc[model_eligible != eligible, "Ticker"].tolist()
+        raise ValidationError(f"MODEL_ELIGIBLE does not match the model hard gates: {bad}")
+    queue_flags = _bool_series(screen["Global_Research_Queue"], "Global_Research_Queue")
+    queue_candidates = screen.loc[model_eligible & actual_shrunk.notna()].copy()
+    queue_candidates["_shrunk"] = actual_shrunk[model_eligible & actual_shrunk.notna()].to_numpy()
+    queue_candidates["_confidence"] = confidence[model_eligible & actual_shrunk.notna()].fillna(0.0).to_numpy()
+    expected_queue = queue_candidates.sort_values(
+        ["_shrunk", "_confidence", "Industry_Model_Key", "Ticker"],
+        ascending=[False, False, True, True],
+    ).head(MAX_SHORTLIST_SIZE)["Ticker"].tolist()
+    actual_queue = screen.loc[queue_flags].sort_values("Research_Priority_Rank")["Ticker"].tolist()
+    if actual_queue != expected_queue:
+        raise ValidationError(f"global research queue is not based on shrunk within-model percentile: expected={expected_queue}, actual={actual_queue}")
+    action_states = screen["Research_Action_State"].fillna("").astype(str).str.upper()
+    human_review = _bool_series(
+        screen["Human_KPI_Review_Required"], "Human_KPI_Review_Required"
+    )
+    stress_pending = _bool_series(
+        screen["Specialized_Stress_Pending"], "Specialized_Stress_Pending"
+    )
+    expected_action = pd.Series("SCREENED", index=screen.index, dtype=object)
+    expected_action.loc[model_eligible] = "MODEL_ELIGIBLE"
+    expected_action.loc[queue_flags] = "GLOBAL_RESEARCH_QUEUE"
+    expected_action.loc[stress_pending] = "SPECIALIZED_STRESS_PENDING"
+    expected_action.loc[human_review] = "HUMAN_KPI_REVIEW_REQUIRED"
+    invalid_action = action_states != expected_action
+    if invalid_action.any():
+        bad = screen.loc[invalid_action, "Ticker"].tolist()
+        raise ValidationError(f"research action state is inconsistent with review gates: {bad}")
+    portfolio_pending = _bool_series(
+        screen["Portfolio_Fit_Pending"], "Portfolio_Fit_Pending"
+    )
+    starter_flags = _bool_series(screen["Starter_Candidate"], "Starter_Candidate")
+    invalid_starter = starter_flags & (
+        human_review
+        | stress_pending
+        | portfolio_pending
+        | (specialized & ~cross_model_comparable)
+    )
+    if invalid_starter.any():
+        bad = screen.loc[invalid_starter, "Ticker"].tolist()
+        raise ValidationError(f"starter candidate bypassed research/portfolio gates: {bad}")
 
     invalid_eligible = eligible & (
         (states != "PASS")
@@ -663,6 +877,130 @@ def _validate_screen(
         bad = screen.loc[invalid_specialized, "Ticker"].tolist()
         raise ValidationError(f"specialized eligible rows violate model gates: {bad}")
 
+    dsi_status = screen["DSI_Status"].fillna("MISSING").astype(str).str.upper()
+    if not set(dsi_status).issubset({"VALID", "MISSING", "NOT_APPLICABLE", "ABSTAIN", "STALE"}):
+        raise ValidationError("DSI status contains an unsupported applicability state")
+    dsi_score = pd.to_numeric(screen["DSI_Score"], errors="coerce")
+    invalid_na_dsi = (dsi_status == "NOT_APPLICABLE") & dsi_score.notna()
+    if invalid_na_dsi.any():
+        bad = screen.loc[invalid_na_dsi, "Ticker"].tolist()
+        raise ValidationError(f"NOT_APPLICABLE DSI rows expose a neutral/numeric score: {bad}")
+
+    applicable_weight = pd.to_numeric(screen["Applicable_Factor_Weight"], errors="coerce")
+    available_weight = pd.to_numeric(screen["Available_Factor_Weight"], errors="coerce")
+    factor_coverage = pd.to_numeric(screen["Factor_Coverage"], errors="coerce")
+    weight_renormalized = _bool_series(
+        screen["Weight_Renormalized"], "Weight_Renormalized"
+    )
+    general_scored = ~specialized & states.eq("PASS") & scores.notna()
+    invalid_factor_weights = general_scored & (
+        applicable_weight.isna()
+        | available_weight.isna()
+        | factor_coverage.isna()
+        | applicable_weight.le(0)
+        | available_weight.gt(applicable_weight)
+        | ((factor_coverage - available_weight / applicable_weight).abs() > 0.011)
+        | (weight_renormalized != ~available_weight.round(8).eq(100.0))
+    )
+    if invalid_factor_weights.any():
+        bad = screen.loc[invalid_factor_weights, "Ticker"].tolist()
+        raise ValidationError(f"factor applicability weights were not renormalized correctly: {bad}")
+
+    dilution_check = screen["Dilution_Double_Count_Check"].fillna("").astype(str).str.upper()
+    if not dilution_check.eq("PASS").all():
+        bad = screen.loc[~dilution_check.eq("PASS"), "Ticker"].tolist()
+        raise ValidationError(f"dilution reason was counted in more than one score layer: {bad}")
+    ownership_penalty = pd.to_numeric(
+        screen.get("Ownership_Dilution_Penalty"), errors="coerce"
+    ).fillna(0.0)
+    capital_penalty = pd.to_numeric(
+        screen.get("Capital_Allocation_Penalty"), errors="coerce"
+    ).fillna(0.0)
+    total_dilution_impact = pd.to_numeric(
+        screen["Dilution_Total_Score_Impact"], errors="coerce"
+    ).fillna(0.0)
+    duplicate_dilution = ownership_penalty.gt(0) & capital_penalty.gt(0)
+    invalid_dilution_total = (
+        total_dilution_impact - (ownership_penalty + capital_penalty * 0.05)
+    ).abs() > 0.011
+    if duplicate_dilution.any() or invalid_dilution_total.any():
+        bad = screen.loc[duplicate_dilution | invalid_dilution_total, "Ticker"].tolist()
+        raise ValidationError(f"dilution attribution is duplicated or does not reconcile: {bad}")
+    persistent_hard_gate = _bool_series(
+        screen["Persistent_Dilution_Hard_Gate"], "Persistent_Dilution_Hard_Gate"
+    )
+    if (persistent_hard_gate != persistent).any():
+        bad = screen.loc[persistent_hard_gate != persistent, "Ticker"].tolist()
+        raise ValidationError(f"persistent dilution hard-gate flag is inconsistent: {bad}")
+    if (persistent & (ownership_penalty.gt(0) | capital_penalty.gt(0))).any():
+        bad = screen.loc[
+            persistent & (ownership_penalty.gt(0) | capital_penalty.gt(0)), "Ticker"
+        ].tolist()
+        raise ValidationError(f"persistent dilution hard gate was also score-penalized: {bad}")
+
+    p_and_c = specialized_keys == "INSURANCE_P_AND_C"
+    if p_and_c.any():
+        source_status = screen.get(
+            "Combined_Ratio_Source_Status", pd.Series("MISSING", index=screen.index)
+        ).fillna("MISSING").astype(str).str.upper()
+        if not set(source_status[p_and_c]).issubset(
+            {"COMPANY_REPORTED", "SEC_PROXY_RECONCILED", "SEC_PROXY_UNRECONCILED", "MISSING"}
+        ):
+            raise ValidationError("P&C combined-ratio source status is invalid")
+        human_review = _bool_series(
+            screen["Human_KPI_Review_Required"], "Human_KPI_Review_Required"
+        )
+        starter = _bool_series(screen["Starter_Candidate"], "Starter_Candidate")
+        unreconciled = p_and_c & source_status.eq("SEC_PROXY_UNRECONCILED")
+        if (unreconciled & (~human_review | starter)).any():
+            bad = screen.loc[unreconciled & (~human_review | starter), "Ticker"].tolist()
+            raise ValidationError(f"unreconciled P&C proxy bypassed human review/starter gate: {bad}")
+        for _, row in screen.loc[unreconciled].iterrows():
+            metadata = _parse_metadata(row["Metric_Metadata_JSON"], str(row["Ticker"]))
+            proxy_meta = metadata.get("SEC_Combined_Ratio_Proxy", {})
+            if proxy_meta.get("status") != "ESTIMATED":
+                raise ValidationError(
+                    f"{row['Ticker']} unreconciled P&C proxy is not ESTIMATED"
+                )
+        stress_status = screen.get(
+            "P_and_C_Stress_Status", pd.Series("ABSTAIN", index=screen.index)
+        ).fillna("ABSTAIN").astype(str).str.upper()
+        invalid_starter_stress = p_and_c & stress_status.ne("PASS") & starter
+        if invalid_starter_stress.any():
+            bad = screen.loc[invalid_starter_stress, "Ticker"].tolist()
+            raise ValidationError(f"P&C starter candidates lack a passing moderate stress: {bad}")
+
+    if {
+        "Historical_Valuation_Valid_Years",
+        "Historical_Valuation_Quantile_Used",
+    }.issubset(screen.columns):
+        valid_years = pd.to_numeric(
+            screen["Historical_Valuation_Valid_Years"], errors="coerce"
+        )
+        quantile_used = pd.to_numeric(
+            screen["Historical_Valuation_Quantile_Used"], errors="coerce"
+        )
+        expected_quantile = valid_years.map(
+            lambda years: (
+                float("nan")
+                if pd.isna(years) or years < 5
+                else 25.0
+                if years <= 6
+                else 20.0
+                if years <= 9
+                else 15.0
+                if years <= 14
+                else 10.0
+            )
+        )
+        comparable_quantile = expected_quantile.notna() & quantile_used.notna()
+        invalid_quantile = comparable_quantile & (
+            (expected_quantile - quantile_used).abs() > 0.011
+        )
+        if invalid_quantile.any():
+            bad = screen.loc[invalid_quantile, "Ticker"].tolist()
+            raise ValidationError(f"historical valuation quantile does not match sample size: {bad}")
+
     if "Historical_Valuation_Status" in screen.columns:
         historical_status = (
             screen["Historical_Valuation_Status"].fillna("").astype(str).str.upper()
@@ -694,13 +1032,7 @@ def _validate_screen(
     shortlist = pd.read_csv(shortlist_path, encoding="utf-8-sig")
     _require_columns(shortlist.columns, {"Ticker"}, "shortlist")
     actual_shortlist = shortlist["Ticker"].fillna("").astype(str).str.upper().tolist()
-    expected_shortlist = (
-        screen.loc[eligible, ["Ticker"]]
-        .assign(_score=scores[eligible].to_numpy())
-        .sort_values(["_score", "Ticker"], ascending=[False, True])
-        .head(MAX_SHORTLIST_SIZE)["Ticker"]
-        .tolist()
-    )
+    expected_shortlist = actual_queue
     if actual_shortlist != expected_shortlist:
         raise ValidationError(
             f"shortlist ranking mismatch: expected={expected_shortlist}, actual={actual_shortlist}"

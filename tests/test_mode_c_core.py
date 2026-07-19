@@ -18,6 +18,7 @@ from AQR_ModeC_Agent_V12 import (
     analyze_dsi_signal,
     annual_values_by_year,
     apply_long_term_framework,
+    assess_inventory_factor_applicability,
     assess_data_confidence,
     build_agent_verification_plan,
     calc_dsi_series,
@@ -25,12 +26,16 @@ from AQR_ModeC_Agent_V12 import (
     calculate_financial_stress,
     calculate_interest_coverage_gate,
     calculate_per_share_growth_3y,
+    calculate_roic_capital_metrics,
     common_equity_rejection_reason,
     composite_score_for_result,
     dynamic_implied_cagr_limit,
     estimate_maintenance_capex_amount,
+    estimate_maintenance_capex_profile,
+    maintenance_fcf_research_warnings,
     get_upcoming_earnings,
     historical_valuation,
+    historical_valuation_quantile,
     hydrate_info_cache_from_verified_universe,
     implied_ebitda_cagr,
     minimum_positive_fcf_years,
@@ -352,6 +357,8 @@ class ModeCCoreTests(unittest.TestCase):
         self.assertEqual(result.Sector, "Financial Services")
         self.assertEqual(result.Scoring_Framework, "INDUSTRY_SPECIALIZED_BANK_V1")
         self.assertFalse(result.Model_Route_Refined)
+        self.assertEqual(result.Decision_State, "ABSTAIN")
+        self.assertEqual(result.Decision_Reason_Code, "MISSING_MARKET_DATA")
 
     def test_reit_capex_mapping_excludes_property_acquisitions(self):
         tags = SECDataDistiller("research@example.com").config["RealEstateCapEx"]
@@ -937,10 +944,74 @@ class ModeCCoreTests(unittest.TestCase):
         self.assertAlmostEqual(estimate_maintenance_capex_amount(100.0, 60.0, 0.20), 68.0)
         self.assertAlmostEqual(estimate_maintenance_capex_amount(100.0, 60.0, -0.05), 92.0)
 
+    def test_maintenance_capex_profile_exposes_range_and_confidence(self):
+        class FakeSec:
+            @staticmethod
+            def quarterly_series(frame, metric):
+                return pd.Series(
+                    [20.0] * 4 + [25.0] * 4,
+                    index=pd.date_range("2024-03-31", periods=8, freq="QE"),
+                )
+
+        with patch(
+            "AQR_ModeC_Agent_V12.annual_values_by_year",
+            side_effect=lambda sec, frame, metric: (
+                {2023: 50e9, 2024: 55e9, 2025: 60e9}
+                if metric == "DnA"
+                else {2024: 80e9, 2025: 100e9}
+            ),
+        ):
+            profile = estimate_maintenance_capex_profile(
+                FakeSec(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), 100.0, 60.0
+            )
+        self.assertEqual(profile["confidence"], "HIGH")
+        self.assertLess(profile["maintenance_capex_low_b"], profile["maintenance_capex_b"])
+        self.assertLess(profile["maintenance_capex_b"], profile["maintenance_capex_high_b"])
+        self.assertAlmostEqual(
+            profile["growth_capex_b"],
+            100.0 - profile["maintenance_capex_b"],
+        )
+
+        with patch(
+            "AQR_ModeC_Agent_V12.annual_values_by_year",
+            side_effect=lambda sec, frame, metric: (
+                {2025: 60e9} if metric == "DnA" else {2024: 80e9, 2025: 100e9}
+            ),
+        ):
+            medium_confidence = estimate_maintenance_capex_profile(
+                FakeSec(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), 100.0, 60.0
+            )
+        self.assertEqual(medium_confidence["confidence"], "MEDIUM")
+
+        with patch("AQR_ModeC_Agent_V12.annual_values_by_year", return_value={}):
+            low_confidence = estimate_maintenance_capex_profile(
+                FakeSec(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), 100.0, math.nan
+            )
+        self.assertEqual(low_confidence["confidence"], "LOW")
+        self.assertEqual(low_confidence["maintenance_capex_b"], 100.0)
+
     def test_dynamic_cagr_limit_tracks_roic_and_margin_trend(self):
         self.assertEqual(dynamic_implied_cagr_limit(28.0, 1.5), 40.8)
         self.assertEqual(dynamic_implied_cagr_limit(22.0, 0.5), 35.2)
         self.assertEqual(dynamic_implied_cagr_limit(30.0, -2.5), 15.0)
+
+    def test_roic_uses_average_capital_and_marks_ending_fallback(self):
+        averaged = calculate_roic_capital_metrics(20.0, 100.0, 300.0, 20.0, 60.0)
+        self.assertEqual(averaged["capital_method"], "BEGINNING_ENDING_AVERAGE")
+        self.assertAlmostEqual(averaged["average_roic_pct"], 10.0)
+        self.assertAlmostEqual(averaged["ending_roic_pct"], 20.0 / 300.0 * 100.0)
+        self.assertAlmostEqual(averaged["excluding_goodwill_roic_pct"], 12.5)
+
+        fallback = calculate_roic_capital_metrics(20.0, math.nan, 300.0)
+        self.assertEqual(fallback["capital_method"], "ENDING_CAPITAL_FALLBACK_ESTIMATED")
+        self.assertAlmostEqual(fallback["average_roic_pct"], fallback["ending_roic_pct"])
+
+    def test_maintenance_fcf_risk_cases_become_manual_research_tasks(self):
+        warnings = maintenance_fcf_research_warnings(-0.1, -1.2, 4.1)
+        self.assertEqual(len(warnings), 3)
+        self.assertTrue(any("lower-bound" in warning for warning in warnings))
+        self.assertTrue(any("conservative" in warning for warning in warnings))
+        self.assertTrue(any("sensitivity" in warning for warning in warnings))
 
     def test_reverse_valuation_includes_required_return(self):
         self.assertAlmostEqual(implied_ebitda_cagr(100.0, 10.0, 10.0, years=3, required_return=0.10), 0.10)
@@ -1004,6 +1075,27 @@ class ModeCCoreTests(unittest.TestCase):
         dsi = calc_dsi_series(inventory, cogs)
         self.assertEqual(len(dsi), 1)
         self.assertAlmostEqual(float(dsi.iloc[-1]), 82.125)
+
+    def test_dsi_is_not_neutralized_when_inventory_is_not_applicable(self):
+        software = assess_inventory_factor_applicability(
+            "Technology", "Software - Application", math.nan, 10.0, 5.0
+        )
+        immaterial = assess_inventory_factor_applicability(
+            "Industrials", "Specialty Industrial Machinery", 0.01, 10.0, 20.0
+        )
+        material = assess_inventory_factor_applicability(
+            "Industrials", "Specialty Industrial Machinery", 2.0, 10.0, 20.0
+        )
+        self.assertEqual(software["status"], "NOT_APPLICABLE")
+        self.assertEqual(immaterial["status"], "NOT_APPLICABLE")
+        self.assertEqual(material["status"], "VALID")
+
+    def test_historical_valuation_quantile_changes_with_sample_size(self):
+        self.assertTrue(math.isnan(historical_valuation_quantile(4)))
+        self.assertEqual(historical_valuation_quantile(5), 25.0)
+        self.assertEqual(historical_valuation_quantile(8), 20.0)
+        self.assertEqual(historical_valuation_quantile(12), 15.0)
+        self.assertEqual(historical_valuation_quantile(15), 10.0)
 
     def test_fcf_history_requires_sbc_evidence_and_consecutive_ocf_years(self):
         ocf = {2021: 4e9, 2023: 3e9, 2025: 1e9}
@@ -1085,21 +1177,34 @@ class ModeCCoreTests(unittest.TestCase):
         self.assertEqual(minimum_positive_fcf_years(4.0), 3)
         self.assertFalse(candidate.Long_Term_Eligible)
 
-    def test_single_year_dilution_warns_but_persistent_dilution_excludes(self):
+    def test_dilution_is_not_double_counted_but_persistent_dilution_excludes(self):
         clean = apply_long_term_framework(self._good_candidate())
 
         warning = self._good_candidate(ticker="WARN")
         warning.Dilution_Illusion = True
         warning = apply_long_term_framework(warning)
         self.assertTrue(warning.Long_Term_Eligible)
-        self.assertLess(warning.Long_Term_Score, clean.Long_Term_Score)
+        self.assertEqual(warning.Long_Term_Score, clean.Long_Term_Score)
+        self.assertEqual(warning.Dilution_Double_Count_Check, "PASS")
+
+        issuance = self._good_candidate(ticker="ISSUE")
+        issuance.Share_Count_Change_pct = 2.0
+        issuance.Real_Buyback_B = -0.5
+        issuance.Capital_Allocation_Score = 40.0
+        issuance = apply_long_term_framework(issuance)
+        self.assertEqual(issuance.Ownership_Dilution_Penalty, 0.0)
+        self.assertEqual(issuance.Capital_Allocation_Penalty, 20.0)
+        self.assertEqual(issuance.Dilution_Total_Score_Impact, 1.0)
 
         persistent = self._good_candidate(ticker="DILUTE")
         persistent.Persistent_Dilution = True
         persistent.Share_Count_Change_3Y_pct = 5.0
+        persistent.Capital_Allocation_Score = 40.0
         persistent = apply_long_term_framework(persistent)
         self.assertFalse(persistent.Long_Term_Eligible)
         self.assertEqual(persistent.Suggested_Starter_Weight_pct_Total, 0.0)
+        self.assertEqual(persistent.Capital_Allocation_Penalty, 0.0)
+        self.assertEqual(persistent.Dilution_Total_Score_Impact, 0.0)
 
     def test_data_confidence_is_a_gate_not_an_extra_score_factor(self):
         candidate = self._good_candidate(ticker="LOWCONF")

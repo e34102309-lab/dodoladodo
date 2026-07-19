@@ -1182,7 +1182,9 @@ def evaluate_candidate(
         )
     if sector in STRATEGY_EXCLUDED_SECTORS:
         return make_result(candidate, config, f"Drop: 產業隔離 ({sector})")
-    model_route = route_industry_model(sector, industry)
+    model_route = route_industry_model(
+        sector, industry, ticker=str(candidate.get("Ticker") or "")
+    )
     if not bool(model_route["supported"]):
         return make_result(
             candidate,

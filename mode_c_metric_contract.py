@@ -9,7 +9,7 @@ from typing import Any, Iterable, Mapping, Sequence
 import pandas as pd
 
 
-METRIC_CONTRACT_VERSION = "2026-07-metric-status-v2"
+METRIC_CONTRACT_VERSION = "2026-07-metric-status-v3"
 METRIC_STATUSES = frozenset(
     {
         "VALID",
@@ -46,6 +46,9 @@ DISPLAY_METRICS: tuple[str, ...] = (
     "Maintenance_CapEx_B",
     "Maintenance_CapEx_Low_B",
     "Maintenance_CapEx_High_B",
+    "Maintenance_CapEx_Lower_B",
+    "Maintenance_CapEx_Base_B",
+    "Maintenance_CapEx_Upper_B",
     "Growth_CapEx_B",
     "CapEx_to_DnA_x",
     "TTM_SBC_B",
@@ -58,6 +61,10 @@ DISPLAY_METRICS: tuple[str, ...] = (
     "Conservative_Real_FCF_to_EV_Yield_pct",
     "Maintenance_Real_FCF_Yield_Low_pct",
     "Maintenance_Real_FCF_Yield_High_pct",
+    "Maintenance_Real_FCF_Yield_Lower_pct",
+    "Maintenance_Real_FCF_Yield_Base_pct",
+    "Maintenance_Real_FCF_Yield_Upper_pct",
+    "FCF_Sensitivity_Spread_pp",
     "Total_Debt_B",
     "Cash_B",
     "Net_Debt_B",
@@ -68,6 +75,10 @@ DISPLAY_METRICS: tuple[str, ...] = (
     "NetDebt_to_Stress_EBITDA_30x",
     "Stress_Real_FCF_30_B",
     "ROIC_pct",
+    "ROIC_Average_Capital_pct",
+    "ROIC_Ending_Capital_pct",
+    "ROIC_Including_Goodwill_pct",
+    "ROIC_Excluding_Goodwill_pct",
     "ROCE_pct",
     "Real_FCF_Positive_Years_5Y",
     "OCF_to_NetIncome_5Y",
@@ -78,6 +89,10 @@ DISPLAY_METRICS: tuple[str, ...] = (
     "Rev_3Q_Change_pct",
     "DSI_QoQ_Change_pct",
     "DSI_YoY_Change_pct",
+    "DSI_Latest",
+    "DSI_Score",
+    "Inventory_to_Revenue_pct",
+    "Inventory_to_Assets_pct",
     "Share_Count_Change_pct",
     "Share_Count_Change_3Y_pct",
     "Net_Buyback_Yield_pct",
@@ -90,9 +105,60 @@ DISPLAY_METRICS: tuple[str, ...] = (
     "EV_EBITDA_10Y_Percentile",
     "PE_10Y_Percentile",
     "Historical_Valuation_Coverage",
+    "Historical_Valuation_Quantile_Used",
+    "Historical_Valuation_Quantile_Value",
+    "Exit_Multiple_Company_History",
+    "Exit_Multiple_Peer",
+    "Exit_Multiple_Rate_Adjusted",
+    "Exit_Multiple_Final",
     "Point_in_Time_FX_Rate",
     "ADR_Ratio",
     "EBITDA_Drawdown_30_pct",
+    "Company_Reported_Combined_Ratio",
+    "SEC_Combined_Ratio_Proxy",
+    "Combined_Ratio_Reconciliation_Difference_pp",
+    "Accident_Year_Combined_Ratio",
+    "Prior_Year_Reserve_Development_pct",
+    "Catastrophe_Loss_Ratio_pct",
+    "Premium_Growth_pct",
+    "Policy_Count_Growth_pct",
+    "Investment_Income_B",
+    "Investment_Yield_pct",
+    "Equity_to_Assets_pct",
+    "Operating_ROE_pct",
+    "Price_to_Book_x",
+    "P_and_C_Stress_CR_Mild",
+    "P_and_C_Stress_CR_Moderate",
+    "P_and_C_Stress_CR_Severe",
+    "P_and_C_Stress_Underwriting_Income_Mild_B",
+    "P_and_C_Stress_Underwriting_Income_Moderate_B",
+    "P_and_C_Stress_Underwriting_Income_Severe_B",
+    "P_and_C_Stress_PreTax_Income_Moderate_B",
+    "P_and_C_Stress_ROE_Moderate_pct",
+    "P_and_C_Stress_Equity_to_Assets_Moderate_pct",
+)
+
+
+P_AND_C_METRICS = frozenset(
+    metric
+    for metric in DISPLAY_METRICS
+    if metric.startswith("P_and_C_")
+    or metric
+    in {
+        "Company_Reported_Combined_Ratio",
+        "SEC_Combined_Ratio_Proxy",
+        "Combined_Ratio_Reconciliation_Difference_pp",
+        "Accident_Year_Combined_Ratio",
+        "Prior_Year_Reserve_Development_pct",
+        "Catastrophe_Loss_Ratio_pct",
+        "Premium_Growth_pct",
+        "Policy_Count_Growth_pct",
+        "Investment_Income_B",
+        "Investment_Yield_pct",
+        "Equity_to_Assets_pct",
+        "Operating_ROE_pct",
+        "Price_to_Book_x",
+    }
 )
 
 
@@ -118,12 +184,12 @@ REPORTED_CASH_FLOW_METRICS = frozenset(
 
 
 MODEL_APPLICABLE_METRICS: dict[str, frozenset[str]] = {
-    "GENERAL_CORPORATE": frozenset(DISPLAY_METRICS) - {
+    "GENERAL_CORPORATE": (frozenset(DISPLAY_METRICS) - P_AND_C_METRICS) - {
         "Industry_Model_Score",
         "Industry_Model_Coverage",
     },
     "BANK": COMMON_SPECIALIZED_METRICS,
-    "INSURANCE_P_AND_C": COMMON_SPECIALIZED_METRICS,
+    "INSURANCE_P_AND_C": COMMON_SPECIALIZED_METRICS | P_AND_C_METRICS,
     "INSURANCE_LIFE": COMMON_SPECIALIZED_METRICS,
     "REIT_EQUITY": COMMON_SPECIALIZED_METRICS | DEBT_COVERAGE_METRICS,
     "REIT_MORTGAGE": COMMON_SPECIALIZED_METRICS,
@@ -177,6 +243,9 @@ ESTIMATED_METRICS = frozenset(
         "Maintenance_CapEx_B",
         "Maintenance_CapEx_Low_B",
         "Maintenance_CapEx_High_B",
+        "Maintenance_CapEx_Lower_B",
+        "Maintenance_CapEx_Base_B",
+        "Maintenance_CapEx_Upper_B",
         "Growth_CapEx_B",
         "Maintenance_Real_FCF_B",
         "Real_FCF_Yield_pct",
@@ -184,6 +253,10 @@ ESTIMATED_METRICS = frozenset(
         "Maintenance_Real_FCF_to_EV_Yield_pct",
         "Maintenance_Real_FCF_Yield_Low_pct",
         "Maintenance_Real_FCF_Yield_High_pct",
+        "Maintenance_Real_FCF_Yield_Lower_pct",
+        "Maintenance_Real_FCF_Yield_Base_pct",
+        "Maintenance_Real_FCF_Yield_Upper_pct",
+        "FCF_Sensitivity_Spread_pp",
         "Stress_ICR_30x",
         "NetDebt_to_Stress_EBITDA_30x",
         "Stress_Real_FCF_30_B",
@@ -191,6 +264,16 @@ ESTIMATED_METRICS = frozenset(
         "Implied_CAGR_Limit_pct",
         "Implied_CAGR_Headroom_pct",
         "EBITDA_Drawdown_30_pct",
+        "SEC_Combined_Ratio_Proxy",
+        "P_and_C_Stress_CR_Mild",
+        "P_and_C_Stress_CR_Moderate",
+        "P_and_C_Stress_CR_Severe",
+        "P_and_C_Stress_Underwriting_Income_Mild_B",
+        "P_and_C_Stress_Underwriting_Income_Moderate_B",
+        "P_and_C_Stress_Underwriting_Income_Severe_B",
+        "P_and_C_Stress_PreTax_Income_Moderate_B",
+        "P_and_C_Stress_ROE_Moderate_pct",
+        "P_and_C_Stress_Equity_to_Assets_Moderate_pct",
     }
 )
 
@@ -203,6 +286,10 @@ CSV_STATUS_METRICS = (
     "Maintenance_Real_FCF_B",
     "Conservative_Real_FCF_B",
     "ROIC_pct",
+    "ROIC_Average_Capital_pct",
+    "ROIC_Ending_Capital_pct",
+    "ROIC_Including_Goodwill_pct",
+    "ROIC_Excluding_Goodwill_pct",
     "ICR",
     "EV_EBITDA_x",
     "Long_Term_Score",
@@ -469,6 +556,44 @@ def _metric_metadata(
             "source_method": "industry_route",
             "evidence_ids": [],
         }
+    if metric in {
+        "DSI_Latest",
+        "DSI_Score",
+        "DSI_QoQ_Change_pct",
+        "DSI_YoY_Change_pct",
+        "Inventory_to_Revenue_pct",
+        "Inventory_to_Assets_pct",
+    }:
+        dsi_status = str(row.get("DSI_Status") or "MISSING").upper()
+        if dsi_status == "NOT_APPLICABLE":
+            return {
+                "value": None,
+                "status": "NOT_APPLICABLE",
+                "reason": str(row.get("DSI_Applicability_Reason") or "Inventory factor is not applicable"),
+                "as_of": str(decision_at or "")[:10],
+                "source_method": "inventory_materiality_gate",
+                "evidence_ids": [],
+            }
+        if dsi_status in {"MISSING", "ABSTAIN", "STALE"} and value is None:
+            return {
+                "value": None,
+                "status": dsi_status,
+                "reason": str(row.get("DSI_Applicability_Reason") or "DSI evidence is incomplete"),
+                "as_of": _as_of(records, decision_at),
+                "source_method": "inventory_materiality_gate",
+                "evidence_ids": evidence_ids,
+            }
+    if key == "INSURANCE_P_AND_C" and metric.startswith("P_and_C_Stress_"):
+        stress_status = str(row.get("P_and_C_Stress_Status") or "ABSTAIN").upper()
+        if stress_status == "ABSTAIN":
+            return {
+                "value": None,
+                "status": "ABSTAIN",
+                "reason": "Dedicated P&C stress lacks auditable premiums, invested assets, yield or pretax income",
+                "as_of": _as_of(records, decision_at),
+                "source_method": "p_and_c_specialized_stress",
+                "evidence_ids": evidence_ids,
+            }
     if (
         metric in {"Point_in_Time_FX_Rate", "ADR_Ratio"}
         and str(row.get("Input_Security_Class") or "").upper() != "COMMON_ADS_INFERRED"
@@ -622,9 +747,16 @@ def _specialized_metadata(
                 status = "MISSING"
                 reason = f"{key} did not produce {name}"
             else:
+                unreconciled_p_and_c = bool(
+                    key == "INSURANCE_P_AND_C"
+                    and str(row.get("Combined_Ratio_Source_Status") or "").upper()
+                    == "SEC_PROXY_UNRECONCILED"
+                    and "combined_ratio" in name.lower()
+                )
                 status = (
                     "ESTIMATED"
-                    if any(token in name.lower() for token in ("proxy", "midcycle", "trough"))
+                    if unreconciled_p_and_c
+                    or any(token in name.lower() for token in ("proxy", "midcycle", "trough", "stress"))
                     else "VALID"
                 )
                 reason = f"{key} dedicated metric"
@@ -648,7 +780,69 @@ def annotate_rows(
     for source in rows:
         row = dict(source)
         key = model_key(row)
+        if key == "INSURANCE_P_AND_C":
+            industry_metrics = _json_object(row.get("Industry_Model_Metrics_JSON"))
+            p_and_c_mapping = {
+                "Company_Reported_Combined_Ratio": "company_reported_combined_ratio_pct",
+                "SEC_Combined_Ratio_Proxy": "sec_combined_ratio_proxy_pct",
+                "Combined_Ratio_Reconciliation_Difference_pp": "combined_ratio_reconciliation_difference_pp",
+                "Accident_Year_Combined_Ratio": "accident_year_combined_ratio_pct",
+                "Prior_Year_Reserve_Development_pct": "reserve_development_to_premium_pct",
+                "Catastrophe_Loss_Ratio_pct": "catastrophe_loss_ratio_pct",
+                "Premium_Growth_pct": "premium_growth_pct",
+                "Policy_Count_Growth_pct": "policy_count_growth_pct",
+                "Investment_Income_B": "net_investment_income_ttm_b",
+                "Investment_Yield_pct": "investment_yield_pct",
+                "Equity_to_Assets_pct": "equity_to_assets_pct",
+                "Operating_ROE_pct": "operating_roe_pct",
+                "Price_to_Book_x": "price_to_book_x",
+            }
+            for output_name, metric_name in p_and_c_mapping.items():
+                if finite_number(row.get(output_name)) is None:
+                    row[output_name] = industry_metrics.get(metric_name)
+            if finite_number(row.get("SEC_Combined_Ratio_Proxy")) is None:
+                row["SEC_Combined_Ratio_Proxy"] = industry_metrics.get(
+                    "combined_ratio_proxy_pct"
+                )
+            company_ratio = finite_number(row.get("Company_Reported_Combined_Ratio"))
+            proxy_ratio = finite_number(row.get("SEC_Combined_Ratio_Proxy"))
+            source_status = str(
+                row.get("Combined_Ratio_Source_Status")
+                or industry_metrics.get("combined_ratio_source_status")
+                or ""
+            ).upper()
+            if not source_status:
+                source_status = (
+                    "COMPANY_REPORTED"
+                    if company_ratio is not None
+                    else "SEC_PROXY_UNRECONCILED"
+                    if proxy_ratio is not None
+                    else "MISSING"
+                )
+            row["Combined_Ratio_Source_Status"] = source_status
+            if source_status == "SEC_PROXY_UNRECONCILED":
+                row["Human_KPI_Review_Required"] = True
+            if not str(row.get("P_and_C_Stress_Status") or "").strip():
+                row["P_and_C_Stress_Status"] = "ABSTAIN"
+            if str(row.get("P_and_C_Stress_Status")).upper() != "PASS":
+                row["Specialized_Stress_Pending"] = True
+                row["Starter_Candidate"] = False
         if key == "GENERAL_CORPORATE":
+            row["Maintenance_CapEx_Lower_B"] = row.get("Maintenance_CapEx_Low_B")
+            row["Maintenance_CapEx_Base_B"] = row.get("Maintenance_CapEx_B")
+            row["Maintenance_CapEx_Upper_B"] = row.get("Maintenance_CapEx_High_B")
+            row["Maintenance_CapEx_Method"] = row.get("Maintenance_CapEx_Method") or row.get("CapEx_Reinvestment_Method")
+            row["Maintenance_Real_FCF_Yield_Lower_pct"] = row.get("Maintenance_Real_FCF_Yield_Low_pct")
+            row["Maintenance_Real_FCF_Yield_Base_pct"] = row.get("Real_FCF_Yield_pct")
+            row["Maintenance_Real_FCF_Yield_Upper_pct"] = row.get("Maintenance_Real_FCF_Yield_High_pct")
+            lower_yield = finite_number(row.get("Maintenance_Real_FCF_Yield_Lower_pct"))
+            upper_yield = finite_number(row.get("Maintenance_Real_FCF_Yield_Upper_pct"))
+            row["FCF_Sensitivity_Spread_pp"] = (
+                upper_yield - lower_yield
+                if lower_yield is not None and upper_yield is not None
+                else None
+            )
+            row["SBC_Economic_Cost"] = row.get("SBC_Economic_Cost_B")
             ocf = finite_number(row.get("TTM_OCF_B"))
             total_capex = finite_number(row.get("Dynamic_CapEx_B"))
             maintenance_capex = finite_number(row.get("Maintenance_CapEx_B"))

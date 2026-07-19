@@ -16,6 +16,10 @@ SPECIALIZED_MODEL_KEYS = {
     "CYCLICAL_MIDCYCLE",
     "FINANCIAL_LENDER",
     "FINANCIAL_FEE",
+    "ALTERNATIVE_ASSET_MANAGER",
+    "TRADITIONAL_ASSET_MANAGER",
+    "INSURANCE_LINKED_ASSET_MANAGER",
+    "OTHER_FEE_FINANCIAL",
 }
 
 
@@ -195,9 +199,19 @@ def initial_screen_industry(model_key: str, info: Mapping[str, Any]) -> dict:
     elif model_key == "REGULATED_UTILITY":
         if math.isfinite(ebitda) and math.isfinite(ocf) and ebitda <= 0 and ocf <= 0:
             hard_failures.append("both EBITDA and operating cash flow are non-positive")
-    elif model_key == "FINANCIAL_FEE":
+    elif model_key in {
+        "FINANCIAL_FEE",
+        "ALTERNATIVE_ASSET_MANAGER",
+        "TRADITIONAL_ASSET_MANAGER",
+        "INSURANCE_LINKED_ASSET_MANAGER",
+        "OTHER_FEE_FINANCIAL",
+    }:
         if math.isfinite(ebitda) and ebitda <= 0 and math.isfinite(ocf) and ocf <= 0:
             hard_failures.append("fee-business EBITDA and operating cash flow are non-positive")
+        if not math.isfinite(ebitda) or not math.isfinite(ocf):
+            warnings.append(
+                "Yahoo fee-business cash economics are incomplete; defer AUM/FRE/flow KPIs to company filings"
+            )
     elif model_key == "CYCLICAL_MIDCYCLE":
         if math.isfinite(ebitda) and ebitda <= 0:
             warnings.append("current EBITDA is non-positive; trough-survival deep model required")
@@ -293,9 +307,61 @@ def evaluate_insurance_p_and_c(raw: Mapping[str, Any]) -> IndustryModelEvaluatio
     equity = _number(metrics.get("equity_b"))
     net_income = _number(metrics.get("net_income_ttm_b"))
     market_cap = _number(metrics.get("market_cap_b"))
+    reported_input_combined = _number(
+        metrics.get("company_reported_combined_ratio_pct")
+    )
+    monthly_combined = _number(metrics.get("monthly_combined_ratio_pct"))
+    quarterly_combined = _number(metrics.get("quarterly_combined_ratio_pct"))
+    trailing_combined = _number(metrics.get("ttm_combined_ratio_pct"))
+    company_reported_combined = _coalesce_number(
+        trailing_combined,
+        _coalesce_number(quarterly_combined, reported_input_combined),
+    )
+    company_ratio_period = (
+        "TTM"
+        if _finite(trailing_combined)
+        else "QUARTERLY"
+        if _finite(quarterly_combined)
+        else "COMPANY_REPORTED_UNSPECIFIED"
+        if _finite(reported_input_combined)
+        else "MISSING"
+    )
+    proxy_reconciled = bool(metrics.get("sec_proxy_reconciled", False))
+    sec_proxy = _safe_div(combined_expense, premiums) * 100.0
+    reconciliation_difference = (
+        sec_proxy - company_reported_combined
+        if _finite(sec_proxy) and _finite(company_reported_combined)
+        else math.nan
+    )
+    if _finite(company_reported_combined):
+        source_status = "COMPANY_REPORTED"
+        combined_for_model = company_reported_combined
+    elif _finite(sec_proxy) and proxy_reconciled:
+        source_status = "SEC_PROXY_RECONCILED"
+        combined_for_model = sec_proxy
+    elif _finite(sec_proxy):
+        source_status = "SEC_PROXY_UNRECONCILED"
+        combined_for_model = sec_proxy
+    else:
+        source_status = "MISSING"
+        combined_for_model = math.nan
+    invested_assets = _number(metrics.get("invested_assets_b"))
+    investment_income = _number(metrics.get("net_investment_income_ttm_b"))
+    investment_yield = _number(metrics.get("investment_yield_pct"))
+    if not _finite(investment_yield):
+        investment_yield = _safe_div(investment_income, invested_assets) * 100.0
     metrics.update(
         {
-            "combined_ratio_proxy_pct": _safe_div(combined_expense, premiums) * 100.0,
+            "company_reported_combined_ratio_pct": company_reported_combined,
+            "monthly_combined_ratio_pct": monthly_combined,
+            "quarterly_combined_ratio_pct": quarterly_combined,
+            "ttm_combined_ratio_pct": trailing_combined,
+            "combined_ratio_period_for_model": company_ratio_period,
+            "sec_combined_ratio_proxy_pct": sec_proxy,
+            "combined_ratio_proxy_pct": sec_proxy,
+            "combined_ratio_for_model_pct": combined_for_model,
+            "combined_ratio_reconciliation_difference_pp": reconciliation_difference,
+            "combined_ratio_source_status": source_status,
             "loss_ratio_pct": _safe_div(claims, premiums) * 100.0,
             "equity_to_assets_pct": _safe_div(equity, assets) * 100.0,
             "roe_pct": _safe_div(
@@ -303,11 +369,17 @@ def evaluate_insurance_p_and_c(raw: Mapping[str, Any]) -> IndustryModelEvaluatio
                 _coalesce_number(metrics.get("average_equity_b"), equity),
             ) * 100.0,
             "price_to_book_x": _safe_div(market_cap, equity),
+            "operating_roe_pct": _safe_div(
+                _coalesce_number(metrics.get("operating_income_ttm_b"), net_income),
+                _coalesce_number(metrics.get("average_equity_b"), equity),
+            ) * 100.0,
+            "investment_yield_pct": investment_yield,
         }
     )
-    combined = _number(metrics["combined_ratio_proxy_pct"])
+    combined = _number(metrics["combined_ratio_for_model_pct"])
     capital_ratio = _number(metrics["equity_to_assets_pct"])
     hard = []
+    warnings = []
     if math.isfinite(premiums) and premiums <= 0:
         hard.append("earned premiums are non-positive")
     if math.isfinite(combined) and combined > 110.0:
@@ -316,15 +388,42 @@ def evaluate_insurance_p_and_c(raw: Mapping[str, Any]) -> IndustryModelEvaluatio
         hard.append("equity / assets is below 8%")
     if math.isfinite(net_income) and net_income <= 0:
         hard.append("TTM net income is non-positive")
+    if source_status == "SEC_PROXY_UNRECONCILED":
+        warnings.append(
+            "SEC combined-ratio proxy is unreconciled to the company-reported definition"
+        )
+    if not _finite(company_reported_combined):
+        warnings.append("company-reported combined ratio requires human KPI review")
+    if _finite(monthly_combined) and not (
+        _finite(quarterly_combined) or _finite(trailing_combined)
+    ):
+        warnings.append(
+            "monthly combined ratio is not used as a normalized underwriting KPI without quarterly or TTM context"
+        )
+    premium_growth = _number(metrics.get("premium_growth_pct"))
+    if _finite(premium_growth) and premium_growth < 5.0:
+        warnings.append(
+            "premium growth below 5% may indicate competition, pricing normalization or slower policy growth"
+        )
+    underwriting_score = _inverse(combined, 110.0, 90.0)
+    if source_status == "SEC_PROXY_UNRECONCILED" and _finite(underwriting_score):
+        underwriting_score = min(75.0, underwriting_score)
+    source_quality_score = {
+        "COMPANY_REPORTED": 100.0,
+        "SEC_PROXY_RECONCILED": 85.0,
+        "SEC_PROXY_UNRECONCILED": 40.0,
+    }.get(source_status, math.nan)
     components = {
-        "underwriting_profitability": (_inverse(combined, 110.0, 90.0), 40.0),
-        "premium_growth": (_bounded(metrics.get("premium_growth_pct"), -5.0, 15.0), 15.0),
+        "underwriting_profitability": (underwriting_score, 30.0),
+        "premium_growth": (_bounded(metrics.get("premium_growth_pct"), -5.0, 15.0), 10.0),
+        "policy_count_growth": (_bounded(metrics.get("policy_count_growth_pct"), -5.0, 10.0), 5.0),
         "reserve_development": (_inverse(metrics.get("reserve_development_to_premium_pct"), 5.0, -2.0), 15.0),
         "capital_strength": (_bounded(capital_ratio, 8.0, 25.0), 15.0),
         "roe": (_bounded(metrics["roe_pct"], 0.0, 18.0), 10.0),
         "valuation": (_inverse(metrics["price_to_book_x"], 3.0, 0.8), 5.0),
+        "combined_ratio_source_quality": (source_quality_score, 10.0),
     }
-    return _finish(
+    evaluation = _finish(
         "INSURANCE_P_AND_C",
         metrics,
         components,
@@ -341,9 +440,115 @@ def evaluate_insurance_p_and_c(raw: Mapping[str, Any]) -> IndustryModelEvaluatio
             "premium_growth_pct",
             "reserve_development_to_premium_pct",
             "market_cap_b",
+            "company_reported_combined_ratio_pct",
+            "accident_year_combined_ratio_pct",
+            "catastrophe_loss_ratio_pct",
+            "policy_count_growth_pct",
+            "invested_assets_b",
+            "investment_yield_pct",
+            "pretax_income_ttm_b",
         ],
         hard_failures=hard,
+        warnings=warnings,
     )
+    stress = calculate_p_and_c_stress(metrics)
+    evaluation.metrics.update(stress)
+    return evaluation
+
+
+def calculate_p_and_c_stress(raw: Mapping[str, Any]) -> Dict[str, Any]:
+    """Auditable P&C stress using reported premiums, invested assets and yield."""
+    premiums = _number(raw.get("premiums_earned_ttm_b"))
+    combined = _coalesce_number(
+        raw.get("combined_ratio_for_model_pct"),
+        raw.get("company_reported_combined_ratio_pct"),
+    )
+    if not _finite(combined):
+        combined = _number(raw.get("sec_combined_ratio_proxy_pct"))
+    premium_growth = _number(raw.get("premium_growth_pct"))
+    investment_income = _number(raw.get("net_investment_income_ttm_b"))
+    invested_assets = _number(raw.get("invested_assets_b"))
+    investment_yield = _number(raw.get("investment_yield_pct"))
+    pretax_income = _number(raw.get("pretax_income_ttm_b"))
+    equity = _number(raw.get("equity_b"))
+    average_equity = _coalesce_number(raw.get("average_equity_b"), equity)
+    assets = _number(raw.get("assets_b"))
+    reserve_development = _number(raw.get("reserve_development_to_premium_pct"))
+    required = {
+        "premiums_earned_ttm_b": premiums,
+        "combined_ratio_pct": combined,
+        "premium_growth_pct": premium_growth,
+        "net_investment_income_ttm_b": investment_income,
+        "invested_assets_b": invested_assets,
+        "investment_yield_pct": investment_yield,
+        "pretax_income_ttm_b": pretax_income,
+        "equity_b": equity,
+        "assets_b": assets,
+    }
+    missing = [name for name, value in required.items() if not _finite(value)]
+    empty = {
+        "p_and_c_stress_cr_mild": math.nan,
+        "p_and_c_stress_cr_moderate": math.nan,
+        "p_and_c_stress_cr_severe": math.nan,
+        "p_and_c_stress_underwriting_income_mild_b": math.nan,
+        "p_and_c_stress_underwriting_income_moderate_b": math.nan,
+        "p_and_c_stress_underwriting_income_severe_b": math.nan,
+        "p_and_c_stress_pretax_income_moderate_b": math.nan,
+        "p_and_c_stress_roe_moderate_pct": math.nan,
+        "p_and_c_stress_equity_to_assets_moderate_pct": math.nan,
+        "p_and_c_stress_survival_moderate": False,
+        "p_and_c_stress_status": "ABSTAIN" if missing else "MISSING",
+        "p_and_c_stress_missing_inputs": missing,
+    }
+    if missing:
+        return empty
+
+    base_underwriting = premiums * (1.0 - combined / 100.0)
+    other_pretax = pretax_income - base_underwriting - investment_income
+    mild_cr = combined + 3.0
+    moderate_cr = combined + 6.0
+    severe_cr = combined + 10.0
+    mild_premiums = premiums
+    moderate_premiums = premiums * (1.0 + min(premium_growth, 0.0) / 100.0)
+    severe_premiums = premiums * 0.95
+    mild_underwriting = mild_premiums * (1.0 - mild_cr / 100.0)
+    moderate_underwriting = moderate_premiums * (1.0 - moderate_cr / 100.0)
+    severe_underwriting = severe_premiums * (1.0 - severe_cr / 100.0)
+    moderate_yield = max(0.0, investment_yield - 0.50)
+    severe_yield = max(0.0, investment_yield - 1.00)
+    moderate_investment_income = invested_assets * moderate_yield / 100.0
+    severe_investment_income = invested_assets * severe_yield / 100.0
+    severe_reserve_shock_pct = max(2.0, reserve_development + 2.0) if _finite(reserve_development) else 2.0
+    moderate_pretax = moderate_underwriting + moderate_investment_income + other_pretax
+    severe_pretax = (
+        severe_underwriting
+        + severe_investment_income
+        + other_pretax
+        - severe_premiums * severe_reserve_shock_pct / 100.0
+    )
+    baseline_to_moderate_loss = max(0.0, pretax_income - moderate_pretax)
+    moderate_equity = equity - baseline_to_moderate_loss
+    moderate_equity_to_assets = _safe_div(moderate_equity, assets) * 100.0
+    moderate_roe = _safe_div(moderate_pretax * (1.0 - 0.21), average_equity) * 100.0
+    survives = bool(moderate_pretax >= 0.0 and moderate_equity_to_assets >= 8.0)
+    return {
+        "p_and_c_stress_cr_mild": mild_cr,
+        "p_and_c_stress_cr_moderate": moderate_cr,
+        "p_and_c_stress_cr_severe": severe_cr,
+        "p_and_c_stress_underwriting_income_mild_b": mild_underwriting,
+        "p_and_c_stress_underwriting_income_moderate_b": moderate_underwriting,
+        "p_and_c_stress_underwriting_income_severe_b": severe_underwriting,
+        "p_and_c_stress_pretax_income_moderate_b": moderate_pretax,
+        "p_and_c_stress_pretax_income_severe_b": severe_pretax,
+        "p_and_c_stress_roe_moderate_pct": moderate_roe,
+        "p_and_c_stress_equity_to_assets_moderate_pct": moderate_equity_to_assets,
+        "p_and_c_stress_survival_moderate": survives,
+        "p_and_c_stress_status": "PASS" if survives else "FAIL",
+        "p_and_c_stress_missing_inputs": [],
+        "p_and_c_stress_investment_yield_moderate_pct": moderate_yield,
+        "p_and_c_stress_investment_yield_severe_pct": severe_yield,
+        "p_and_c_stress_severe_reserve_shock_pct": severe_reserve_shock_pct,
+    }
 
 
 def evaluate_insurance_life(raw: Mapping[str, Any]) -> IndustryModelEvaluation:
@@ -812,6 +1017,117 @@ def evaluate_financial_fee(raw: Mapping[str, Any]) -> IndustryModelEvaluation:
     )
 
 
+def _evaluate_asset_manager(
+    raw: Mapping[str, Any], model_key: str
+) -> IndustryModelEvaluation:
+    metrics = dict(raw)
+    revenue = _number(metrics.get("revenue_ttm_b"))
+    ocf = _number(metrics.get("ocf_ttm_b"))
+    net_income = _number(metrics.get("net_income_ttm_b"))
+    debt = _number(metrics.get("debt_b"))
+    cash = _number(metrics.get("cash_b"))
+    fee_related_earnings = _number(metrics.get("fee_related_earnings_b"))
+    ebitda = _number(metrics.get("ebitda_ttm_b"))
+    metrics.update(
+        {
+            "ocf_to_net_income_x": _safe_div(ocf, net_income),
+            "compensation_to_revenue_pct": _safe_div(
+                metrics.get("compensation_expense_b"), revenue
+            )
+            * 100.0,
+            "net_debt_to_fre_or_ebitda_x": _safe_div(
+                max(debt - cash, 0.0),
+                fee_related_earnings
+                if math.isfinite(fee_related_earnings) and fee_related_earnings > 0
+                else ebitda,
+            ),
+        }
+    )
+    required_by_model = {
+        "ALTERNATIVE_ASSET_MANAGER": [
+            "fee_related_earnings_b",
+            "management_fee_revenue_b",
+            "fee_paying_aum_b",
+            "aum_growth_pct",
+            "permanent_capital_pct",
+            "compensation_expense_b",
+        ],
+        "TRADITIONAL_ASSET_MANAGER": [
+            "management_fee_revenue_b",
+            "aum_b",
+            "aum_growth_pct",
+            "organic_net_flows_pct",
+            "compensation_expense_b",
+        ],
+        "INSURANCE_LINKED_ASSET_MANAGER": [
+            "fee_related_earnings_b",
+            "insurance_assets_pct",
+            "permanent_capital_pct",
+            "fee_paying_aum_b",
+            "compensation_expense_b",
+        ],
+        "OTHER_FEE_FINANCIAL": [
+            "management_fee_revenue_b",
+            "aum_b",
+            "compensation_expense_b",
+        ],
+    }
+    required = [
+        "revenue_ttm_b",
+        "ocf_ttm_b",
+        "net_income_ttm_b",
+        "debt_b",
+        "cash_b",
+        *required_by_model[model_key],
+    ]
+    hard = []
+    if math.isfinite(net_income) and net_income <= 0:
+        hard.append("TTM net income is non-positive")
+    if math.isfinite(ocf) and ocf <= 0:
+        hard.append("TTM operating cash flow is non-positive")
+    components = {
+        "aum_growth": (_bounded(metrics.get("aum_growth_pct"), -5.0, 15.0), 20.0),
+        "organic_net_flows": (_bounded(metrics.get("organic_net_flows_pct"), -5.0, 10.0), 15.0),
+        "permanent_capital": (_bounded(metrics.get("permanent_capital_pct"), 0.0, 75.0), 15.0),
+        "cash_conversion": (_bounded(metrics["ocf_to_net_income_x"], 0.5, 1.3), 20.0),
+        "compensation_discipline": (_inverse(metrics["compensation_to_revenue_pct"], 60.0, 20.0), 15.0),
+        "balance_sheet": (_inverse(metrics["net_debt_to_fre_or_ebitda_x"], 5.0, 0.0), 15.0),
+    }
+    evaluation = _finish(
+        model_key,
+        metrics,
+        components,
+        required=required,
+        optional=[
+            "performance_fees_b",
+            "realized_carry_b",
+            "net_flows_b",
+            "insurance_assets_pct",
+        ],
+        hard_failures=hard,
+        warnings=[
+            "Company-defined AUM/FRE/flow KPIs must be point-in-time and may not be inferred from GAAP revenue"
+        ],
+    )
+    return evaluation
+
+
+def evaluate_alternative_asset_manager(raw: Mapping[str, Any]) -> IndustryModelEvaluation:
+    return _evaluate_asset_manager(raw, "ALTERNATIVE_ASSET_MANAGER")
+
+
+def evaluate_traditional_asset_manager(raw: Mapping[str, Any]) -> IndustryModelEvaluation:
+    return _evaluate_asset_manager(raw, "TRADITIONAL_ASSET_MANAGER")
+
+
+def evaluate_insurance_linked_asset_manager(raw: Mapping[str, Any]) -> IndustryModelEvaluation:
+    return _evaluate_asset_manager(raw, "INSURANCE_LINKED_ASSET_MANAGER")
+
+
+def evaluate_other_fee_financial(raw: Mapping[str, Any]) -> IndustryModelEvaluation:
+    return _evaluate_asset_manager(raw, "OTHER_FEE_FINANCIAL")
+
+
 MODEL_EVALUATORS = {
     "BANK": evaluate_bank,
     "INSURANCE_P_AND_C": evaluate_insurance_p_and_c,
@@ -822,6 +1138,10 @@ MODEL_EVALUATORS = {
     "CYCLICAL_MIDCYCLE": evaluate_cyclical_midcycle,
     "FINANCIAL_LENDER": evaluate_financial_lender,
     "FINANCIAL_FEE": evaluate_financial_fee,
+    "ALTERNATIVE_ASSET_MANAGER": evaluate_alternative_asset_manager,
+    "TRADITIONAL_ASSET_MANAGER": evaluate_traditional_asset_manager,
+    "INSURANCE_LINKED_ASSET_MANAGER": evaluate_insurance_linked_asset_manager,
+    "OTHER_FEE_FINANCIAL": evaluate_other_fee_financial,
 }
 
 
