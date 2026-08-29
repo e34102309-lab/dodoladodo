@@ -314,8 +314,13 @@ class HunterRuntimeTests(unittest.TestCase):
         self.assertEqual(deferred["Status"], "Pass")
         self.assertTrue(deferred["RoutedToSECForMissingYahoo"])
         self.assertIn("defer to SEC", deferred["FirstLayerWarnings"])
+        single_negative = self._evaluate(ebitda=-1)
+        self.assertEqual(single_negative["Status"], "Pass")
+        self.assertTrue(single_negative["RoutedToSECForMissingYahoo"])
         self.assertTrue(
-            self._evaluate(ebitda=-1)["Status"].startswith("Drop: EBITDA 非正值")
+            self._evaluate(ebitda=-1, operatingCashflow=-1)["Status"].startswith(
+                "Drop: Yahoo OCF 與 EBITDA 同時非正值"
+            )
         )
 
     def test_debt_to_ebitda_is_graded_and_net_cash_is_recorded(self):
@@ -338,6 +343,10 @@ class HunterRuntimeTests(unittest.TestCase):
                 "Drop: 淨負債/EBITDA>5.0"
             )
         )
+        gross_only = self._evaluate(totalDebt=5_600_000_000, totalCash=None)
+        self.assertEqual(gross_only["Status"], "Pass")
+        self.assertTrue(gross_only["LeverageWarning"])
+        self.assertIn("defer net leverage to SEC", gross_only["FirstLayerWarnings"])
 
     def test_peer_margin_rule_uses_industry_median_with_sample_guard(self):
         rows = [

@@ -16,20 +16,28 @@ from AQR_ModeC_Agent_V12 import (
     _specialized_ppe_capex_proxy,
     _specialized_total_debt,
     analyze_dsi_signal,
+    analyze_working_capital_quality,
     annual_values_by_year,
+    apply_portfolio_fit_contract,
     apply_long_term_framework,
+    assess_growth_capex_risk,
     assess_inventory_factor_applicability,
     assess_data_confidence,
     build_agent_verification_plan,
     calc_dsi_series,
+    calculate_capital_allocation_score,
     calculate_fcf_stability,
     calculate_financial_stress,
     calculate_interest_coverage_gate,
     calculate_per_share_growth_3y,
     calculate_roic_capital_metrics,
+    calibrate_exit_multiples,
+    classify_acquisition_issuance,
     common_equity_rejection_reason,
     composite_score_for_result,
     dynamic_implied_cagr_limit,
+    downside_multiple_floor,
+    determine_general_corporate_status,
     estimate_maintenance_capex_amount,
     estimate_maintenance_capex_profile,
     maintenance_fcf_research_warnings,
@@ -53,6 +61,51 @@ from mode_c_evidence import GLOBAL_EVIDENCE_LEDGER
 
 
 class ModeCCoreTests(unittest.TestCase):
+    def _general_status(self, **overrides):
+        inputs = {
+            "gm_diagnosis": "中性：三季趨勢未給出明確逆風訊號",
+            "icr": 5.0,
+            "real_fcf_b": 1.0,
+            "growth_capex_hard_fail": False,
+            "ocf_3y_years": 3.0,
+            "ocf_3y_cumulative_b": 3.0,
+            "fcf_years_available": 5.0,
+            "fcf_positive_years": 5.0,
+            "acquisition_accretion_review_required": False,
+            "persistent_dilution": False,
+            "maintenance_capex_confidence": "HIGH",
+        }
+        inputs.update(overrides)
+        return determine_general_corporate_status(**inputs)
+
+    def test_confirmed_hard_failure_is_not_masked_by_low_capex_confidence(self):
+        self.assertTrue(
+            self._general_status(
+                icr=0.8,
+                maintenance_capex_confidence="LOW",
+            ).startswith("Fail: ICR")
+        )
+        self.assertTrue(
+            self._general_status(
+                ocf_3y_cumulative_b=-0.1,
+                maintenance_capex_confidence="LOW",
+            ).startswith("Fail: 近三年累計 OCF")
+        )
+
+    def test_low_capex_confidence_abstains_from_capex_dependent_failure(self):
+        status = self._general_status(
+            real_fcf_b=-0.1,
+            maintenance_capex_confidence="LOW",
+        )
+        self.assertTrue(status.startswith("Abstain: Maintenance CapEx"))
+
+    def test_acquisition_attribution_abstains_from_persistent_dilution(self):
+        status = self._general_status(
+            acquisition_accretion_review_required=True,
+            persistent_dilution=True,
+        )
+        self.assertTrue(status.startswith("Abstain: acquisition-related"))
+
     def test_ttm_flow_without_quarters_or_annual_fact_returns_missing_not_zero(self):
         sec = SECDataDistiller(
             "research@example.com",
@@ -990,6 +1043,31 @@ class ModeCCoreTests(unittest.TestCase):
         self.assertEqual(low_confidence["confidence"], "LOW")
         self.assertEqual(low_confidence["maintenance_capex_b"], 100.0)
 
+    def test_growth_capex_risk_requires_multiple_corroborating_signals_to_fail(self):
+        high_roic_buildout = assess_growth_capex_risk(
+            {"growth_capex_monitor": True, "revenue_decline_years": 0},
+            conservative_real_fcf_b=-1.0,
+            roic_pct=25.0,
+        )
+        self.assertEqual(high_roic_buildout["state"], "WATCH")
+        self.assertFalse(high_roic_buildout["hard_fail"])
+
+        confirmed = assess_growth_capex_risk(
+            {"growth_capex_monitor": True, "revenue_decline_years": 2},
+            conservative_real_fcf_b=-1.0,
+            roic_pct=5.0,
+        )
+        self.assertEqual(confirmed["state"], "HIGH_RISK")
+        self.assertTrue(confirmed["hard_fail"])
+        self.assertEqual(confirmed["corroboration_count"], 3)
+
+        clear = assess_growth_capex_risk(
+            {"growth_capex_monitor": False, "revenue_decline_years": 2},
+            conservative_real_fcf_b=-1.0,
+            roic_pct=5.0,
+        )
+        self.assertEqual(clear["state"], "CLEAR")
+
     def test_dynamic_cagr_limit_tracks_roic_and_margin_trend(self):
         self.assertEqual(dynamic_implied_cagr_limit(28.0, 1.5), 40.8)
         self.assertEqual(dynamic_implied_cagr_limit(22.0, 0.5), 35.2)
@@ -1090,12 +1168,121 @@ class ModeCCoreTests(unittest.TestCase):
         self.assertEqual(immaterial["status"], "NOT_APPLICABLE")
         self.assertEqual(material["status"], "VALID")
 
+    def test_working_capital_quality_detects_ar_and_ap_ocf_support(self):
+        quarter_ends = pd.date_range("2024-03-31", periods=8, freq="QE")
+        balance_ends = pd.to_datetime(
+            ["2023-12-31", "2024-12-31", "2025-12-31"]
+        )
+        result = analyze_working_capital_quality(
+            pd.Series([50.0, 55.0, 80.0], index=balance_ends),
+            pd.Series([30.0, 32.0, 50.0], index=balance_ends),
+            pd.Series([20.0, 25.0, 30.0], index=balance_ends),
+            pd.Series([100.0] * 4 + [105.0] * 4, index=quarter_ends),
+            pd.Series([60.0] * 4 + [62.0] * 4, index=quarter_ends),
+            dsi_latest=50.0,
+        )
+        self.assertEqual(result["status"], "VALID")
+        self.assertEqual(result["state"], "HIGH_RISK")
+        self.assertEqual(result["coverage"], 1.0)
+        self.assertEqual(result["risk_penalty"], 10.0)
+        self.assertGreater(result["ar_vs_revenue_growth_gap_pp"], 15.0)
+        self.assertGreater(result["ap_vs_cogs_growth_gap_pp"], 20.0)
+        self.assertTrue(math.isfinite(result["cash_conversion_cycle_days"]))
+
+    def test_working_capital_missing_inputs_are_not_treated_as_zero(self):
+        quarter_ends = pd.date_range("2024-03-31", periods=8, freq="QE")
+        result = analyze_working_capital_quality(
+            pd.Series(dtype=float),
+            pd.Series(dtype=float),
+            pd.Series(dtype=float),
+            pd.Series([100.0] * 8, index=quarter_ends),
+            pd.Series([60.0] * 8, index=quarter_ends),
+        )
+        self.assertEqual(result["status"], "MISSING")
+        self.assertEqual(result["state"], "MISSING")
+        self.assertEqual(result["coverage"], 0.0)
+        self.assertEqual(result["risk_penalty"], 0.0)
+        self.assertTrue(math.isnan(result["accounts_receivable_growth_pct"]))
+
+    def test_working_capital_growth_gaps_require_material_days_exposure(self):
+        quarter_ends = pd.date_range("2024-03-31", periods=8, freq="QE")
+        balance_ends = pd.to_datetime(
+            ["2023-12-31", "2024-12-31", "2025-12-31"]
+        )
+        result = analyze_working_capital_quality(
+            pd.Series([0.5, 1.0, 2.0], index=balance_ends),
+            pd.Series([0.3, 0.6, 1.5], index=balance_ends),
+            pd.Series(dtype=float),
+            pd.Series([100.0] * 4 + [105.0] * 4, index=quarter_ends),
+            pd.Series([60.0] * 4 + [62.0] * 4, index=quarter_ends),
+        )
+        self.assertGreater(result["ar_vs_revenue_growth_gap_pp"], 15.0)
+        self.assertGreater(result["ap_vs_cogs_growth_gap_pp"], 20.0)
+        self.assertLess(result["dso_days"], 5.0)
+        self.assertLess(result["dpo_days"], 5.0)
+        self.assertEqual(result["state"], "CLEAR")
+        self.assertEqual(result["risk_penalty"], 0.0)
+
+    def test_acquisition_issuance_uses_direct_evidence_and_reconciles_cash_flow(self):
+        direct = classify_acquisition_issuance(2.0, "acq-evidence", 1.0, "issue-evidence")
+        missing_acquisition = classify_acquisition_issuance(0.0, "", 1.0, "issue-evidence")
+        missing_issuance = classify_acquisition_issuance(2.0, "acq-evidence", math.nan, "")
+        explicit_zero = classify_acquisition_issuance(0.0, "acq-evidence", 1.0, "issue-evidence")
+        self.assertEqual(direct["status"], "DIRECT_XBRL_EVIDENCE")
+        self.assertTrue(direct["acquisition_related_issuance"])
+        self.assertEqual(
+            direct["reconciliation_status"],
+            "RECONCILED_TO_TTM_STOCK_ISSUANCE",
+        )
+        self.assertEqual(missing_acquisition["status"], "MISSING")
+        self.assertFalse(missing_acquisition["acquisition_related_issuance"])
+        self.assertTrue(missing_issuance["acquisition_related_issuance"])
+        self.assertEqual(
+            missing_issuance["reconciliation_status"],
+            "DIRECT_ACQUISITION_EVIDENCE_ONLY",
+        )
+        self.assertEqual(explicit_zero["status"], "DIRECT_XBRL_ZERO")
+
     def test_historical_valuation_quantile_changes_with_sample_size(self):
         self.assertTrue(math.isnan(historical_valuation_quantile(4)))
         self.assertEqual(historical_valuation_quantile(5), 25.0)
         self.assertEqual(historical_valuation_quantile(8), 20.0)
         self.assertEqual(historical_valuation_quantile(12), 15.0)
-        self.assertEqual(historical_valuation_quantile(15), 10.0)
+        self.assertEqual(historical_valuation_quantile(15), 15.0)
+
+    def test_exit_multiple_peer_fallback_does_not_mix_unrelated_sectors(self):
+        def candidate(ticker, sector, industry, multiple):
+            row = apply_long_term_framework(
+                self._good_candidate(ticker=ticker, sector=sector)
+            )
+            row.Industry = industry
+            row.EV_B = multiple * 10.0
+            row.EBITDA_B = 10.0
+            row.EV_EBITDA_x = multiple
+            row.Exit_Multiple_Company_History = 8.0
+            row.Exit_Multiple_Final = 8.0
+            return row
+
+        target = candidate("TARGET", "Technology", "Rare Software", 10.0)
+        sector_peers = [
+            candidate(f"TECH{index}", "Technology", f"Tech {index}", multiple)
+            for index, multiple in enumerate([18.0, 19.0, 20.0, 21.0, 22.0])
+        ]
+        unrelated = [
+            candidate(f"MAT{index}", "Materials", "Steel", 4.0)
+            for index in range(6)
+        ]
+        with patch("AQR_ModeC_Agent_V12.get_cached_series", return_value=None):
+            calibrate_exit_multiples([target, *sector_peers, *unrelated])
+
+        self.assertEqual(target.Exit_Multiple_Peer, 20.0)
+        self.assertIn("same-sector", target.Exit_Multiple_Method)
+
+        isolated = candidate("ISOLATED", "Healthcare", "Rare Device", 9.0)
+        with patch("AQR_ModeC_Agent_V12.get_cached_series", return_value=None):
+            calibrate_exit_multiples([isolated, *unrelated])
+        self.assertEqual(isolated.Exit_Multiple_Peer, 8.0)
+        self.assertIn("company-only", isolated.Exit_Multiple_Method)
 
     def test_fcf_history_requires_sbc_evidence_and_consecutive_ocf_years(self):
         ocf = {2021: 4e9, 2023: 3e9, 2025: 1e9}
@@ -1121,6 +1308,39 @@ class ModeCCoreTests(unittest.TestCase):
         now = pd.Timestamp("2026-07-10", tz="UTC")
         observed = pd.Timestamp("2026-06-30", tz="UTC").timestamp()
         self.assertAlmostEqual(short_interest_data_age_days({"dateShortInterest": observed}, now=now), 10.0)
+
+    def test_stress_multiple_floor_never_expands_from_current_valuation(self):
+        self.assertEqual(downside_multiple_floor(3.0, math.nan), 3.0)
+        self.assertEqual(downside_multiple_floor(8.0, 12.0), 8.0)
+        self.assertEqual(downside_multiple_floor(10.0, 5.0), 5.0)
+
+    def test_capital_allocation_compares_issuance_with_gross_buybacks(self):
+        score = calculate_capital_allocation_score(
+            gross_buyback_b=10.0,
+            issuance_b=6.0,
+            share_change_1y_pct=1.0,
+            share_change_3y_pct=0.0,
+            market_cap_b=100.0,
+        )
+        self.assertEqual(score, 25.0)
+
+    def test_capital_allocation_missing_evidence_is_not_neutral_score(self):
+        missing_flow = calculate_capital_allocation_score(
+            gross_buyback_b=math.nan,
+            issuance_b=0.0,
+            share_change_1y_pct=-1.0,
+            share_change_3y_pct=-3.0,
+            market_cap_b=100.0,
+        )
+        missing_share_history = calculate_capital_allocation_score(
+            gross_buyback_b=1.0,
+            issuance_b=0.0,
+            share_change_1y_pct=math.nan,
+            share_change_3y_pct=math.nan,
+            market_cap_b=100.0,
+        )
+        self.assertTrue(math.isnan(missing_flow))
+        self.assertTrue(math.isnan(missing_share_history))
 
     def _good_candidate(self, ticker="GOOD", sector="Technology"):
         return ModeCResult(
@@ -1168,6 +1388,96 @@ class ModeCCoreTests(unittest.TestCase):
         self.assertTrue(good.Long_Term_Eligible)
         self.assertFalse(weak.Long_Term_Eligible)
         self.assertEqual(good.Suggested_Starter_Weight_pct_Total, STARTER_WEIGHT_PCT_TOTAL)
+
+    def test_fcf_yield_affects_value_but_is_not_double_counted_as_quality(self):
+        high_yield = apply_long_term_framework(self._good_candidate(ticker="HIGHYIELD"))
+        low_yield_candidate = self._good_candidate(ticker="LOWYIELD")
+        low_yield_candidate.Real_FCF_Yield_pct = 1.0
+        low_yield = apply_long_term_framework(low_yield_candidate)
+
+        self.assertEqual(high_yield.Quality_Score, low_yield.Quality_Score)
+        self.assertGreater(high_yield.Value_Score, low_yield.Value_Score)
+
+    def test_short_squeeze_flag_is_score_neutral_without_point_in_time_data(self):
+        plain = apply_long_term_framework(self._good_candidate(ticker="PLAIN"))
+        squeeze_candidate = self._good_candidate(ticker="SQUEEZE")
+        squeeze_candidate.Squeeze_Risk = True
+        squeeze = apply_long_term_framework(squeeze_candidate)
+
+        self.assertEqual(plain.Risk_Penalty, squeeze.Risk_Penalty)
+        self.assertEqual(plain.Long_Term_Score, squeeze.Long_Term_Score)
+
+    def test_working_capital_risk_is_penalized_once(self):
+        clear = apply_long_term_framework(self._good_candidate(ticker="WCCLEAR"))
+        watch_candidate = self._good_candidate(ticker="WCWATCH")
+        watch_candidate.Working_Capital_Quality_Status = "VALID"
+        watch_candidate.Working_Capital_Quality_State = "WATCH"
+        watch = apply_long_term_framework(watch_candidate)
+        high_candidate = self._good_candidate(ticker="WCHIGH")
+        high_candidate.Working_Capital_Quality_Status = "VALID"
+        high_candidate.Working_Capital_Quality_State = "HIGH_RISK"
+        high = apply_long_term_framework(high_candidate)
+        self.assertEqual(watch.Risk_Penalty, clear.Risk_Penalty + 5.0)
+        self.assertEqual(high.Risk_Penalty, clear.Risk_Penalty + 10.0)
+        self.assertEqual(watch.Working_Capital_Risk_Penalty, 5.0)
+        self.assertEqual(high.Working_Capital_Risk_Penalty, 10.0)
+
+    def test_portfolio_fit_contract_is_required_before_starter_candidate(self):
+        decision_timestamp = pd.Timestamp("2026-07-10", tz="UTC")
+        cleared = apply_long_term_framework(self._good_candidate(ticker="PORTPASS"))
+        cleared.Model_Eligible = True
+        exposure = {
+            "AsOf": "2026-07-01",
+            "Current_Position_Weight_pct_Total": 0.5,
+            "ETF_Lookthrough_Weight_pct_Total": 0.8,
+            "Active_Sleeve_Weight_pct_Total": 20.0,
+            "Active_Sector_Weight_pct_Total": 4.0,
+            "Economic_Risk_Bucket": "AI compute",
+            "Economic_Risk_Bucket_Weight_pct_Total": 5.0,
+            "ETF_Top10_Overlap": False,
+            "Correlation_Stress_Status": "PASS",
+        }
+        apply_portfolio_fit_contract(
+            [cleared], {"PORTPASS": exposure}, decision_timestamp
+        )
+
+        pending = apply_long_term_framework(self._good_candidate(ticker="PORTWAIT"))
+        pending.Model_Eligible = True
+        apply_portfolio_fit_contract([pending], {}, decision_timestamp)
+
+        invalid = apply_long_term_framework(self._good_candidate(ticker="PORTBAD"))
+        invalid.Model_Eligible = True
+        apply_portfolio_fit_contract(
+            [invalid],
+            {},
+            decision_timestamp,
+            input_error="portfolio-fit input missing columns: AsOf",
+        )
+
+        self.assertEqual(cleared.Portfolio_Fit_Status, "PASS")
+        self.assertFalse(cleared.Portfolio_Fit_Pending)
+        self.assertTrue(cleared.Starter_Candidate)
+        self.assertEqual(pending.Portfolio_Fit_Status, "PENDING_INPUT")
+        self.assertTrue(pending.Portfolio_Fit_Pending)
+        self.assertFalse(pending.Starter_Candidate)
+        self.assertEqual(invalid.Portfolio_Fit_Status, "INVALID")
+        self.assertTrue(invalid.Portfolio_Fit_Pending)
+        self.assertFalse(invalid.Starter_Candidate)
+
+    def test_margin_risk_is_not_triple_counted(self):
+        neutral = apply_long_term_framework(self._good_candidate(ticker="NEUTRAL"))
+
+        structural_candidate = self._good_candidate(ticker="STRUCTURAL")
+        structural_candidate.GM_Diagnosis = "結構性價值陷阱：營收未崩但毛利連續失血"
+        structural = apply_long_term_framework(structural_candidate)
+        self.assertEqual(structural.Risk_Penalty, neutral.Risk_Penalty + 15.0)
+        self.assertTrue(structural.Long_Term_Eligible)
+
+        double_candidate = self._good_candidate(ticker="DOUBLE")
+        double_candidate.GM_Diagnosis = "雙重惡化：營收與毛利同步失血"
+        double = apply_long_term_framework(double_candidate)
+        self.assertEqual(double.Risk_Penalty, neutral.Risk_Penalty)
+        self.assertFalse(double.Long_Term_Eligible)
 
     def test_three_or_four_year_fcf_history_requires_sixty_percent_positive(self):
         candidate = self._good_candidate(ticker="MIXEDFCF")

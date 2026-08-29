@@ -1,6 +1,6 @@
 # 股票篩選策略完整邏輯（供外部 AI 審查）
 
-> 版本基準：本機 `codex/metric-integrity-audit-v2`，以 commit `3d82252` 為修正前基準；本文件已同步 2026-07 的決策語義與跨模型排序修正。
+> 版本基準：本機 `codex/metric-integrity-audit-v2`，以 commit `3d82252` 為修正前基準；本文件已同步至 2026-08-29 的公式、專用壓力與研究佇列修正。
 > 本文件描述「程式目前真的會做什麼」，不是理想藍圖，也不是投資建議。
 > 金額若無特別註明，以十億美元（USD B）處理；百分比欄位以程式輸出的百分點表示。
 
@@ -41,7 +41,7 @@ flowchart TD
     K --> L
     L --> M[Eligible 硬門檻]
     M --> N[同模型百分位與小樣本收縮]
-    N --> P[Global Research Queue 最多 12 檔]
+    N --> P[Coverage-first 模型 round-robin Queue 最多 12 檔]
     P --> O[CSV Evidence Ledger Dashboard Validator]
 ```
 
@@ -121,15 +121,15 @@ ADS/ADR 模糊時會用 SEC 年報 cover page 的 `Security12bTitle` 與 `Tradin
 
 ### 4.3 一般企業初篩
 
-- 最近一年 OCF `<= 0`：淘汰；缺值則後送 SEC。
+- Yahoo OCF 與 EBITDA **同時** `<= 0`：淘汰。
+- OCF 或 EBITDA 只有單一項非正、或任一項缺值：警示並後送 SEC，以免第三方暫時值誤殺。
 - 毛利率 `<= 0%`：淘汰；缺值則後送 SEC。
 - 毛利率 `< 25%`：執行同業檢查，但不直接淘汰。
 - 同業樣本至少 5 家才計中位數；樣本不足或低於中位數只警示。
-- EBITDA `<= 0`：淘汰；缺值則後送 SEC。
-- Revenue `<= 0`：淘汰；缺值則後送 SEC。
+- Revenue `<= 0` 或缺值：視為 Yahoo 資料異常，後送 SEC，不直接淘汰。
 - 有可靠 cash 時：`Net Debt / EBITDA`。
-- cash 缺失時：保守用 `Gross Debt / EBITDA`。
-- 槓桿 `> 5x`：淘汰。
+- 有可靠 cash 且 `Net Debt / EBITDA > 5x`：淘汰。
+- cash 缺失時只顯示 `Gross Debt / EBITDA`；即使超過 5x 也先警示並交 SEC 確認淨槓桿。
 - 槓桿 `> 4x` 且 `<= 5x`：警示，但可後送。
 
 目前預設關閉：
@@ -235,7 +235,10 @@ ADS/ADR 模糊時會用 SEC 年報 cover page 的 `Security12bTitle` 與 `Tradin
 
 ### 7.4 CapEx 風險旗標
 
-- Revenue growth `<= 0` 且 `CapEx / D&A >= 1.5`：`growth capex trap`，直接 `FAIL`。
+- Revenue growth `<= 0` 且 `CapEx / D&A >= 1.5` 只建立基礎監控訊號，不再單獨 `FAIL`。
+- 再檢查三個獨立佐證：最近至少兩個連續年度營收下降、ROIC `< 8%`、扣除全部 CapEx 與 SBC 後 FCF `<= 0`。
+- 無佐證為 `MONITOR`；一項佐證為 `WATCH` 並只扣一次 8 分；至少兩項為 `HIGH_RISK`，才直接 `FAIL`。
+- 因此高 ROIC 建設期公司即使全額 CapEx 後 FCF 暫時非正，也不會只靠該單一結果被淘汰。
 - Revenue 下滑且 `CapEx < 60% * D&A`：標記 underinvestment high-yield 警示。
 - Maintenance Real FCF `<= 0`：直接 `FAIL`。
 
@@ -295,7 +298,8 @@ Survival 必須同時滿足：
 - 用當時 debt、cash、EBITDA 重建 Market Cap 與 EV/EBITDA。
 - 至少 5 個正值 EV/EBITDA 年，且可用年度覆蓋率 `>= 60%` 才有效。
 - 主要 value 因子使用目前 EV/EBITDA 在自身歷史中的 percentile。
-- 下檔估值依有效樣本數使用 P25（5–6 年）、P20（7–9 年）、P15（10–14 年）或 P10（15 年以上）；不足時採保守 fallback floor。
+- 價格下載與歷史估值視窗固定為最多 10 年；下檔估值依有效樣本數使用 P25（5–6 年）、P20（7–9 年）或 P15（10 年）。不足時採保守 fallback floor，不宣稱不存在的 15 年樣本。
+- 壓力情境的 EV/EBITDA 與 P/E floor 均不得高於當前倍數；歷史低分位若高於現值，只能維持現值，不能在「壓力」中假設估值擴張。
 - 30% 財務壓力下的估值回撤必須大於 `-75%` 才可 eligible。
 
 ### 9.2 反推三年 EBITDA CAGR
@@ -303,7 +307,7 @@ Survival 必須同時滿足：
 - 必要報酬率：10%。
 - `Future EV Required = Current EV * (1.10)^3`
 - `Required EBITDA in Year 3 = Future EV Required / Target Exit Multiple`
-- Target multiple 使用 40% 公司歷史中位數、40% 同業／同模型中位數、20% 利率調整值；缺同業或利率資料時使用明確的保守 fallback，不補 0。
+- Target multiple 使用 40% 公司歷史中位數、40% peer 中位數、20% 利率調整值。Peer pool 只收當期 `PASS` 公司：先用至少 3 家同 industry，再用至少 5 家同 sector；兩者都不足時退回公司自身歷史，不再拿整個 GENERAL_CORPORATE 跨產業混配。
 - 再由目前 EBITDA 反推三年 CAGR。
 
 ### 9.3 動態 CAGR 容忍上限
@@ -329,7 +333,7 @@ Survival 必須同時滿足：
 ### 10.1 近三季營收與毛利
 
 - Revenue `< -2%` 且毛利變化絕對值 `<= 1.5pp`：暫時落難好公司，trend score 85。
-- Revenue `>= -2%` 且營收連續下降，或毛利變化 `<= -2pp`：結構性風險，trend score 0。
+- Revenue `>= -2%` 且毛利連續下降，或毛利變化 `<= -2pp`：結構性風險，trend score 0 並扣 15 分，但不再僅憑三季訊號作永久 hard gate。
 - Revenue `< -2%` 且毛利變化 `< -2pp`：雙重惡化，直接 `FAIL`。
 - 其他：中性，trend score 70。
 - 季度資料不足：`ABSTAIN`，不得把不可判斷誤寫成基本面失敗。
@@ -347,13 +351,25 @@ Average Inventory 使用當期與約一年前（300 至 450 天）的存貨平�
 - BANK、INSURANCE、REIT、貸款／費用型金融、資產管理、software、platform 與低庫存實質性企業，DSI 退出分母。
 - 輸出 `Applicable_Factor_Weight`、`Available_Factor_Weight`、`Factor_Coverage` 與 `Weight_Renormalized`。
 
-### 10.3 Short squeeze
+### 10.3 營運資金與 OCF 品質
+
+- `DSO = Average Accounts Receivable / Trailing 4Q Revenue * 365`
+- `DPO = Average Accounts Payable / Trailing 4Q COGS * 365`
+- `CCC = DSO + DSI - DPO`；任一組件缺失時 CCC 維持缺失，不以 0 補值。
+- 資產負債表平均值使用當期與距離 300 至 450 天的前期餘額；流量分母只用實際 trailing 4Q，不用單季乘四。
+- AR 年增率高於 TTM Revenue 增長至少 `15pp`，且 DSO 至少 5 天：應收帳款回收品質警示。
+- AP 年增率高於 TTM COGS 增長至少 `20pp`，且 DPO 至少 5 天：OCF 可能受延後付款支撐。低於 5 天視為小基期、經濟影響不具實質性，只保留診斷而不扣分。
+- 一項警示為 `WATCH` 並扣 5 分；兩項同時成立為 `HIGH_RISK` 並扣 10 分。這是同一個 working-capital risk penalty，不在其他分數重複扣除。
+- Deferred revenue 年增率、DSO/DPO 年變化與 CCC 會輸出供研究，但不直接套單一好壞方向，避免錯罰訂閱、平台與預收型商業模式。
+- AR／AP 可比性 coverage 為 0%、50% 或 100%；完全無可比證據時為 `MISSING`，不作風險扣分也不假裝 `CLEAR`。
+
+### 10.4 Short squeeze
 
 - Short Interest `> 15%`。
 - Days to Cover `> 5`。
 - 資料距決策日 `<= 45` 天。
 
-同時成立只標記 `Squeeze_Risk` 並扣 8 分，不當作正向 Alpha，也不放寬基本面門檻。
+同時成立只標記 `Squeeze_Risk`，目前對分數中性：不當作正向 Alpha、不作風險扣分，也不放寬基本面門檻。原因是 Yahoo 空單資料不是完整 point-in-time 權威來源。
 
 ## 11. SBC、回購與稀釋
 
@@ -362,17 +378,19 @@ Average Inventory 使用當期與約一年前（300 至 450 天）的存貨平�
 - `Net Buyback Yield = Real Buyback / Market Cap`
 - 回購很多但一年股數沒有下降：在 Capital Allocation 評估回購是否真正抵銷 SBC。
 - 非持續性股數增加只有在沒有實質回購、且尚未在資本配置層懲罰時，才使用一次 Ownership Dilution Penalty。
-- 拆股調整後三年股數增加 `> 3%`：`Persistent Dilution Hard Gate`，直接 `FAIL`；不再於 Risk Penalty 與 Capital Allocation 重複扣同一原因。
+- 拆股調整後三年股數增加 `> 3%`：`Persistent Dilution Hard Gate`。沒有直接併購發股證據時 `FAIL`；只要有直接 XBRL 併購股票對價，即先 `ABSTAIN` 等待增益性覆核，不自動原諒也不先判死刑。
 - 拆股調整後仍出現 `> 50%` 股數跳變：視為 IPO、重組或口徑不連續，不直接當稀釋，但資料信心扣 40。
+- 併購歸因只接受直接 XBRL 股票對價；證據超過 450 天即丟棄。缺少股票對價 evidence 是 `MISSING`，不能推論發行與併購無關；有直接 0 證據則標記 `DIRECT_XBRL_ZERO`。股票發行現金流只作 reconciliation：正值為 `RECONCILED_TO_TTM_STOCK_ISSUANCE`，缺失或非正為 `DIRECT_ACQUISITION_EVIDENCE_ONLY`；後者可能是非現金換股，不得因此把併購歸因取消。
 
 Capital Allocation Score 從 60 分開始：
 
+- TTM 毛回購、TTM 發行金額，或一年／三年至少一組股數變化證據不足時，分數為 `N/A`；不以 60 分冒充中性，該 5% 因子留在適用分母但退出可用分子，使 `Factor_Coverage` 下降。
 - 三年股數下降至少 3%：`+15`。
-- 三年股數增加超過 3%：`-35`。
 - Real Buyback `> 0` 且一年股數下降：`+15`。
 - 上述情況且 Net Buyback Yield `>= 1%`：再 `+10`。
 - Real Buyback `> 0` 但股數未下降：`-35`。
-- 發行額大於回購且一年股數增加：`-10`。
+- 發行額大於**毛回購額**且一年股數增加：`-10`；不得拿已扣發行的 Real Buyback 再比較一次。
+- 三年股數增加超過 3% 由 Persistent Dilution hard gate 直接排除，不再於資本配置分數重複扣分。
 - 最後限制在 0 至 100。
 
 ## 12. 一般企業分數
@@ -386,7 +404,7 @@ Capital Allocation Score 從 60 分開始：
 ### 12.2 Quality Score
 
 - ICR 25%：1x 至 10x 線性；淨現金／non-binding 為 100。
-- FCF quality 20%：yield `>= 5%` 為 100；`>= 2%` 為 70；`> 0` 為 35；否則 0。
+- FCF quality 20%：五年 `Real FCF / Net Income` 由 0.2x 至 1.0x 線性映射；缺失為 35。當期 FCF yield 只留在 Value Score 與 eligible 門檻，不在 Quality 重複計分。
 - Revenue／GM trend 20%。
 - ROIC 20%：5% 至 20% 線性；缺失 35，但資料信心會另外重罰。
 - 五年穩定性 15%。
@@ -420,10 +438,11 @@ Capital Allocation Score 從 60 分開始：
 - Ownership dilution：符合去重條件時一次性 `-5`。
 - Persistent dilution：由 hard gate 排除，不再偽裝為另一個獨立 Risk Penalty。
 - 三年累計 OCF `<= 0`：`-15`。
-- Structural trap：`-25`。
-- Revenue + GM double deterioration：`-35`。
-- Squeeze risk：`-8`。
+- Structural trap：`-15`；已在 Quality trend 反映，因此不再另設 hard gate。
+- Revenue + GM double deterioration：由 pipeline hard gate 排除，不再用同一訊號追加獨立 Risk Penalty。
+- Squeeze risk：分數中性，只保留事件／波動旗標。
 - DSI deterioration：`-8`。
+- Working-capital quality `WATCH`：`-5`；`HIGH_RISK`：`-10`，只扣一次。
 - Stressed ICR `<1x`：`-25`；`<1.5x`：`-15`；`<2x`：`-8`。
 - Net Debt／Stressed EBITDA `>5x`：`-15`；`>4x`：`-8`。
 
@@ -433,10 +452,10 @@ Capital Allocation Score 從 60 分開始：
 
 - ICR `< 1x`。
 - Maintenance Real FCF `<= 0`。
-- Growth CapEx trap。
+- Growth CapEx `HIGH_RISK`，且至少兩項獨立佐證成立。
 - 三年累計 OCF `<= 0`。
 - 至少三年歷史時，正 FCF 年度比例 `< 60%`。
-- 三年股數增加 `> 3%`。
+- 三年股數增加 `> 3%`，且沒有直接併購發股證據需要先做增益性覆核。
 - Revenue 與 GM 雙重惡化。
 - 其他共通市場、證券或核心風險 hard failure。
 
@@ -449,6 +468,8 @@ Capital Allocation Score 從 60 分開始：
 - 有淨負債但無法取得 interest evidence。
 - EV 非正或無法建立可比估值。
 - 幣別／IFRS taxonomy 無可靠換算鏈。
+- Persistent dilution 同時有直接 acquisition-related issuance 證據，但尚未完成每股增益、商譽與整合代價覆核。
+- `ABSTAIN` 不得覆蓋已由獨立證據確認的硬失敗：例如 ICR < 1、三年累計 OCF 非正、未獲併購歸因的持續稀釋或營收／毛利雙重惡化仍維持 `FAIL`。Maintenance CapEx 信心低只會阻擋依賴該估計的 FCF／Growth CapEx 判斷。
 
 ### 13.3 Eligible 必須全部通過
 
@@ -462,7 +483,7 @@ Capital Allocation Score 從 60 分開始：
 - Implied EBITDA CAGR 有效且 expectations score `>= 15`。
 - 30% 壓力估值回撤 `> -75%`。
 - 30% stress survival = true。
-- 無 structural trap、double deterioration 或季度毛利資料不足。
+- 無 double deterioration 或季度毛利資料不足；structural margin risk 改以 Quality 與一次性風險扣分處理。
 - FCF 與 OCF 歷史硬門檻通過。
 
 ## 14. 特殊產業共通評分機制
@@ -476,7 +497,7 @@ Capital Allocation Score 從 60 分開始：
 - Score coverage `< 65%`：`ABSTAIN`。
 - 其餘 score `>= 60` 為 `PASS`，否則 `FAIL`。
 - Specialized data confidence `< 70` 或模型本身 `ABSTAIN`：最終 `ABSTAIN`。
-- Specialized eligible：`PASS`、score `>= 60`、confidence `>= 70`。
+- Specialized eligible：基礎模型 `PASS`、score `>= 60`、confidence `>= 70`，且該產業 `Specialized_Stress_Status = PASS`。
 
 特殊產業資料信心從 100 開始，主要扣分：
 
@@ -524,7 +545,7 @@ Hard failures：
 
 映射端點：combined ratio 110% 至 90% 反向、premium growth -5% 至 15%、reserve development 5% 至 -2% 反向、capital 8% 至 25%、ROE 0% 至 18%、P/B 3.0x 至 0.8x 反向。
 
-專用壓力測試：Mild combined ratio `+3pp`；Moderate `+6pp`、premium growth 降至 `min(current,0%)`、investment yield `-50bps`；Severe `+10pp`、premium growth `-5%`、yield `-100bps` 並增加不利 reserve development。Moderate 必須維持稅前獲利非負且 equity/assets `>=8%`；缺 invested assets、yield 或其他核心輸入時為 `ABSTAIN`，不可補 0。
+專用壓力測試：Mild combined ratio `+3pp`；Moderate `+6pp`、premium growth 降至 `min(current,0%)`、investment yield `-50bps`；Severe `+10pp`、premium growth 再比 Moderate 低 5pp、yield `-100bps` 並增加不利 reserve development。壓力造成的淨值減損以 21% 稅率換算稅後增量損失，且資產與權益同步減少後再計 equity/assets。Moderate 必須維持稅前獲利非負且 equity/assets `>=8%`；缺 invested assets、yield 或其他核心輸入時為 `ABSTAIN`，不可補 0。
 
 ### 15.3 INSURANCE_LIFE
 
@@ -565,15 +586,15 @@ Hard failures：
 
 ### 15.5 REIT_MORTGAGE
 
-核心指標：assets/equity、equity/assets、ROE、P/B、dividend／recurring earnings proxy、NII growth。
+核心指標：assets/equity、equity/assets、recurring ROE、P/B、dividend／recurring earnings、NII growth；GAAP ROE 只作診斷。
 
 Hard failures：
 
 - Assets/equity `> 15x`。
 - Equity/assets `< 5%`。
-- Net income `<= 0`。
+- Recurring earnings `<= 0`。GAAP net income 非正只警示，不得因未實現評價損益取代經常性獲利閘門。
 
-權重：capital 25%、leverage 20%、ROE 20%、dividend coverage 15%、P/B 10%、NII growth 10%。GAAP payout 只作警示，不能替代公司 recurring earnings。
+權重：capital 25%、leverage 20%、recurring ROE 20%、dividend coverage 15%、P/B 10%、NII growth 10%。GAAP payout 只作警示，不能替代公司 recurring earnings。
 
 映射端點：equity/assets 5% 至 15%、assets/equity 15x 至 5x 反向、ROE 0% 至 15%、dividend/recurring earnings 120% 至 70% 反向、P/B 1.5x 至 0.7x 反向、NII growth -10% 至 10%。
 
@@ -628,17 +649,17 @@ Hard failures：
 
 ### 15.9 FINANCIAL_FEE
 
-核心指標：EBIT/revenue、ROTCE、OCF/net income、net debt/EBITDA、revenue growth、OCF yield、tangible capital。
+核心指標：EBIT/revenue、net income/revenue、OCF/net income、net debt/EBITDA、revenue growth、OCF yield。有形淨值保留診斷，但不作此資產輕型模型的必要條件或分數。
 
 Hard failures：
 
-- Tangible equity `<= 0`。
 - Net income `<= 0`。
 - OCF `<= 0`。
+- 淨負債 `> 0` 且 EBITDA `<= 0`；負的 Debt/EBITDA 不得經反向映射變成高分。淨現金時槓桿視為 non-binding，EBITDA 不作此子分數的必要證據。
 
-權重：operating margin 25%、ROTCE 20%、cash conversion 20%、revenue growth 15%、balance sheet 10%、OCF yield 10%。
+權重：operating margin 25%、net margin 20%、cash conversion 20%、revenue growth 15%、balance sheet 10%、OCF yield 10%。
 
-映射端點：operating margin 5% 至 35%、ROTCE 0% 至 25%、OCF/net income 0.5x 至 1.3x、revenue growth -5% 至 15%、net debt/EBITDA 5x 至 0x 反向、OCF yield 2% 至 10%。
+映射端點：operating margin 5% 至 35%、net margin 5% 至 25%、OCF/net income 0.5x 至 1.3x、revenue growth -5% 至 15%、net debt/EBITDA 5x 至 0x 反向、OCF yield 2% 至 10%。
 
 ### 15.10–15.13 資產管理分流
 
@@ -648,6 +669,25 @@ Hard failures：
 - `OTHER_FEE_FINANCIAL`：無法歸入上述三型的費用型金融；使用較保守 required KPI。
 
 公司自訂 KPI 若無 point-in-time 來源，一律維持 `MISSING`；專用模型可 `ABSTAIN` 或降低 coverage，不得拿傳統資產管理 margin 結構替另類資產管理公司補值。
+
+資產管理公司的 balance-sheet 分數只允許 `Net Debt / 正值 FRE 或 EBITDA`；淨現金為 0x。若有淨負債但償債盈餘缺失則 `ABSTAIN`，已知相關 FRE／EBITDA 均非正則 `FAIL`，不可讓負分母產生 100 分。
+
+### 15.14 統一的特殊產業壓力契約
+
+所有十三種特殊模型都輸出 `specialized_stress_status/scenario/survival/missing_inputs/reason`。缺少壓力核心資料時為 `ABSTAIN` 並標記 `Specialized_Stress_Pending`；存活條件失敗為 `FAIL` 並獨立標記 `Specialized_Stress_Failed`，不得把已確認失敗誤寫成待補資料；兩者都不能通過 specialized eligible。
+
+- BANK：累計貸款損失 3%，先由既有 allowance 吸收，增量損失稅後減少資本；Tier 1 仍須高於公司揭露最低值，tangible equity/assets `>=3%`。
+- INSURANCE_P_AND_C：沿用 Combined Ratio `+6pp`、保費成長封頂 0%、投資收益率 `-50bps` 的 Moderate 情境。
+- INSURANCE_LIFE：保費 `-5%`、投資收益 `-10%`、保戶給付 `+10%`；壓力淨利非負且 equity/assets `>=3%`。
+- REIT_EQUITY：EBITDAre `-20%`、利息 `+25%`；AFFO 正值、ICR `>=1.25x`、net debt/EBITDAre `<=10x`。
+- REIT_MORTGAGE：資產價值 `-5%`、recurring earnings `-30%`；經常性獲利正值且 equity/assets `>=5%`。
+- REGULATED_UTILITY：EBIT 與 OCF `-15%`、利息 `+20%`、CapEx 不變；ICR `>=1.25x` 且 OCF/CapEx `>=0.5x`。
+- CYCLICAL_MIDCYCLE：使用 point-in-time 年度 EBITDA 的 P20 trough；trough EBITDA 正值、ICR `>=1.25x` 或淨現金、net debt/trough EBITDA `<=5x`。
+- FINANCIAL_LENDER：累計貸款損失 5%，扣除 allowance 後的增量損失稅後減少資本；tangible equity/assets `>=5%`。
+- FINANCIAL_FEE：EBITDA `-30%`、OCF `-30%`；壓力現金流與償債盈餘正值，net debt/earnings `<=5x`。
+- 四種 asset manager：正值 FRE／EBITDA `-35%`、OCF `-30%`；同樣要求壓力槓桿 `<=5x`。
+
+這些是可稽核的財報情境，不等於 Fed、NAIC 或公司正式監管壓力測試；非標準監管資料仍須人工補查。
 
 ## 16. 特殊產業目前仍需人工補查
 
@@ -660,7 +700,7 @@ Hard failures：
 - Utility：allowed ROE、正式 rate base、regulatory lag。
 - Asset management：FRE、AUM／fee-paying AUM、flows、carry、permanent capital、insurance assets 與公司定義估值橋接。
 
-P&C 已完成 Mild／Moderate／Severe 專用壓力測試；其他特殊產業的專用壓力擴充尚未完整程式化，會標為 pending／未實作且不得成為 Starter Candidate。
+上述特殊產業已有統一可執行壓力閘門；但 CET1、RBC、reserve triangle、same-store NOI、repo haircut、duration gap、allowed ROE 等非標準 KPI 仍不會由 GAAP Company Facts 猜值，缺失時維持人工補查或 `ABSTAIN`。
 
 ## 17. 指標狀態契約
 
@@ -713,14 +753,16 @@ P&C 已完成 Mild／Moderate／Severe 專用壓力測試；其他特殊產業�
 - 一般企業 Raw Score 使用 `Long_Term_Score`，特殊產業使用 `Industry_Model_Score`；Raw Score 只供模型內審計。
 - `Within_Model_Percentile` 只在相同最終 `Industry_Model_Key` 內計算。
 - 小樣本收縮公式：`50 + n/(n+20) * (percentile-50)`。
-- 全球研究順序使用 `Shrunk_Within_Model_Percentile`，再以資料信心與 ticker 決勝；不得用跨模型 Raw Score 排名。
+- `Shrunk_Within_Model_Percentile` 保留作模型內強弱與樣本量診斷，不再直接拿來跨模型排序。
+- Global Research Queue 採 coverage-first model round-robin：先在每個模型內依 percentile、資料信心、ticker 排序；每輪每個模型最多取一檔，輪內以資料信心、模型內 percentile、model key、ticker 決勝，再進下一輪。
+- Round-robin 是研究額度分配，不是 sector 持倉上限，也不代表較早輪次具有已校準的較高預期報酬。
 - `Cross_Model_Calibration_Status = UNCALIBRATED`，模型內百分位不代表跨模型預期報酬已校準。
 - 最多 12 檔。
 - 程式中的 sector 檔數硬上限已停用（`MAX_PER_SECTOR = 0`）。
 - 分數 60 至 69：watch／research candidate。
 - 70 至 74：priority research，不建議直接建倉。
-- 75 至 79、80 以上仍保留原模型門檻，但必須另外通過人工 KPI、專用壓力、跨模型校準與組合適配，才能成為 `STARTER_CANDIDATE`。
-- 目前 `PORTFOLIO_FIT_PENDING=True` 且跨模型仍未校準，因此研究佇列不會自動升級為可建倉狀態。
+- 75 至 79、80 以上仍保留原模型門檻。一般企業必須再通過組合適配；特殊產業還必須通過人工 KPI、專用壓力與跨模型校準，才能成為 `STARTER_CANDIDATE`。
+- 未提供組合檔時，合格候選維持 `Portfolio_Fit_Status=PENDING_INPUT`，不會自動升級為可建倉狀態。特殊產業目前仍因 `Cross_Model_Calibration_Status=UNCALIBRATED` 維持 `PENDING_CALIBRATION`。
 
 投資政策而非目前完整自動最佳化：
 
@@ -730,7 +772,11 @@ P&C 已完成 Mild／Moderate／Severe 專用壓力測試；其他特殊產業�
 - 單一主動產業最多 9%。
 - QQQ／VOO 前十大若要額外主動加碼，政策要求至少 80 分。
 
-目前程式沒有完整自動讀取 ETF 最新持股與現有投資組合，所以 ETF top-10 重疊、實際單股 3%、sector 9% 仍是人工下單前檢查，不應宣稱已由研究佇列自動執行。
+程式可透過 `MODE_C_PORTFOLIO_FIT_FILE` 讀取 point-in-time 組合輸入，逐檔檢查資料新鮮度、post-trade 單股穿透曝險 3%、主動部位 30%、主動 sector 9%、economic-risk bucket 9%、ETF top-10 的 80 分門檻，以及 correlation stress 是否 `PASS`。單股穿透曝險明確等於「現有直接持倉 + ETF look-through + 擬新增部位」，避免 ETF 重疊造成偽分散。輸入缺失、過舊、格式錯誤或壓力覆核未完成時分別維持 `PENDING_INPUT`、`STALE`、`INVALID` 或 `PENDING_REVIEW`，不能建倉。
+
+這個契約不會自行下載 ETF 最新持股、不會替使用者推導現有持倉／相關性，也不是組合最佳化器；CSV 中的曝險與壓力狀態必須由外部的 point-in-time 組合程序產生。因此它是可稽核的 pre-trade gate，不是即時風控平台。
+
+`mode_c_decision_inputs.py` 另提供 calibration input audit：要求每筆特徵與 universe membership 在 decision timestamp 前可得、forward label 已成熟、全資料使用同一且可由日期重算的 horizon、使用一致 benchmark、同一 benchmark 起訖窗口的報酬完全一致、`Forward Excess Return = Security Return - Benchmark Return`、包含下市證券與交易成本、無重複觀察，並達最低樣本數與年份。模型擬合目標明定為 excess return。通過只代表 `ELIGIBLE_FOR_MODEL_FITTING`，不代表模型已校準，也不會把目前的 `UNCALIBRATED` 自動改為可比較。
 
 ## 20. Dashboard 的高分群聚與研究線索
 
@@ -762,10 +808,13 @@ Dashboard 內建硬編碼研究主題，例如：
 - FCF／估值歷史是否達最低要求。
 - Evidence ledger 是否 point-in-time、無未來 evidence、無循環。
 - 重要 0 是否有證據，`invalid_zero` 必須為 0。
-- Global Research Queue 是否等於 eligible 股票按收縮後模型內百分位排序的前 12 名，且 Raw Score 未被當成跨模型排名來源。
+- Global Research Queue 是否等於 eligible 股票的 coverage-first model round-robin 前 12 名，且 Raw Score／收縮百分位未被冒充跨模型 Alpha。
 - DSI `NOT_APPLICABLE` 是否保持 null、因子權重是否正規化。
+- Working-capital 狀態、coverage、15pp／20pp 門檻與 5／10 分扣分是否一致。
 - P&C proxy／公司口徑、壓力狀態、Starter gate 是否一致。
-- 稀釋是否只在一個評分層扣分，歷史估值 quantile 是否符合樣本數。
+- 稀釋是否只在一個評分層扣分、回購橋接是否等於 gross buyback 減 issuance、併購發股歸因與 accretion review 是否一致。
+- Portfolio fit 的狀態、pending flag、版本、資料日齡、pre/post-trade 曝險橋接、ETF top-10、correlation stress、上限與 Starter gate 是否一致。
+- 歷史估值 quantile 是否符合樣本數。
 - Dashboard 與 CSV／JSON 結果是否一致。
 
 任一不可變條件失敗，GitHub Actions 不發布 dashboard。
@@ -786,25 +835,25 @@ Dashboard 內建硬編碼研究主題，例如：
 以下不是已證實 bug，而是最值得做破壞性審查的假設：
 
 1. Maintenance CapEx 的 D&A + revenue-growth 啟發式，能否跨 software、semiconductor、telecom、industrial 與 commodity 公司一致成立？
-2. Revenue 不增且 CapEx/D&A `>=1.5` 一律 FAIL，是否會錯殺景氣谷底仍需建廠、法規資本或多年工程支出的公司？
+2. Growth CapEx 已改為多證據分級；請檢查 ROIC 8%、兩年營收衰退與至少兩項佐證的門檻，是否仍會錯殺長建設週期或監管型資本支出。
 3. 目前已把一般企業季度資料不足改為 ABSTAIN；請繼續搜尋是否仍有漏網的 missing-data FAIL。
-4. P&C 已有專用 Mild／Moderate／Severe 壓力；BANK、REIT、UTILITY 等仍只有共同介面與 pending gate，應優先補齊產業專用壓力。
-5. 十三種特殊模型與一般企業不再直接混排 Raw Score；但收縮後模型內百分位仍不是經 walk-forward 校準的跨模型 alpha。
+4. 十三種特殊模型已有財報型壓力情境；請攻擊 3%／5% credit loss、REIT 資產與 EBITDAre shock、utility funding shock 是否過鬆或過嚴，並區分正式監管壓力測試仍缺的資料。
+5. 未校準模型已改用 coverage-first round-robin；請檢查它是否過度獎勵小模型或犧牲同一模型內第二名，直到 PIT walk-forward 能提供真正校準前都不得稱為 alpha 排名。
 6. 毛利 `<25%` 的 peer check 目前實際只警示、不淘汰，是否還有保留此規則的必要？
 7. DSI 已對服務業、平台、金融、訂閱型軟體與低庫存實質性公司設為 N/A；請攻擊目前庫存實質性門檻是否穩健。
-8. Short squeeze 一律扣分是否把事件驅動 upside 與基本面風險混為一談？是否應只作風險標籤而不進 alpha 分數？
-9. 反向估值已改為 40/40/20 公司、同業與利率混合；請檢查同模型 fallback 是否仍會把不同商業模式錯配。
+8. Short squeeze 已改為分數中性；後續若取得可靠 point-in-time 借券資料，再驗證它應作催化劑、風險或兩者分流。
+9. 反向估值已改為 40/40/20 公司、同業與利率混合，並移除跨產業同模型 fallback；請檢查 industry 3 家、sector 5 家與只納入 PASS peers 是否仍會產生樣本偏誤。
 10. ROIC 已改用期初期末平均投入資本；請檢查季度平均與重大併購日內時點仍可能造成的偏差。
-11. OCF 仍可能被應付帳款、預收款或一次性營運資金扭曲；目前是否需要加入 AR、AP、deferred revenue 與 cash conversion cycle 分解？
-12. SBC／股數／資本配置已加入去重層與 validator；請檢查 acquisition-related issuance 仍缺自動辨識是否造成誤殺。
+11. OCF 已加入 AR／Revenue、AP／COGS、DSO、DPO、deferred revenue 與 CCC 分解，並要求至少 5 天實質曝險；請攻擊 15pp／20pp、5 天門檻、300 至 450 天配對窗口，以及不同行業營運資金季節性是否仍會誤判。
+12. Acquisition-related issuance 已用直接 XBRL 股票對價辨識並轉為 accretion review；股票發行現金流不再是必要條件。請檢查公司 extension、非股票對價、分期交割與 450 天新鮮度是否仍會漏判。
 13. `Real FCF Yield >=2%`、`ICR >=3x`、市值 5B、流動性 15M 等靜態門檻，是否應按產業、利率、波動與景氣階段校準？
 14. 歷史估值已依樣本數使用 P25/P20/P15/P10；至少 5 年仍未必覆蓋完整景氣週期。
 15. 使用目前 Yahoo universe 進行任何歷史測試會有 survivorship bias；在完成 delisted securities 與 historical constituents 前，不應宣稱年化績效。
 16. Dashboard 的硬編碼主題會不會造成敘事偏誤？主題只分組但可能影響人工注意力。
-17. ETF top-10、單股 3%、sector 9% 目前是政策，不是完整程式化約束；對外說明必須區分。
+17. ETF top-10、單股 3%、sector 9%、economic-risk 9% 已有可選 pre-trade 輸入契約，但持倉、ETF look-through 與相關性仍不會自動生成；請檢查外部組合資料 lineage 與 stale policy。
 18. 外國公司 annual fallback 與 550 天 freshness 容忍，是否會讓不同申報頻率的公司資料可比性失真？
 19. XBRL 同義標籤與公司 extension 的跨公司映射，是否有足夠 fixture 覆蓋負值符號、restatement、duplicate facts、52/53 週年度與併購重編？
-20. 分數閾值與權重尚未以無偏 walk-forward、out-of-sample IC、turnover、drawdown 或 calibration curve 驗證，不能只靠財務直覺認定最優。
+20. 已有防 look-ahead／survivorship／交易成本、混合 horizon 與 raw-return regime bias 的 calibration input audit，但尚未取得合格歷史面板、擬合模型或完成 walk-forward、out-of-sample IC、turnover、drawdown 與 calibration curve；不能只靠財務直覺認定閾值與權重最優。
 
 ## 24. 可直接貼給另一個 AI 的審查提示詞
 
@@ -831,6 +880,7 @@ Dashboard 內建硬編碼研究主題，例如：
 - `mode_c_routing.py`：共用產業路由。
 - `mode_c_industry_models.py`：特殊產業初篩與十三種專用深篩路由。
 - `mode_c_research_priority.py`：模型內百分位、小樣本收縮、研究狀態與全球研究佇列。
+- `mode_c_decision_inputs.py`：PIT 校準資料稽核與可選的組合適配輸入契約。
 - `AQR_ModeC_Agent_V12.py`：point-in-time SEC 資料、一般企業評分、產業分流與研究輸出。
 - `mode_c_evidence.py`：證據帳本。
 - `mode_c_metric_contract.py`：指標狀態與適用性。

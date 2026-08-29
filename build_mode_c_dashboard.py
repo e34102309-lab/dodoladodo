@@ -215,19 +215,19 @@ def core_kpi_summary(row: dict[str, Any]) -> list[dict[str, Any]]:
     elif model_key != "GENERAL_CORPORATE":
         specialized_fields = {
             "INSURANCE_LIFE": (
-                ("Benefits/premium", "benefits_to_premium_pct", "%"),
+                ("Benefits/operating inflow", "benefit_ratio_pct", "%"),
                 ("Equity/assets", "equity_to_assets_pct", "%"),
                 ("ROE", "roe_pct", "%"),
             ),
             "REIT_MORTGAGE": (
-                ("Recurring earnings yield", "recurring_earnings_yield_pct", "%"),
+                ("Recurring ROE", "recurring_roe_pct", "%"),
                 ("Assets/equity", "assets_to_equity_x", "x"),
                 ("Dividend payout", "dividend_payout_pct", "%"),
             ),
             "REGULATED_UTILITY": (
                 ("Interest coverage", "interest_coverage_x", "x"),
                 ("Debt/capital", "debt_to_capital_pct", "%"),
-                ("Dividend payout", "dividend_payout_pct", "%"),
+                ("Earnings/dividend", "earnings_to_dividend_x", "x"),
             ),
             "CYCLICAL_MIDCYCLE": (
                 ("EV/midcycle EBITDA", "ev_to_midcycle_ebitda_x", "x"),
@@ -242,7 +242,7 @@ def core_kpi_summary(row: dict[str, Any]) -> list[dict[str, Any]]:
             "FINANCIAL_FEE": (
                 ("OCF/net income", "ocf_to_net_income_x", "x"),
                 ("Net debt/EBITDA", "net_debt_to_ebitda_x", "x"),
-                ("EBIT margin", "ebit_margin_pct", "%"),
+                ("EBIT margin", "operating_margin_pct", "%"),
             ),
         }.get(model_key, ())
         values = tuple(
@@ -364,7 +364,20 @@ def driver_risk_summary(row: dict[str, Any]) -> tuple[list[str], list[str], list
     if str(row.get("Specialized_Stress_Status") or "").upper() not in {
         "", "PASS", "IMPLEMENTED_PASS", "NOT_APPLICABLE"
     }:
-        risks.append(f"Specialized stress: {row.get('Specialized_Stress_Status')}")
+        stress_reason = str(row.get("Specialized_Stress_Reason") or "").strip()
+        risks.append(
+            f"Specialized stress: {row.get('Specialized_Stress_Status')}"
+            + (f" ({stress_reason})" if stress_reason else "")
+        )
+    growth_capex_state = str(row.get("Growth_CapEx_Risk_State") or "").upper()
+    if growth_capex_state in {"WATCH", "HIGH_RISK"}:
+        growth_capex_reasons = str(
+            row.get("Growth_CapEx_Risk_Reasons") or ""
+        ).strip()
+        risks.append(
+            f"Growth CapEx {growth_capex_state}"
+            + (f": {growth_capex_reasons}" if growth_capex_reasons else "")
+        )
     lower_fcf = as_number(row.get("Maintenance_Real_FCF_Yield_Lower_pct"))
     conservative_fcf = as_number(row.get("Conservative_Real_FCF_Yield_pct"))
     if lower_fcf is not None and lower_fcf < 0:
@@ -373,6 +386,21 @@ def driver_risk_summary(row: dict[str, Any]) -> tuple[list[str], list[str], list
         risks.append(f"Conservative FCF yield: {conservative_fcf:.2f}%")
     if truthy(row.get("Persistent_Dilution_Hard_Gate")):
         risks.append("Persistent dilution hard gate")
+    working_capital_state = str(
+        row.get("Working_Capital_Quality_State") or ""
+    ).upper()
+    if working_capital_state in {"WATCH", "HIGH_RISK"}:
+        working_capital_reasons = str(
+            row.get("Working_Capital_Quality_Reasons") or ""
+        ).strip()
+        risks.append(
+            f"Working capital {working_capital_state}"
+            + (
+                f": {working_capital_reasons}"
+                if working_capital_reasons
+                else ""
+            )
+        )
     flags = str(row.get("Data_Quality_Flags") or "").strip()
     if flags:
         risks.extend(item.strip() for item in flags.split("|") if item.strip())
@@ -387,6 +415,17 @@ def driver_risk_summary(row: dict[str, Any]) -> tuple[list[str], list[str], list
         )
     if truthy(row.get("Human_KPI_Review_Required")):
         tasks.insert(0, "Reconcile company-reported KPI with SEC proxy")
+    if truthy(row.get("Specialized_Stress_Pending")):
+        missing_stress = str(
+            row.get("Specialized_Stress_Missing_Inputs") or ""
+        ).strip()
+        tasks.insert(
+            0,
+            "Complete specialized stress evidence"
+            + (f": {missing_stress}" if missing_stress else ""),
+        )
+    if truthy(row.get("Acquisition_Accretion_Review_Required")):
+        tasks.insert(0, "Verify acquisition-related issuance is accretive per share")
     if optional_missing:
         tasks.append(f"Optional evidence to collect: {optional_missing}")
     return positives[:3], risks[:3], tasks[:6]
@@ -1042,6 +1081,7 @@ function renderEmerging(){let base=data.trend_baseline||{};$('#baseline').textCo
 function renderThemes(){let sel=$('#theme');sel.innerHTML='<option value="">不限主題</option>'+themes.map(t=>`<option value="${e(t.id)}">${e(t.name)}</option>`).join('');$('#themeCards').innerHTML=themes.map(t=>`<div class="theme-card" data-theme="${e(t.id)}"><b>${e(t.name)}</b><small>${e(t.thesis)}</small><div class="nums">${t.count} 檔 · eligible ${t.eligible} · shortlist ${t.shortlist}</div><small>Top: ${(t.top||[]).map(e).join(', ')||'待資料'}</small><div class="layers">${(t.layers||[]).map(l=>`${e(l.name)}：${(l.top||[]).slice(0,5).map(e).join(', ')||'待資料'}`).join('<br>')}</div></div>`).join('');document.querySelectorAll('[data-theme]').forEach(card=>card.onclick=()=>{$('#theme').value=card.dataset.theme;render()})}
 function render(){let out=visible(),active=$('#theme').value;document.querySelectorAll('[data-theme]').forEach(card=>card.classList.toggle('active',card.dataset.theme===active));$('#rows').innerHTML=out.map(x=>`<tr data-t="${e(x.Ticker)}"><td>${x.Rank||'-'}</td><td><b>${e(x.Ticker)}</b> ${yes(x.IsShortlist)?'<span class="badge good">Shortlist</span>':''}</td><td>${metricHtml(x,'Long_Term_Score')}</td><td>${e(x.Verdict||x.Status||'待查')}</td><td class="optional">${e(x.Sector||x.Industry||'N/A')}</td><td class="optional">${tagBadges(x)}</td><td class="optional">${metricHtml(x,'Real_FCF_Yield_pct',2,'%')}</td><td><button data-w="${e(x.Ticker)}">${watch.has(x.Ticker)?'移除':'加入'}</button></td></tr>`).join('');$('#empty').hidden=out.length>0;document.querySelectorAll('tr[data-t]').forEach(r=>r.onclick=a=>{if(!a.target.dataset.w)openDetail(r.dataset.t)});document.querySelectorAll('[data-w]').forEach(b=>b.onclick=a=>{a.stopPropagation();toggle(b.dataset.w)})}
 const fields=[['資料信心','Data_Confidence_Score'],['EDGAR acceptance 比例 (0-1)','Evidence_AcceptedAt_Ratio'],['長期綜合分數','Long_Term_Score'],['專用模型分數','Industry_Model_Score'],['專用模型覆蓋','Industry_Model_Coverage','%'],['品質分數','Quality_Score'],['價值分數','Value_Score'],['市場預期分數','Expectations_Score'],['營運拐點分數','Operating_Inflection_Score'],['資本配置分數','Capital_Allocation_Score'],['風險扣分','Risk_Penalty'],['TTM OCF','TTM_OCF_B','B'],['全部 CapEx','Dynamic_CapEx_B','B'],['Maintenance CapEx','Maintenance_CapEx_B','B'],['Growth CapEx','Growth_CapEx_B','B'],['CapEx / D&A','CapEx_to_DnA_x','x'],['TTM SBC','TTM_SBC_B','B'],['Real FCF Yield','Real_FCF_Yield_pct','%'],['全額 CapEx FCF Yield','Conservative_Real_FCF_Yield_pct','%'],['總負債','Total_Debt_B','B'],['現金','Cash_B','B'],['淨負債','Net_Debt_B','B'],['ICR','ICR','x'],['30% 壓力 ICR','Stress_ICR_30x','x'],['30% 壓力淨負債 / EBITDA','NetDebt_to_Stress_EBITDA_30x','x'],['30% 壓力 Real FCF','Stress_Real_FCF_30_B','B'],['ROIC','ROIC_pct','%'],['ROCE','ROCE_pct','%'],['5Y Real FCF 正值年數','Real_FCF_Positive_Years_5Y'],['5Y OCF / 淨利','OCF_to_NetIncome_5Y','x'],['EV / EBITDA','EV_EBITDA_x','x'],['P / E','PE_x','x'],['最新毛利率','GM_Latest_pct','%'],['三季毛利變化','GM_3Q_Change_pp','pp'],['三季營收變化','Rev_3Q_Change_pct','%'],['DSI 季變化','DSI_QoQ_Change_pct','%'],['DSI 年變化','DSI_YoY_Change_pct','%'],['一年股數變化','Share_Count_Change_pct','%'],['三年股數變化','Share_Count_Change_3Y_pct','%'],['一年拆股因子','Share_Split_Factor_1Y','x'],['三年拆股因子','Share_Split_Factor_3Y','x'],['隱含 EBITDA CAGR','Implied_EBITDA_CAGR_3Y_pct','%'],['CAGR 動態上限','Implied_CAGR_Limit_pct','%'],['CAGR 餘裕','Implied_CAGR_Headroom_pct','pp'],['反向估值必要報酬','Reverse_DCF_Required_Return_pct','%'],['EBITDA -30% 下檔','EBITDA_Drawdown_30_pct','%']];
+fields.push(['DSO','DSO_Days',' days'],['DPO','DPO_Days',' days'],['Cash conversion cycle','Cash_Conversion_Cycle_Days',' days'],['AR growth vs revenue','AR_vs_Revenue_Growth_Gap_pp','pp'],['AP growth vs COGS','AP_vs_COGS_Growth_Gap_pp','pp'],['Working-capital risk penalty','Working_Capital_Risk_Penalty'],['Gross buyback','TTM_Gross_Buyback_B','B'],['Stock issuance','TTM_Stock_Issuance_B','B'],['Acquisition stock consideration','Acquisition_Stock_Consideration_B','B']);
 function sec(x){let c=String(x.CIK||'').replace(/\D/g,'');return c?`https://www.sec.gov/edgar/browse/?CIK=${encodeURIComponent(c)}&owner=exclude&action=getcompany`:''}function yahoo(t,p=''){return`https://finance.yahoo.com/quote/${encodeURIComponent(t)}/${p}`}function obj(raw){try{let v=JSON.parse(raw||'{}');return v&&typeof v==='object'?v:{}}catch{return{}}}function specializedPanel(x){if(!x.Industry_Model_Key||x.Industry_Model_Key==='GENERAL_CORPORATE')return'';let metrics=obj(x.Industry_Model_Metrics_JSON),components=obj(x.Industry_Model_Components_JSON),items=o=>Object.entries(o).map(([k,v])=>`<div class="metric"><small>${e(k)}</small><b>${typeof v==='number'?f(v):e(v??'N/A')}</b></div>`).join('');return`<div class="section"><h3>${e(x.Industry_Model_Key)} 專用模型</h3><div class="grid">${items(components)}${items(metrics)}</div><div class="box">${e(x.Industry_Model_Hard_Failures||'無硬性失敗')}<br>${e(x.Industry_Model_Warnings||'無模型警示')}</div></div>`}
 function prompt(x){let themeText=tags(x).length?tags(x).join('、'):'無明確主題標籤',layerText=layerTags(x).length?layerTags(x).join('；'):'尚無層級標籤',special=x.Industry_Model_Key&&x.Industry_Model_Key!=='GENERAL_CORPORATE';return[`請以中長期價值投資角度研究 ${x.Ticker}，不要直接下買賣指令。`,special?`專用模型：${x.Industry_Model_Key}；分數：${f(x.Industry_Model_Score)}；覆蓋：${f(x.Industry_Model_Coverage,1,'%')}；資料信心：${f(x.Data_Confidence_Score)}。`:`Quant 分數：${f(x.Long_Term_Score)}；品質：${f(x.Quality_Score)}；價值：${f(x.Value_Score)}；資本配置：${f(x.Capital_Allocation_Score)}。`,`主題標籤：${themeText}。受益層級：${layerText}。請判斷它是一階、二階或三階受益者，還是只是被題材蹭到。`,special?`專用指標：${x.Industry_Model_Metrics_JSON||'待查'}；警示：${x.Data_Quality_Flags||'無'}。`:`Real FCF Yield：${f(x.Real_FCF_Yield_pct,2,'%')}；ICR：${f(x.ICR,2,'x')}；ROIC：${f(x.ROIC_pct,2,'%')}。`,`債務來源：${x.Debt_Source_Method||'待查'}；ICR 口徑：${x.ICR_Method||'待查'}。`,'請用最新官方財報回答：','1. 三句話投資論點。','2. 最強反方論點。','3. thesis 失效條件。','4. 悲觀、基準、樂觀情境。','5. 核對該產業專用 KPI、現金流與資產負債表警訊。','6. 股數稀釋與管理層資本配置。','7. 與 QQQ/VOO 的重疊，以及額外持有理由。','8. 主題供應鏈位置、訂單能見度、瓶頸、二階受益是否已開始進財報，以及是否已反映在估值。','9. 尚無法確認的監管、產業或公司自訂揭露。'].join('\n')}
 async function copy(t){try{await navigator.clipboard.writeText(t)}catch{let a=document.createElement('textarea');a.value=t;document.body.append(a);a.select();document.execCommand('copy');a.remove()}alert('已複製 AI 研究提示。')}
@@ -1060,7 +1100,9 @@ function listHtml(items){return(items||[]).length?`<ul>${items.map(item=>`<li>${
 function render(){let out=visible(),active=$('#theme').value;document.querySelectorAll('[data-theme]').forEach(card=>card.classList.toggle('active',card.dataset.theme===active));$('#rows').innerHTML=out.map(x=>`<tr data-t="${e(x.Ticker)}"><td>${x.Research_Priority_Rank||'-'}</td><td><b>${e(x.Ticker)}</b> ${yes(x.IsShortlist)?'<span class="badge good">Queue</span>':''}</td><td>${e(x.Industry_Model_Key||'GENERAL_CORPORATE')}</td><td>${metricHtml(x,'Raw_Model_Score')}</td><td>${metricHtml(x,'Shrunk_Within_Model_Percentile',2,'%')}</td><td>${metricHtml(x,'Data_Confidence_Score')}</td><td class="optional">${coreKpiHtml(x)}</td><td class="optional">${e(x.Valuation_Summary||'N/A')}</td><td>${e(x.Research_Action_State||x.Decision_State||'N/A')}</td><td><button data-w="${e(x.Ticker)}">${watch.has(x.Ticker)?'移除':'加入'}</button></td></tr>`).join('');$('#empty').hidden=out.length>0;document.querySelectorAll('tr[data-t]').forEach(r=>r.onclick=a=>{if(!a.target.dataset.w)openDetail(r.dataset.t)});document.querySelectorAll('[data-w]').forEach(b=>b.onclick=a=>{a.stopPropagation();toggle(b.dataset.w)})}
 function renderEmerging(){let base=data.trend_baseline||{};$('#baseline').textContent=`基準狀態：${base.model_version_changed?'模型版本變更，重新建立基準':(base.status||'首次建立')}${base.previous_generated_at?'；前次 '+new Date(base.previous_generated_at).toLocaleString('zh-TW'):''}。訊號只使用模型內收縮百分位，模型改版會重設基準。`;$('#emergingCards').innerHTML=emerging.length?emerging.map(c=>{let m=c.metrics||{},delta=Object.entries(c.deltas||{}).map(([k,v])=>`${k} ${v>=0?'+':''}${v}`).join(' · ')||'首次基準';return `<div class="emerging-card" data-candidate="${e(c.key)}"><b>${e(c.name)}</b><span class="badge warn">研究線索</span><span class="badge ${c.confidence==='HIGH'?'good':'warn'}">${e(c.confidence)}</span><div class="nums">${e(c.kind)} · 樣本 ${e(m.count??'N/A')} · eligible ${e(m.eligible??'N/A')} · queue ${e(m.research_queue??'N/A')}</div><small>模型：${(c.model_keys||[]).map(e).join(', ')||'N/A'}<br>Raw ${f(m.avg_raw_score,1)} · Shrunk ${f(m.avg_shrunk_score,1)} · Confidence ${f(m.avg_confidence,1)} · KPI coverage ${f(m.avg_kpi_coverage,1,'%')}<br>變化：${e(delta)} · 版本 ${e(c.model_version||'N/A')}</small><div class="reasons">${(c.reasons||[]).map(r=>'• '+e(r)).join('<br>')}</div></div>`}).join(''):'<div class="emerging-card"><b>本期沒有達門檻的研究群聚</b><small>這不是負面投資訊號，只代表目前資料尚未形成足夠強的模型內群聚。</small></div>'}
 const legacyOpenDetail=openDetail;
-openDetail=function(t){legacyOpenDetail(t);let x=map.get(t)||{},body=$('#detailBody');if(!body)return;let source=x.Combined_Ratio_Source_Status||'N/A',stress=x.Specialized_Stress_Status||x.P_and_C_Stress_Status||'N/A';body.insertAdjacentHTML('afterbegin',`<div class="section"><h3>研究優先序與待查事項</h3><div class="grid"><div class="metric"><small>模型</small><b>${e(x.Industry_Model_Key||'GENERAL_CORPORATE')}</b></div><div class="metric"><small>Raw model score</small><b>${f(x.Raw_Model_Score)}</b></div><div class="metric"><small>Within-model percentile</small><b>${f(x.Within_Model_Percentile,2,'%')}</b></div><div class="metric"><small>Shrunk percentile</small><b>${f(x.Shrunk_Within_Model_Percentile,2,'%')}</b></div><div class="metric"><small>Data confidence</small><b>${f(x.Data_Confidence_Score)}</b></div><div class="metric"><small>Core KPI coverage</small><b>${f(x.Core_Metric_Coverage_pct,1,'%')}</b></div><div class="metric"><small>Research state</small><b>${e(x.Research_Action_State||'N/A')}</b></div><div class="metric"><small>Specialized stress</small><b>${e(stress)}</b></div><div class="metric"><small>Cross-model calibration</small><b>${e(x.Cross_Model_Calibration_Status||'UNCALIBRATED')}</b></div></div><div class="box">${coreKpiHtml(x)}<br><b>Valuation</b>: ${e(x.Valuation_Summary||'N/A')}<br><small>Combined-ratio source: ${e(source)} · model version: ${e(data.research_priority_version||'N/A')}</small></div><div class="grid section"><div class="box"><b>Top 3 Positive Drivers</b>${listHtml(x.Top_Positive_Drivers)}</div><div class="box"><b>Top 3 Risks</b>${listHtml(x.Top_Risks)}</div><div class="box"><b>Manual Review Tasks</b>${listHtml(x.Manual_Review_Tasks)}</div></div><div class="box"><b>Required Missing Metrics</b>: ${e(x.Required_Missing_Metrics||'None')}<br><b>Optional Missing Metrics</b>: ${e(x.Optional_Missing_Metrics||'None')}<br><b>Decision reason</b>: ${e(x.Decision_Reason_Code||'N/A')}</div></div>`)};
+openDetail=function(t){legacyOpenDetail(t);let x=map.get(t)||{},body=$('#detailBody');if(!body)return;let source=x.Combined_Ratio_Source_Status||'N/A',stress=x.Specialized_Stress_Status||x.P_and_C_Stress_Status||'N/A';body.insertAdjacentHTML('afterbegin',`<div class="section"><h3>研究優先序與待查事項</h3><div class="grid"><div class="metric"><small>模型</small><b>${e(x.Industry_Model_Key||'GENERAL_CORPORATE')}</b></div><div class="metric"><small>Raw model score</small><b>${f(x.Raw_Model_Score)}</b></div><div class="metric"><small>Within-model percentile</small><b>${f(x.Within_Model_Percentile,2,'%')}</b></div><div class="metric"><small>Shrunk percentile</small><b>${f(x.Shrunk_Within_Model_Percentile,2,'%')}</b></div><div class="metric"><small>Data confidence</small><b>${f(x.Data_Confidence_Score)}</b></div><div class="metric"><small>Core KPI coverage</small><b>${f(x.Core_Metric_Coverage_pct,1,'%')}</b></div><div class="metric"><small>Research state</small><b>${e(x.Research_Action_State||'N/A')}</b></div><div class="metric"><small>Specialized stress</small><b>${e(stress)}</b></div><div class="metric"><small>Research round</small><b>${e(x.Research_Priority_Round||'N/A')}</b></div><div class="metric"><small>Cross-model calibration</small><b>${e(x.Cross_Model_Calibration_Status||'UNCALIBRATED')}</b></div></div><div class="box">${coreKpiHtml(x)}<br><b>Valuation</b>: ${e(x.Valuation_Summary||'N/A')}<br><b>Stress scenario</b>: ${e(x.Specialized_Stress_Scenario||'N/A')}<br><b>Stress reason</b>: ${e(x.Specialized_Stress_Reason||'N/A')}<br><small>Combined-ratio source: ${e(source)} · model version: ${e(data.research_priority_version||'N/A')}</small></div><div class="grid section"><div class="box"><b>Top 3 Positive Drivers</b>${listHtml(x.Top_Positive_Drivers)}</div><div class="box"><b>Top 3 Risks</b>${listHtml(x.Top_Risks)}</div><div class="box"><b>Manual Review Tasks</b>${listHtml(x.Manual_Review_Tasks)}</div></div><div class="box"><b>Required Missing Metrics</b>: ${e(x.Required_Missing_Metrics||'None')}<br><b>Optional Missing Metrics</b>: ${e(x.Optional_Missing_Metrics||'None')}<br><b>Decision reason</b>: ${e(x.Decision_Reason_Code||'N/A')}</div></div>`)};
+const integrityOpenDetail=openDetail;
+openDetail=function(t){integrityOpenDetail(t);let x=map.get(t)||{},body=$('#detailBody');if(!body||x.Industry_Model_Key!=='GENERAL_CORPORATE')return;body.insertAdjacentHTML('afterbegin',`<div class="section"><h3>營運資金、稀釋與組合閘門</h3><div class="box"><b>Working-capital quality</b>: ${e(x.Working_Capital_Quality_State||'MISSING')} · coverage ${f((n(x.Working_Capital_Quality_Coverage)||0)*100,1,'%')} · penalty ${f(x.Working_Capital_Risk_Penalty)}<br><b>Acquisition issuance</b>: ${e(x.Acquisition_Issuance_Attribution_Status||'MISSING')} · ${e(x.Acquisition_Issuance_Reconciliation_Status||'NOT_APPLICABLE')} · accretion review ${yes(x.Acquisition_Accretion_Review_Required)?'required':'not triggered'}<br><b>Portfolio fit</b>: ${e(x.Portfolio_Fit_Status||'PENDING_INPUT')} · ${e(x.Portfolio_Fit_Reason||'holdings and risk inputs are required')}<br><small>As of ${e(x.Portfolio_Fit_AsOf||'N/A')} · age ${f(x.Portfolio_Fit_Input_Age_Days,0,'d')} · ETF top-10 ${yes(x.Portfolio_ETF_Top10_Overlap)?'yes':'no'} · correlation ${e(x.Portfolio_Correlation_Stress_Status||'N/A')}</small><br><small>${e(x.Working_Capital_Quality_Reasons||'No auditable AR/AP growth comparison')}</small></div></div>`)};
 const coverage=(data.stats||{}).coverage_medians||{},ratios=(data.stats||{}).metric_status_ratios||{},integrity=document.querySelector('#integritySummary');if(integrity){integrity.innerHTML=Object.entries(integrityLabels).map(([k,label])=>`<span><small>${e(label)}</small><b>${e(integrityTotals[k]||0)} (${f((ratios[k]||0)*100,1,'%')})</b></span>`).join('');integrity.insertAdjacentHTML('beforeend',`<span><small>Median Core Metric Coverage</small><b>${f(coverage.core_metric_all,1,'%')}</b></span><span><small>Eligible Core Metric Coverage</small><b>${f(coverage.core_metric_eligible,1,'%')}</b></span><span><small>Queue Core Metric Coverage</small><b>${f(coverage.core_metric_research_queue,1,'%')}</b></span>`)}
 const runMeta=data.metadata||{},hero=document.querySelector('.hero');if(hero&&!document.querySelector('#runMetadata'))hero.insertAdjacentHTML('afterend',`<section id="runMetadata" class="panel" style="padding:12px;margin-top:12px"><div class="grid"><div><small>Decision Timestamp</small><br>${e(runMeta.decision_timestamp||'UNKNOWN')}</div><div><small>Price Data Date</small><br>${e(runMeta.price_data_date||'UNKNOWN')}</div><div><small>Latest SEC Availability Date</small><br>${e(runMeta.latest_sec_availability_date||'UNKNOWN')}</div><div><small>Universe Version</small><br>${e(runMeta.universe_version||'UNKNOWN')}</div><div><small>Model Version</small><br>${e(runMeta.model_version||'UNKNOWN')}</div><div><small>Git Commit</small><br>${e(runMeta.git_commit||'UNKNOWN')}</div></div></section>`);
 document.querySelector('#shortlist').textContent=(data.stats||{}).research_queue||0;document.querySelector('#shortlist').previousElementSibling.textContent='Global Research Queue';

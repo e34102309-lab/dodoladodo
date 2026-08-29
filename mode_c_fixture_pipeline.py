@@ -9,6 +9,7 @@ import pandas as pd
 
 from build_mode_c_dashboard import build_dashboard
 from enhance_dashboard_ui import enhance_dashboard
+from mode_c_decision_inputs import PORTFOLIO_FIT_CONTRACT_VERSION
 from mode_c_evidence import EVIDENCE_COLUMNS
 from mode_c_industry_models import evaluate_industry_model
 from mode_c_metric_contract import annotate_dataframe
@@ -64,6 +65,13 @@ def _base_row(ticker: str) -> dict[str, Any]:
         "Weight_Renormalized": True,
         "DSI_Status": "NOT_APPLICABLE",
         "DSI_Score": None,
+        "Working_Capital_Quality_Status": "MISSING",
+        "Working_Capital_Quality_State": "MISSING",
+        "Working_Capital_Quality_Coverage": 0.0,
+        "Working_Capital_Risk_Penalty": 0.0,
+        "Working_Capital_Quality_Reasons": "fixture has no AR/AP history",
+        "AR_vs_Revenue_Growth_Gap_pp": None,
+        "AP_vs_COGS_Growth_Gap_pp": None,
         "Dilution_Double_Count_Check": "PASS",
         "Ownership_Dilution_Penalty": 0.0,
         "Capital_Allocation_Penalty": 0.0,
@@ -71,10 +79,44 @@ def _base_row(ticker: str) -> dict[str, Any]:
         "Stress_Survival_30": True,
         "Persistent_Dilution": False,
         "Persistent_Dilution_Hard_Gate": False,
+        "TTM_Gross_Buyback_B": None,
+        "TTM_Stock_Issuance_B": None,
+        "Real_Buyback_B": None,
+        "Acquisition_Stock_Consideration_B": None,
+        "Acquisition_Issuance_Attribution_Status": "MISSING",
+        "Acquisition_Issuance_Reconciliation_Status": "NOT_APPLICABLE",
+        "Acquisition_Related_Issuance_Flag": False,
+        "Acquisition_Accretion_Review_Required": False,
         "Dilution_Total_Score_Impact": 0.0,
         "Share_Count_Change_pct": 0.5,
         "Share_Count_Change_3Y_pct": 1.5,
         "Share_Basis_Discontinuity": False,
+        "Growth_CapEx_Risk_State": "CLEAR",
+        "Growth_CapEx_Risk_Corroboration_Count": 0,
+        "Growth_CapEx_Risk_Reasons": "",
+        "Specialized_Stress_Status": "NOT_APPLICABLE",
+        "Specialized_Stress_Scenario": "",
+        "Specialized_Stress_Reason": "",
+        "Specialized_Stress_Survival": False,
+        "Specialized_Stress_Missing_Inputs": "",
+        "Portfolio_Fit_Status": "NOT_APPLICABLE",
+        "Portfolio_Fit_Reason": "",
+        "Portfolio_Fit_AsOf": "",
+        "Portfolio_Fit_Input_Age_Days": None,
+        "Portfolio_Current_Position_Weight_pct_Total": None,
+        "Portfolio_PreTrade_Active_Sleeve_Weight_pct_Total": None,
+        "Portfolio_PreTrade_Sector_Weight_pct_Total": None,
+        "Portfolio_PreTrade_Economic_Risk_Weight_pct_Total": None,
+        "Portfolio_PostTrade_Position_Weight_pct_Total": None,
+        "Portfolio_PostTrade_Active_Sleeve_Weight_pct_Total": None,
+        "Portfolio_PostTrade_Sector_Weight_pct_Total": None,
+        "Portfolio_PostTrade_Economic_Risk_Weight_pct_Total": None,
+        "ETF_Lookthrough_Weight_pct_Total": None,
+        "Portfolio_ETF_Top10_Overlap": False,
+        "Portfolio_Correlation_Stress_Status": "",
+        "Economic_Risk_Bucket": "",
+        "Portfolio_Fit_Contract_Version": PORTFOLIO_FIT_CONTRACT_VERSION,
+        "Suggested_Starter_Weight_pct_Total": 0.0,
         "Industry_Stress_Extension_Status": "IMPLEMENTED",
         "Industry_Stress_Extension_Reason": "fixture general stress",
     }
@@ -130,9 +172,28 @@ def _p_and_c_row(
         "SEC_PROXY_RECONCILED",
     }
     stress_status = str(metrics.get("p_and_c_stress_status") or "ABSTAIN")
+    decision_state = (
+        "PASS" if stress_status == "PASS" else "FAIL" if stress_status == "FAIL" else "ABSTAIN"
+    )
+    status = (
+        "Pass"
+        if decision_state == "PASS"
+        else "Fail: INSURANCE_P_AND_C specialized stress survival failed"
+        if decision_state == "FAIL"
+        else "Abstain: INSURANCE_P_AND_C specialized stress evidence incomplete"
+    )
     return {
         **_base_row(ticker),
-        "Scoring_Framework": "INDUSTRY_SPECIALIZED_INSURANCE_P_AND_C_V1",
+        "Status": status,
+        "Decision_State": decision_state,
+        "Decision_Reason_Code": (
+            "PASS_MODEL_GATE"
+            if decision_state == "PASS"
+            else "FINANCIAL_HARD_GATE"
+            if decision_state == "FAIL"
+            else "SPECIALIZED_STRESS_NOT_AVAILABLE"
+        ),
+        "Scoring_Framework": "INDUSTRY_SPECIALIZED_INSURANCE_P_AND_C_V2",
         "Initial_Industry_Model_Key": "INSURANCE_P_AND_C",
         "Industry_Model_Key": "INSURANCE_P_AND_C",
         "Model_Route": "INSURANCE_P_AND_C",
@@ -148,7 +209,7 @@ def _p_and_c_row(
         "Price": 250.0,
         "MarketCap_B": market_cap,
         "Long_Term_Score": model_score,
-        "Long_Term_Eligible": True,
+        "Long_Term_Eligible": stress_status == "PASS",
         "Company_Reported_Combined_Ratio": metrics["company_reported_combined_ratio_pct"],
         "SEC_Combined_Ratio_Proxy": metrics["sec_combined_ratio_proxy_pct"],
         "Combined_Ratio_Reconciliation_Difference_pp": metrics["combined_ratio_reconciliation_difference_pp"],
@@ -171,6 +232,12 @@ def _p_and_c_row(
         "P_and_C_Stress_Survival_Moderate": metrics["p_and_c_stress_survival_moderate"],
         "P_and_C_Stress_Status": stress_status,
         "Specialized_Stress_Status": stress_status,
+        "Specialized_Stress_Scenario": metrics["specialized_stress_scenario"],
+        "Specialized_Stress_Reason": metrics["specialized_stress_reason"],
+        "Specialized_Stress_Survival": metrics["specialized_stress_survival"],
+        "Specialized_Stress_Missing_Inputs": "; ".join(
+            metrics["specialized_stress_missing_inputs"]
+        ),
         "Industry_Stress_Extension_Status": "IMPLEMENTED_PASS" if stress_status == "PASS" else "IMPLEMENTED_FAIL",
         "Industry_Stress_Extension_Reason": "deterministic P&C stress fixture",
     }

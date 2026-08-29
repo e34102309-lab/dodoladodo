@@ -56,7 +56,9 @@ class ModeCFixturePipelineTests(unittest.TestCase):
             )
             self.assertFalse(by_ticker.loc["ACGL", "Human_KPI_Review_Required"])
             self.assertFalse(by_ticker.loc["ACGL", "Starter_Candidate"])
-            self.assertEqual(by_ticker.loc["ACGL", "Research_Priority_Rank"], 1)
+            self.assertEqual(by_ticker.loc["GLW", "Research_Priority_Rank"], 1)
+            self.assertEqual(by_ticker.loc["ACGL", "Research_Priority_Rank"], 2)
+            self.assertEqual(by_ticker.loc["ACGL", "Research_Priority_Round"], 1)
             self.assertEqual(
                 by_ticker.loc["ACGL", "Prior_Year_Reserve_Development_pct"],
                 -1.5,
@@ -64,7 +66,14 @@ class ModeCFixturePipelineTests(unittest.TestCase):
             self.assertEqual(by_ticker.loc["ACGL", "Catastrophe_Loss_Ratio_pct"], 3.2)
             self.assertLess(by_ticker.loc["KNSL", "Industry_Model_Score"], 90.0)
             self.assertEqual(by_ticker.loc["KNSL", "P_and_C_Stress_Status"], "FAIL")
-            self.assertTrue(by_ticker.loc["KNSL", "Specialized_Stress_Pending"])
+            self.assertFalse(by_ticker.loc["KNSL", "Long_Term_Eligible"])
+            self.assertEqual(by_ticker.loc["KNSL", "Decision_State"], "FAIL")
+            self.assertFalse(by_ticker.loc["KNSL", "Specialized_Stress_Pending"])
+            self.assertTrue(by_ticker.loc["KNSL", "Specialized_Stress_Failed"])
+            self.assertEqual(
+                by_ticker.loc["KNSL", "Research_Action_State"],
+                "SPECIALIZED_STRESS_FAILED",
+            )
             self.assertFalse(by_ticker.loc["KNSL", "Starter_Candidate"])
             ifnny_meta = json.loads(by_ticker.loc["IFNNY", "Metric_Metadata_JSON"])
             self.assertEqual(ifnny_meta["Point_in_Time_FX_Rate"]["status"], "ABSTAIN")

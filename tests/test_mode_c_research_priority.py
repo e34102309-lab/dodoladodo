@@ -5,6 +5,7 @@ from mode_c_research_priority import (
     RESEARCH_PRIORITY_METHOD,
     annotate_research_priorities,
     global_research_queue,
+    research_priority_order,
     shrunk_percentile,
 )
 
@@ -68,6 +69,35 @@ class ResearchPriorityTests(unittest.TestCase):
         self.assertTrue(candidate["Specialized_Stress_Pending"])
         self.assertFalse(candidate["Starter_Candidate"])
         self.assertEqual(candidate["Research_Action_State"], "SPECIALIZED_STRESS_PENDING")
+
+    def test_failed_specialized_stress_is_not_mislabeled_as_pending(self):
+        candidate = row("MREIT", "REIT_MORTGAGE", 80.0, eligible=False)
+        candidate["Decision_State"] = "FAIL"
+        candidate["Specialized_Stress_Status"] = "FAIL"
+        annotate_research_priorities([candidate])
+        self.assertFalse(candidate["Specialized_Stress_Pending"])
+        self.assertTrue(candidate["Specialized_Stress_Failed"])
+        self.assertEqual(candidate["Research_Action_State"], "SPECIALIZED_STRESS_FAILED")
+        self.assertFalse(candidate["Starter_Candidate"])
+
+    def test_global_queue_interleaves_models_before_taking_a_second_name(self):
+        rows = [
+            row(f"GEN{index}", "GENERAL_CORPORATE", 100.0 - index)
+            for index in range(10)
+        ]
+        rows.append(row("BANK1", "BANK", 70.0, confidence=75.0))
+
+        annotate_research_priorities(rows, queue_size=3)
+
+        queue = global_research_queue(rows)
+        self.assertEqual([item["Ticker"] for item in queue], ["GEN0", "BANK1", "GEN1"])
+        self.assertEqual(queue[0]["Research_Priority_Round"], 1)
+        self.assertEqual(queue[1]["Research_Priority_Round"], 1)
+        self.assertEqual(queue[2]["Research_Priority_Round"], 2)
+        self.assertEqual(
+            [item["Ticker"] for item in research_priority_order(rows)[:3]],
+            ["GEN0", "BANK1", "GEN1"],
+        )
 
 
 if __name__ == "__main__":

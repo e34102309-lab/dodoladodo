@@ -56,7 +56,7 @@ jobs:
           pip install -r ModeC_requirements.txt
 
       - name: Compile Python Sources
-        run: python -m py_compile AQR_ModeC_Agent_V12.py mode_c_evidence.py mode_c_metric_contract.py mode_c_routing.py mode_c_industry_models.py mode_c_research_priority.py total_market_hunter_v2.py run_mode_c_ai_agent.py build_mode_c_dashboard.py enhance_dashboard_ui.py validate_mode_c_outputs.py mode_c_fixture_pipeline.py
+        run: python -m py_compile AQR_ModeC_Agent_V12.py mode_c_evidence.py mode_c_metric_contract.py mode_c_routing.py mode_c_industry_models.py mode_c_research_priority.py mode_c_decision_inputs.py total_market_hunter_v2.py run_mode_c_ai_agent.py build_mode_c_dashboard.py enhance_dashboard_ui.py validate_mode_c_outputs.py mode_c_fixture_pipeline.py
 
       - name: Run Unit Tests
         run: python -m unittest discover -s tests -v
@@ -88,6 +88,15 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r ModeC_requirements.txt
 
+      - name: Require SEC Contact Email
+        env:
+          USER_EMAIL: ${{ secrets.USER_EMAIL }}
+        run: |
+          if [ -z "${USER_EMAIL:-}" ]; then
+            echo "::error::Missing USER_EMAIL repository secret required for SEC API identification."
+            exit 1
+          fi
+
       - name: Restore Full-Market Hunter Cache
         if: github.event.schedule == '0 3 1 * *' || (github.event_name == 'workflow_dispatch' && inputs.refresh_universe)
         uses: actions/cache/restore@v4
@@ -106,7 +115,7 @@ jobs:
           USER_EMAIL: ${{ secrets.USER_EMAIL }}
         run: |
           set +e
-          contact_email="${USER_EMAIL:-a7924177@gmail.com}"
+          contact_email="${USER_EMAIL}"
           python total_market_hunter_v2.py --email "$contact_email" --output-dir .
           status=$?
           set -e

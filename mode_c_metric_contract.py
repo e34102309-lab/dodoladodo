@@ -9,7 +9,7 @@ from typing import Any, Iterable, Mapping, Sequence
 import pandas as pd
 
 
-METRIC_CONTRACT_VERSION = "2026-07-metric-status-v3"
+METRIC_CONTRACT_VERSION = "2026-08-metric-status-v5"
 METRIC_STATUSES = frozenset(
     {
         "VALID",
@@ -93,6 +93,23 @@ DISPLAY_METRICS: tuple[str, ...] = (
     "DSI_Score",
     "Inventory_to_Revenue_pct",
     "Inventory_to_Assets_pct",
+    "DSO_Days",
+    "DPO_Days",
+    "Cash_Conversion_Cycle_Days",
+    "DSO_YoY_Change_pct",
+    "DPO_YoY_Change_pct",
+    "Accounts_Receivable_Growth_pct",
+    "Accounts_Payable_Growth_pct",
+    "Deferred_Revenue_Growth_pct",
+    "TTM_Revenue_Growth_pct",
+    "TTM_COGS_Growth_pct",
+    "AR_vs_Revenue_Growth_Gap_pp",
+    "AP_vs_COGS_Growth_Gap_pp",
+    "Working_Capital_Quality_Coverage",
+    "Working_Capital_Risk_Penalty",
+    "TTM_Gross_Buyback_B",
+    "TTM_Stock_Issuance_B",
+    "Acquisition_Stock_Consideration_B",
     "Share_Count_Change_pct",
     "Share_Count_Change_3Y_pct",
     "Net_Buyback_Yield_pct",
@@ -293,6 +310,11 @@ CSV_STATUS_METRICS = (
     "ICR",
     "EV_EBITDA_x",
     "Long_Term_Score",
+    "DSO_Days",
+    "DPO_Days",
+    "AR_vs_Revenue_Growth_Gap_pp",
+    "AP_vs_COGS_Growth_Gap_pp",
+    "Acquisition_Stock_Consideration_B",
 )
 
 
@@ -304,6 +326,9 @@ ZERO_REQUIRES_EVIDENCE_METRICS = frozenset(
         "Dynamic_CapEx_B",
         "Maintenance_CapEx_B",
         "TTM_SBC_B",
+        "TTM_Gross_Buyback_B",
+        "TTM_Stock_Issuance_B",
+        "Acquisition_Stock_Consideration_B",
         "Maintenance_Real_FCF_B",
         "Conservative_Real_FCF_B",
         "Real_FCF_Yield_pct",
@@ -380,6 +405,23 @@ EVIDENCE_ALIASES: dict[str, tuple[str, ...]] = {
     "Rev_3Q_Change_pct": ("Revenue_3Q_Change",),
     "DSI_QoQ_Change_pct": ("DSI_QoQ_Change",),
     "DSI_YoY_Change_pct": ("DSI_YoY_Change",),
+    "DSO_Days": ("DSO",),
+    "DPO_Days": ("DPO",),
+    "Cash_Conversion_Cycle_Days": ("Cash_Conversion_Cycle",),
+    "DSO_YoY_Change_pct": ("DSO_YoY_Change",),
+    "DPO_YoY_Change_pct": ("DPO_YoY_Change",),
+    "Accounts_Receivable_Growth_pct": ("Accounts_Receivable_Growth",),
+    "Accounts_Payable_Growth_pct": ("Accounts_Payable_Growth",),
+    "Deferred_Revenue_Growth_pct": ("Deferred_Revenue_Growth",),
+    "TTM_Revenue_Growth_pct": ("TTM_Revenue_Growth",),
+    "TTM_COGS_Growth_pct": ("TTM_COGS_Growth",),
+    "AR_vs_Revenue_Growth_Gap_pp": ("AR_vs_Revenue_Growth_Gap",),
+    "AP_vs_COGS_Growth_Gap_pp": ("AP_vs_COGS_Growth_Gap",),
+    "Working_Capital_Quality_Coverage": ("Working_Capital_Quality_Coverage",),
+    "Working_Capital_Risk_Penalty": ("Working_Capital_Quality_State",),
+    "TTM_Gross_Buyback_B": ("TTM_Buyback",),
+    "TTM_Stock_Issuance_B": ("TTM_StockIssuance",),
+    "Acquisition_Stock_Consideration_B": ("TTM_AcquisitionStockConsideration",),
     "Share_Count_Change_pct": ("Share_Count_Change_1Y",),
     "Share_Count_Change_3Y_pct": ("Share_Count_Change_3Y",),
     "Net_Buyback_Yield_pct": ("Net_Buyback_Yield",),
@@ -583,6 +625,46 @@ def _metric_metadata(
                 "source_method": "inventory_materiality_gate",
                 "evidence_ids": evidence_ids,
             }
+    if metric in {
+        "DSO_Days",
+        "DPO_Days",
+        "Cash_Conversion_Cycle_Days",
+        "DSO_YoY_Change_pct",
+        "DPO_YoY_Change_pct",
+        "Accounts_Receivable_Growth_pct",
+        "Accounts_Payable_Growth_pct",
+        "Deferred_Revenue_Growth_pct",
+        "TTM_Revenue_Growth_pct",
+        "TTM_COGS_Growth_pct",
+        "AR_vs_Revenue_Growth_Gap_pp",
+        "AP_vs_COGS_Growth_Gap_pp",
+    }:
+        working_capital_status = str(
+            row.get("Working_Capital_Quality_Status") or "MISSING"
+        ).upper()
+        if working_capital_status in {"MISSING", "ABSTAIN", "STALE"}:
+            return {
+                "value": None,
+                "status": working_capital_status,
+                "reason": str(
+                    row.get("Working_Capital_Quality_Reasons")
+                    or "Working-capital growth comparisons are incomplete"
+                ),
+                "as_of": _as_of(records, decision_at),
+                "source_method": "point_in_time_working_capital_diagnostic",
+                "evidence_ids": evidence_ids,
+            }
+    if metric == "Acquisition_Stock_Consideration_B" and str(
+        row.get("Acquisition_Issuance_Attribution_Status") or "MISSING"
+    ).upper() == "MISSING":
+        return {
+            "value": None,
+            "status": "MISSING",
+            "reason": "No direct XBRL acquisition stock-consideration evidence",
+            "as_of": _as_of(records, decision_at),
+            "source_method": "direct_xbrl_acquisition_attribution",
+            "evidence_ids": evidence_ids,
+        }
     if key == "INSURANCE_P_AND_C" and metric.startswith("P_and_C_Stress_"):
         stress_status = str(row.get("P_and_C_Stress_Status") or "ABSTAIN").upper()
         if stress_status == "ABSTAIN":
@@ -824,8 +906,18 @@ def annotate_rows(
                 row["Human_KPI_Review_Required"] = True
             if not str(row.get("P_and_C_Stress_Status") or "").strip():
                 row["P_and_C_Stress_Status"] = "ABSTAIN"
-            if str(row.get("P_and_C_Stress_Status")).upper() != "PASS":
+            p_and_c_stress_status = str(
+                row.get("Specialized_Stress_Status")
+                or row.get("P_and_C_Stress_Status")
+                or "ABSTAIN"
+            ).upper()
+            if p_and_c_stress_status in {"FAIL", "IMPLEMENTED_FAIL"}:
+                row["Specialized_Stress_Pending"] = False
+                row["Specialized_Stress_Failed"] = True
+                row["Starter_Candidate"] = False
+            elif p_and_c_stress_status not in {"PASS", "IMPLEMENTED_PASS"}:
                 row["Specialized_Stress_Pending"] = True
+                row["Specialized_Stress_Failed"] = False
                 row["Starter_Candidate"] = False
         if key == "GENERAL_CORPORATE":
             row["Maintenance_CapEx_Lower_B"] = row.get("Maintenance_CapEx_Low_B")

@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from mode_c_decision_inputs import PORTFOLIO_FIT_CONTRACT_VERSION
 from mode_c_evidence import EVIDENCE_COLUMNS
 from mode_c_metric_contract import annotate_dataframe
 from mode_c_research_priority import annotate_research_priorities
@@ -74,13 +75,54 @@ class ModeCOutputValidationTests(unittest.TestCase):
                     "Share_Count_Change_pct": 1.0,
                     "Share_Count_Change_3Y_pct": 2.0,
                     "Share_Basis_Discontinuity": False,
+                    "Growth_CapEx_Risk_State": "CLEAR",
+                    "Growth_CapEx_Risk_Corroboration_Count": 0,
+                    "Growth_CapEx_Risk_Reasons": "",
+                    "Specialized_Stress_Status": "NOT_APPLICABLE",
+                    "Specialized_Stress_Scenario": "",
+                    "Specialized_Stress_Reason": "",
+                    "Specialized_Stress_Survival": False,
+                    "Specialized_Stress_Missing_Inputs": "",
+                    "Portfolio_Fit_Status": "NOT_APPLICABLE",
+                    "Portfolio_Fit_Reason": "",
+                    "Portfolio_Fit_AsOf": "",
+                    "Portfolio_Fit_Input_Age_Days": float("nan"),
+                    "Portfolio_Current_Position_Weight_pct_Total": float("nan"),
+                    "Portfolio_PreTrade_Active_Sleeve_Weight_pct_Total": float("nan"),
+                    "Portfolio_PreTrade_Sector_Weight_pct_Total": float("nan"),
+                    "Portfolio_PreTrade_Economic_Risk_Weight_pct_Total": float("nan"),
+                    "Portfolio_PostTrade_Position_Weight_pct_Total": float("nan"),
+                    "Portfolio_PostTrade_Active_Sleeve_Weight_pct_Total": float("nan"),
+                    "Portfolio_PostTrade_Sector_Weight_pct_Total": float("nan"),
+                    "Portfolio_PostTrade_Economic_Risk_Weight_pct_Total": float("nan"),
+                    "ETF_Lookthrough_Weight_pct_Total": float("nan"),
+                    "Portfolio_ETF_Top10_Overlap": False,
+                    "Portfolio_Correlation_Stress_Status": "",
+                    "Economic_Risk_Bucket": "",
+                    "Portfolio_Fit_Contract_Version": PORTFOLIO_FIT_CONTRACT_VERSION,
+                    "Suggested_Starter_Weight_pct_Total": 0.0,
                     "DSI_Status": "NOT_APPLICABLE",
                     "DSI_Score": float("nan"),
+                    "Working_Capital_Quality_Status": "MISSING",
+                    "Working_Capital_Quality_State": "MISSING",
+                    "Working_Capital_Quality_Coverage": 0.0,
+                    "Working_Capital_Risk_Penalty": 0.0,
+                    "Working_Capital_Quality_Reasons": "fixture has no AR/AP history",
+                    "AR_vs_Revenue_Growth_Gap_pp": float("nan"),
+                    "AP_vs_COGS_Growth_Gap_pp": float("nan"),
                     "Dilution_Double_Count_Check": "PASS",
                     "Ownership_Dilution_Penalty": 0.0,
                     "Capital_Allocation_Penalty": 0.0,
                     "Persistent_Dilution_Hard_Gate": False,
                     "Dilution_Total_Score_Impact": 0.0,
+                    "TTM_Gross_Buyback_B": float("nan"),
+                    "TTM_Stock_Issuance_B": float("nan"),
+                    "Real_Buyback_B": float("nan"),
+                    "Acquisition_Stock_Consideration_B": float("nan"),
+                    "Acquisition_Issuance_Attribution_Status": "MISSING",
+                    "Acquisition_Issuance_Reconciliation_Status": "NOT_APPLICABLE",
+                    "Acquisition_Related_Issuance_Flag": False,
+                    "Acquisition_Accretion_Review_Required": False,
                     "Applicable_Factor_Weight": 95.0,
                     "Available_Factor_Weight": 95.0,
                     "Factor_Coverage": 1.0,
@@ -134,6 +176,43 @@ class ModeCOutputValidationTests(unittest.TestCase):
             summary = validate_outputs(*paths)
         self.assertEqual(summary["eligible_rows"], 1)
         self.assertEqual(summary["evidence_rows"], 2)
+
+    def test_passing_portfolio_fit_reconciles_pre_and_post_trade_exposure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = self._write_valid_outputs(Path(tmp))
+            screen = pd.read_csv(paths[0], encoding="utf-8-sig")
+            updates = {
+                "Portfolio_Fit_Pending": False,
+                "Portfolio_Fit_Status": "PASS",
+                "Portfolio_Fit_Reason": "all portfolio gates pass",
+                "Portfolio_Fit_AsOf": "2026-01-01T00:00:00",
+                "Portfolio_Fit_Input_Age_Days": 1.0,
+                "Portfolio_Current_Position_Weight_pct_Total": 0.5,
+                "Portfolio_PreTrade_Active_Sleeve_Weight_pct_Total": 20.0,
+                "Portfolio_PreTrade_Sector_Weight_pct_Total": 5.0,
+                "Portfolio_PreTrade_Economic_Risk_Weight_pct_Total": 4.0,
+                "Portfolio_PostTrade_Position_Weight_pct_Total": 2.8,
+                "Portfolio_PostTrade_Active_Sleeve_Weight_pct_Total": 21.5,
+                "Portfolio_PostTrade_Sector_Weight_pct_Total": 6.5,
+                "Portfolio_PostTrade_Economic_Risk_Weight_pct_Total": 5.5,
+                "ETF_Lookthrough_Weight_pct_Total": 0.8,
+                "Portfolio_ETF_Top10_Overlap": False,
+                "Portfolio_Correlation_Stress_Status": "PASS",
+                "Economic_Risk_Bucket": "AI_CAPEX",
+                "Starter_Candidate": True,
+                "Suggested_Starter_Weight_pct_Total": 1.5,
+            }
+            for column, value in updates.items():
+                screen[column] = value
+            screen.to_csv(paths[0], index=False, encoding="utf-8-sig")
+            screen.to_csv(paths[1], index=False, encoding="utf-8-sig")
+            validate_outputs(*paths)
+
+            screen.loc[0, "Portfolio_PostTrade_Sector_Weight_pct_Total"] = 7.0
+            screen.to_csv(paths[0], index=False, encoding="utf-8-sig")
+            screen.to_csv(paths[1], index=False, encoding="utf-8-sig")
+            with self.assertRaisesRegex(ValidationError, "portfolio fit"):
+                validate_outputs(*paths)
 
     def test_future_evidence_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -231,7 +310,7 @@ class ModeCOutputValidationTests(unittest.TestCase):
             screen.loc[0, "Cash_B"] = 0.0
             screen.loc[0, "Metric_Metadata_JSON"] = json.dumps(metadata)
             report = build_zero_classification_report(screen)
-            self.assertEqual(report["summary"]["true_zero"], 1)
+            self.assertEqual(report["summary"]["true_zero"], 3)
             self.assertEqual(report["summary"]["invalid_zero"], 0)
 
             metadata["Cash_B"]["status"] = "MISSING"

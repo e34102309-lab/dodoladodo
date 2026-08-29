@@ -6,9 +6,9 @@ from dataclasses import asdict, is_dataclass
 from typing import Any, Iterable, Mapping, MutableMapping, Sequence
 
 
-RESEARCH_PRIORITY_VERSION = "2026-07-within-model-shrinkage-v1"
+RESEARCH_PRIORITY_VERSION = "2026-08-coverage-first-round-robin-v2"
 CROSS_MODEL_CALIBRATION_STATUS = "UNCALIBRATED"
-RESEARCH_PRIORITY_METHOD = "SHRUNK_WITHIN_MODEL_PERCENTILE_V1"
+RESEARCH_PRIORITY_METHOD = "COVERAGE_FIRST_MODEL_ROUND_ROBIN_V2"
 SHRINKAGE_PRIOR_COUNT = 20.0
 GLOBAL_RESEARCH_QUEUE_SIZE = 12
 PER_MODEL_RESEARCH_QUEUE_SIZE = 3
@@ -38,6 +38,11 @@ def _truthy(value: Any) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in {"1", "true", "yes", "y"}
     return bool(value)
+
+
+def _confidence_score(row: Any) -> float:
+    value = _get(row, "Data_Confidence_Score", 0.0)
+    return float(value) if _finite(value) else 0.0
 
 
 def model_key(row: Any) -> str:
@@ -82,6 +87,46 @@ def _average_rank_percentiles(rows: Sequence[Any]) -> dict[int, float]:
     return output
 
 
+def research_priority_order(rows: Sequence[Any]) -> list[Any]:
+    """Interleave model-relative candidates without claiming cross-model alpha."""
+    grouped: dict[str, list[Any]] = defaultdict(list)
+    for row in rows:
+        if _finite(_get(row, "Within_Model_Percentile")):
+            grouped[model_key(row)].append(row)
+    for peers in grouped.values():
+        peers.sort(
+            key=lambda row: (
+                -float(_get(row, "Within_Model_Percentile")),
+                -_confidence_score(row),
+                str(_get(row, "Ticker", "")),
+            )
+        )
+
+    ordered: list[Any] = []
+    round_index = 0
+    while True:
+        round_candidates = [
+            peers[round_index]
+            for peers in grouped.values()
+            if round_index < len(peers)
+        ]
+        if not round_candidates:
+            break
+        round_candidates.sort(
+            key=lambda row: (
+                -_confidence_score(row),
+                -float(_get(row, "Within_Model_Percentile")),
+                model_key(row),
+                str(_get(row, "Ticker", "")),
+            )
+        )
+        for row in round_candidates:
+            _set(row, "Research_Priority_Round", round_index + 1)
+        ordered.extend(round_candidates)
+        round_index += 1
+    return ordered
+
+
 def _p_and_c_source_status(row: Any) -> str:
     explicit = str(_get(row, "Combined_Ratio_Source_Status", "") or "").upper()
     if explicit:
@@ -106,15 +151,55 @@ def _human_review_required(row: Any) -> bool:
     return _truthy(_get(row, "Human_KPI_Review_Required", False))
 
 
-def _specialized_stress_pending(row: Any) -> bool:
+def _specialized_stress_status(row: Any) -> str:
     if model_key(row) == "GENERAL_CORPORATE":
-        return False
-    status = str(
+        return "NOT_APPLICABLE"
+    return str(
         _get(row, "Specialized_Stress_Status", "")
         or _get(row, "P_and_C_Stress_Status", "")
         or _get(row, "Industry_Stress_Extension_Status", "")
     ).upper()
-    return status not in {"PASS", "IMPLEMENTED_PASS"}
+
+
+def _specialized_stress_pending(row: Any) -> bool:
+    if model_key(row) == "GENERAL_CORPORATE":
+        return False
+    return _specialized_stress_status(row) not in {
+        "PASS",
+        "IMPLEMENTED_PASS",
+        "FAIL",
+        "IMPLEMENTED_FAIL",
+    }
+
+
+def _specialized_stress_failed(row: Any) -> bool:
+    if model_key(row) == "GENERAL_CORPORATE":
+        return False
+    return _specialized_stress_status(row) in {"FAIL", "IMPLEMENTED_FAIL"}
+
+
+def starter_candidate_gate(row: Any) -> bool:
+    raw = raw_model_score(row)
+    specialized = model_key(row) != "GENERAL_CORPORATE"
+    portfolio_status = str(
+        _get(row, "Portfolio_Fit_Status", "") or ""
+    ).upper()
+    portfolio_cleared = (
+        portfolio_status == "PASS"
+        if portfolio_status
+        else not _truthy(_get(row, "Portfolio_Fit_Pending", False))
+    )
+    return bool(
+        _truthy(_get(row, "Model_Eligible", False))
+        and _finite(raw)
+        and raw >= 75.0
+        and not _truthy(_get(row, "Human_KPI_Review_Required", False))
+        and not _truthy(_get(row, "Specialized_Stress_Pending", False))
+        and not _truthy(_get(row, "Specialized_Stress_Failed", False))
+        and not _truthy(_get(row, "Portfolio_Fit_Pending", False))
+        and portfolio_cleared
+        and (not specialized or _truthy(_get(row, "Cross_Model_Comparable", False)))
+    )
 
 
 def refresh_research_status(row: Any) -> Any:
@@ -127,12 +212,16 @@ def refresh_research_status(row: Any) -> Any:
         states.append("HUMAN_KPI_REVIEW_REQUIRED")
     if _truthy(_get(row, "Specialized_Stress_Pending", False)):
         states.append("SPECIALIZED_STRESS_PENDING")
+    if _truthy(_get(row, "Specialized_Stress_Failed", False)):
+        states.append("SPECIALIZED_STRESS_FAILED")
     if _truthy(_get(row, "Portfolio_Fit_Pending", False)):
         states.append("PORTFOLIO_FIT_PENDING")
     if _truthy(_get(row, "Starter_Candidate", False)):
         states.append("STARTER_CANDIDATE")
     if _truthy(_get(row, "Human_KPI_Review_Required", False)):
         action_state = "HUMAN_KPI_REVIEW_REQUIRED"
+    elif _truthy(_get(row, "Specialized_Stress_Failed", False)):
+        action_state = "SPECIALIZED_STRESS_FAILED"
     elif _truthy(_get(row, "Specialized_Stress_Pending", False)):
         action_state = "SPECIALIZED_STRESS_PENDING"
     elif _truthy(_get(row, "Global_Research_Queue", False)):
@@ -161,6 +250,7 @@ def annotate_research_priorities(
         _set(row, "Cross_Model_Calibration_Status", CROSS_MODEL_CALIBRATION_STATUS)
         _set(row, "Cross_Model_Comparable", False)
         _set(row, "Research_Priority_Rank", math.nan)
+        _set(row, "Research_Priority_Round", math.nan)
         _set(row, "Research_Priority_Method", RESEARCH_PRIORITY_METHOD)
         _set(row, "Research_Priority_Version", RESEARCH_PRIORITY_VERSION)
         _set(row, "Screened", True)
@@ -168,7 +258,21 @@ def annotate_research_priorities(
         _set(row, "Global_Research_Queue", False)
         _set(row, "Human_KPI_Review_Required", _human_review_required(row))
         _set(row, "Specialized_Stress_Pending", _specialized_stress_pending(row))
-        _set(row, "Portfolio_Fit_Pending", _truthy(_get(row, "Long_Term_Eligible", False)))
+        _set(row, "Specialized_Stress_Failed", _specialized_stress_failed(row))
+        portfolio_pending = _truthy(_get(row, "Long_Term_Eligible", False))
+        _set(row, "Portfolio_Fit_Pending", portfolio_pending)
+        _set(
+            row,
+            "Portfolio_Fit_Status",
+            "PENDING_INPUT" if portfolio_pending else "NOT_APPLICABLE",
+        )
+        _set(
+            row,
+            "Portfolio_Fit_Reason",
+            "portfolio holdings and risk inputs are required"
+            if portfolio_pending
+            else "model eligibility or starter-score gate not reached",
+        )
         _set(row, "Starter_Candidate", False)
         if (
             _finite(raw)
@@ -192,30 +296,12 @@ def annotate_research_priorities(
         if _truthy(_get(row, "Model_Eligible", False))
         and _finite(_get(row, "Shrunk_Within_Model_Percentile"))
     ]
-    candidates.sort(
-        key=lambda row: (
-            -float(_get(row, "Shrunk_Within_Model_Percentile")),
-            -float(_get(row, "Data_Confidence_Score", 0.0) or 0.0),
-            model_key(row),
-            str(_get(row, "Ticker", "")),
-        )
-    )
-    for rank, row in enumerate(candidates, start=1):
+    ordered_candidates = research_priority_order(candidates)
+    for rank, row in enumerate(ordered_candidates, start=1):
         _set(row, "Research_Priority_Rank", rank)
         in_queue = rank <= max(0, int(queue_size))
         _set(row, "Global_Research_Queue", in_queue)
-        raw = raw_model_score(row)
-        specialized = model_key(row) != "GENERAL_CORPORATE"
-        starter = bool(
-            _truthy(_get(row, "Model_Eligible", False))
-            and _finite(raw)
-            and raw >= 75.0
-            and not _truthy(_get(row, "Human_KPI_Review_Required", False))
-            and not _truthy(_get(row, "Specialized_Stress_Pending", False))
-            and not _truthy(_get(row, "Portfolio_Fit_Pending", False))
-            and (not specialized or _truthy(_get(row, "Cross_Model_Comparable", False)))
-        )
-        _set(row, "Starter_Candidate", starter)
+        _set(row, "Starter_Candidate", starter_candidate_gate(row))
 
     for row in rows:
         states = ["SCREENED"]
@@ -227,12 +313,16 @@ def annotate_research_priorities(
             states.append("HUMAN_KPI_REVIEW_REQUIRED")
         if _truthy(_get(row, "Specialized_Stress_Pending", False)):
             states.append("SPECIALIZED_STRESS_PENDING")
+        if _truthy(_get(row, "Specialized_Stress_Failed", False)):
+            states.append("SPECIALIZED_STRESS_FAILED")
         if _truthy(_get(row, "Portfolio_Fit_Pending", False)):
             states.append("PORTFOLIO_FIT_PENDING")
         if _truthy(_get(row, "Starter_Candidate", False)):
             states.append("STARTER_CANDIDATE")
         if _truthy(_get(row, "Human_KPI_Review_Required", False)):
             action_state = "HUMAN_KPI_REVIEW_REQUIRED"
+        elif _truthy(_get(row, "Specialized_Stress_Failed", False)):
+            action_state = "SPECIALIZED_STRESS_FAILED"
         elif _truthy(_get(row, "Specialized_Stress_Pending", False)):
             action_state = "SPECIALIZED_STRESS_PENDING"
         elif _truthy(_get(row, "Global_Research_Queue", False)):

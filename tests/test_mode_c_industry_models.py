@@ -5,6 +5,7 @@ from mode_c_industry_models import (
     SPECIALIZED_MODEL_KEYS,
     assess_specialized_data_confidence,
     calculate_p_and_c_stress,
+    calculate_specialized_stress,
     evaluate_industry_model,
     initial_screen_industry,
 )
@@ -40,6 +41,10 @@ class IndustryModelTests(unittest.TestCase):
                 "net_income_ttm_b": 1.1,
                 "premium_growth_pct": 8,
                 "reserve_development_to_premium_pct": -1,
+                "net_investment_income_ttm_b": 0.8,
+                "invested_assets_b": 20,
+                "investment_yield_pct": 4,
+                "pretax_income_ttm_b": 1.4,
                 "market_cap_b": 14,
             },
             "INSURANCE_LIFE": {
@@ -49,7 +54,7 @@ class IndustryModelTests(unittest.TestCase):
                 "assets_b": 100,
                 "equity_b": 8,
                 "average_equity_b": 8,
-                "net_income_ttm_b": 1,
+                "net_income_ttm_b": 2,
                 "premium_growth_pct": 5,
                 "market_cap_b": 10,
             },
@@ -193,6 +198,27 @@ class IndustryModelTests(unittest.TestCase):
                 self.assertEqual(result.decision, "PASS")
                 self.assertGreaterEqual(result.score, 60.0)
                 self.assertGreaterEqual(result.score_coverage, 0.80)
+                self.assertEqual(
+                    result.metrics["specialized_stress_status"],
+                    "PASS",
+                )
+
+    def test_specialized_stress_abstains_on_missing_inputs_and_can_fail_independently(self):
+        bank = self.healthy_samples()["BANK"]
+        bank.pop("credit_loss_allowance_b")
+        bank_result = evaluate_industry_model("BANK", bank)
+        self.assertEqual(bank_result.decision, "PASS")
+        self.assertEqual(bank_result.metrics["specialized_stress_status"], "ABSTAIN")
+        self.assertIn(
+            "credit_loss_allowance_b",
+            bank_result.metrics["specialized_stress_missing_inputs"],
+        )
+
+        mortgage_reit = self.healthy_samples()["REIT_MORTGAGE"]
+        mortgage_reit["equity_b"] = 7.0
+        stressed = calculate_specialized_stress("REIT_MORTGAGE", mortgage_reit)
+        self.assertEqual(stressed["specialized_stress_status"], "FAIL")
+        self.assertFalse(stressed["specialized_stress_survival"])
 
     def test_missing_required_metric_abstains_instead_of_neutral_scoring(self):
         bank = self.healthy_samples()["BANK"]
@@ -236,6 +262,17 @@ class IndustryModelTests(unittest.TestCase):
         )
         self.assertLessEqual(proxy_result.components["underwriting_profitability"], 75.0)
         self.assertTrue(any("human kpi review" in warning.lower() for warning in proxy_result.warnings))
+
+    def test_p_and_c_reported_ratio_does_not_require_sec_expense_proxy(self):
+        reported = self.healthy_samples()["INSURANCE_P_AND_C"]
+        reported.pop("combined_expense_ttm_b")
+        reported["company_reported_combined_ratio_pct"] = 92.0
+
+        result = evaluate_industry_model("INSURANCE_P_AND_C", reported)
+
+        self.assertEqual(result.decision, "PASS")
+        self.assertNotIn("combined_ratio_for_model_pct", result.required_missing)
+        self.assertNotIn("combined_expense_ttm_b", result.optional_missing)
 
     def test_p_and_c_regressions_keep_company_kpis_separate(self):
         acgl = self.healthy_samples()["INSURANCE_P_AND_C"]
@@ -303,6 +340,36 @@ class IndustryModelTests(unittest.TestCase):
         )
         self.assertEqual(complete["p_and_c_stress_status"], "PASS")
         self.assertTrue(complete["p_and_c_stress_survival_moderate"])
+        incremental_pretax_loss = 3.5 - complete["p_and_c_stress_pretax_income_moderate_b"]
+        expected_after_tax_loss = incremental_pretax_loss * 0.79
+        self.assertAlmostEqual(
+            complete["p_and_c_stress_after_tax_equity_loss_moderate_b"],
+            expected_after_tax_loss,
+        )
+        self.assertAlmostEqual(
+            complete["p_and_c_stress_equity_to_assets_moderate_pct"],
+            (10.0 - expected_after_tax_loss) / (50.0 - expected_after_tax_loss) * 100.0,
+        )
+
+        declining = calculate_p_and_c_stress(
+            {
+                "premiums_earned_ttm_b": 20.0,
+                "company_reported_combined_ratio_pct": 90.0,
+                "premium_growth_pct": -20.0,
+                "net_investment_income_ttm_b": 1.8,
+                "invested_assets_b": 40.0,
+                "investment_yield_pct": 4.5,
+                "pretax_income_ttm_b": 3.5,
+                "equity_b": 10.0,
+                "assets_b": 50.0,
+            }
+        )
+        self.assertEqual(declining["p_and_c_stress_premium_growth_moderate_pct"], -20.0)
+        self.assertEqual(declining["p_and_c_stress_premium_growth_severe_pct"], -25.0)
+        self.assertLessEqual(
+            declining["p_and_c_stress_underwriting_income_severe_b"],
+            declining["p_and_c_stress_underwriting_income_moderate_b"],
+        )
 
     def test_known_hard_failure_dominates_an_unrelated_missing_metric(self):
         bank = self.healthy_samples()["BANK"]
@@ -347,6 +414,67 @@ class IndustryModelTests(unittest.TestCase):
         result = evaluate_industry_model("REIT_MORTGAGE", mortgage_reit)
         self.assertEqual(result.decision, "ABSTAIN")
         self.assertIn("recurring_earnings_ttm_b", result.required_missing)
+
+    def test_mortgage_reit_uses_recurring_earnings_not_gaap_marks(self):
+        mortgage_reit = self.healthy_samples()["REIT_MORTGAGE"]
+        mortgage_reit["net_income_ttm_b"] = -0.5
+        result = evaluate_industry_model("REIT_MORTGAGE", mortgage_reit)
+
+        self.assertEqual(result.decision, "PASS")
+        self.assertLess(result.metrics["gaap_roe_pct"], 0.0)
+        self.assertGreater(result.metrics["recurring_roe_pct"], 0.0)
+        self.assertTrue(any("gaap net income" in warning.lower() for warning in result.warnings))
+
+        mortgage_reit["recurring_earnings_ttm_b"] = -0.1
+        failed = evaluate_industry_model("REIT_MORTGAGE", mortgage_reit)
+        self.assertEqual(failed.decision, "FAIL")
+        self.assertTrue(any("recurring earnings" in reason.lower() for reason in failed.hard_failures))
+
+    def test_fee_financial_does_not_require_tangible_book_capital(self):
+        fee_business = self.healthy_samples()["FINANCIAL_FEE"]
+        fee_business.pop("tangible_equity_b")
+        fee_business.pop("average_tangible_equity_b")
+        fee_business.pop("assets_b")
+
+        result = evaluate_industry_model("FINANCIAL_FEE", fee_business)
+
+        self.assertEqual(result.decision, "PASS")
+        self.assertIn("net_margin", result.components)
+        self.assertNotIn("tangible_equity_b", result.required_missing)
+
+    def test_fee_financial_does_not_reward_negative_ebitda_leverage(self):
+        levered = self.healthy_samples()["FINANCIAL_FEE"]
+        levered.update({"debt_b": 5.0, "cash_b": 1.0, "ebitda_ttm_b": -1.0})
+        failed = evaluate_industry_model("FINANCIAL_FEE", levered)
+        self.assertEqual(failed.decision, "FAIL")
+        self.assertNotIn("balance_sheet", failed.components)
+
+        net_cash = self.healthy_samples()["FINANCIAL_FEE"]
+        net_cash.update({"debt_b": 1.0, "cash_b": 2.0, "ebitda_ttm_b": math.nan})
+        passed = evaluate_industry_model("FINANCIAL_FEE", net_cash)
+        self.assertEqual(passed.decision, "PASS")
+        self.assertEqual(passed.components["balance_sheet"], 100.0)
+        self.assertNotIn("ebitda_ttm_b", passed.required_missing)
+
+    def test_asset_manager_debt_requires_positive_debt_service_earnings(self):
+        levered = self.healthy_samples()["TRADITIONAL_ASSET_MANAGER"]
+        levered.update({"debt_b": 5.0, "cash_b": 1.0, "ebitda_ttm_b": -1.0})
+        failed = evaluate_industry_model("TRADITIONAL_ASSET_MANAGER", levered)
+        self.assertEqual(failed.decision, "FAIL")
+        self.assertNotIn("balance_sheet", failed.components)
+
+        missing = self.healthy_samples()["TRADITIONAL_ASSET_MANAGER"]
+        missing.update({"debt_b": 5.0, "cash_b": 1.0, "ebitda_ttm_b": math.nan})
+        abstained = evaluate_industry_model("TRADITIONAL_ASSET_MANAGER", missing)
+        self.assertEqual(abstained.decision, "ABSTAIN")
+        self.assertIn("debt_service_earnings_b", abstained.required_missing)
+
+        net_cash = self.healthy_samples()["TRADITIONAL_ASSET_MANAGER"]
+        net_cash.update({"debt_b": 1.0, "cash_b": 2.0, "ebitda_ttm_b": math.nan})
+        passed = evaluate_industry_model("TRADITIONAL_ASSET_MANAGER", net_cash)
+        self.assertEqual(passed.decision, "PASS")
+        self.assertEqual(passed.components["balance_sheet"], 100.0)
+        self.assertNotIn("debt_service_earnings_b", passed.required_missing)
 
     def test_each_specialized_model_enforces_its_survival_hard_gate(self):
         mutations = {

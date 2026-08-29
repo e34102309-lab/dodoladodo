@@ -83,11 +83,11 @@ class ModeCLongTermRuleTests(unittest.TestCase):
             self.workflow.count("github.event.schedule == '0 3 1 * *'"),
             4,
         )
-        self.assertIn('contact_email="${USER_EMAIL:-a7924177@gmail.com}"', self.workflow)
-        self.assertIn(
-            'os.environ.get("USER_EMAIL") or "a7924177@gmail.com"',
-            self.mode_c,
-        )
+        self.assertIn('contact_email="${USER_EMAIL}"', self.workflow)
+        self.assertIn("Missing USER_EMAIL repository secret", self.workflow)
+        self.assertIn("user_email = require_sec_contact_email()", self.mode_c)
+        self.assertNotIn("a7924177@gmail.com", self.workflow)
+        self.assertNotIn("a7924177@gmail.com", self.mode_c)
 
     def test_insurance_route_is_not_changed_to_match_available_tags(self):
         self.assertNotIn("alternate_key =", self.mode_c)

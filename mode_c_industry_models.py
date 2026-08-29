@@ -76,6 +76,20 @@ def _interest_coverage(earnings: Any, interest: Any, debt: Any) -> float:
     return 10.0 if debt_value <= 0 else math.nan
 
 
+def _net_debt_to_positive_earnings(debt: Any, cash: Any, earnings: Any) -> float:
+    debt_value = _number(debt)
+    cash_value = _number(cash)
+    if not math.isfinite(debt_value) or not math.isfinite(cash_value):
+        return math.nan
+    net_debt = max(debt_value - cash_value, 0.0)
+    if net_debt <= 0:
+        return 0.0
+    earnings_value = _number(earnings)
+    if not math.isfinite(earnings_value) or earnings_value <= 0:
+        return math.nan
+    return net_debt / earnings_value
+
+
 def _bounded(value: Any, low: float, high: float) -> float:
     v = _number(value)
     if not math.isfinite(v) or high <= low:
@@ -429,7 +443,7 @@ def evaluate_insurance_p_and_c(raw: Mapping[str, Any]) -> IndustryModelEvaluatio
         components,
         required=[
             "premiums_earned_ttm_b",
-            "combined_expense_ttm_b",
+            "combined_ratio_for_model_pct",
             "assets_b",
             "equity_b",
             "net_income_ttm_b",
@@ -494,11 +508,15 @@ def calculate_p_and_c_stress(raw: Mapping[str, Any]) -> Dict[str, Any]:
         "p_and_c_stress_underwriting_income_moderate_b": math.nan,
         "p_and_c_stress_underwriting_income_severe_b": math.nan,
         "p_and_c_stress_pretax_income_moderate_b": math.nan,
+        "p_and_c_stress_pretax_income_severe_b": math.nan,
+        "p_and_c_stress_after_tax_equity_loss_moderate_b": math.nan,
         "p_and_c_stress_roe_moderate_pct": math.nan,
         "p_and_c_stress_equity_to_assets_moderate_pct": math.nan,
         "p_and_c_stress_survival_moderate": False,
         "p_and_c_stress_status": "ABSTAIN" if missing else "MISSING",
         "p_and_c_stress_missing_inputs": missing,
+        "p_and_c_stress_premium_growth_moderate_pct": math.nan,
+        "p_and_c_stress_premium_growth_severe_pct": math.nan,
     }
     if missing:
         return empty
@@ -509,8 +527,10 @@ def calculate_p_and_c_stress(raw: Mapping[str, Any]) -> Dict[str, Any]:
     moderate_cr = combined + 6.0
     severe_cr = combined + 10.0
     mild_premiums = premiums
-    moderate_premiums = premiums * (1.0 + min(premium_growth, 0.0) / 100.0)
-    severe_premiums = premiums * 0.95
+    moderate_growth = min(premium_growth, 0.0)
+    severe_growth = max(-100.0, moderate_growth - 5.0)
+    moderate_premiums = premiums * (1.0 + moderate_growth / 100.0)
+    severe_premiums = premiums * (1.0 + severe_growth / 100.0)
     mild_underwriting = mild_premiums * (1.0 - mild_cr / 100.0)
     moderate_underwriting = moderate_premiums * (1.0 - moderate_cr / 100.0)
     severe_underwriting = severe_premiums * (1.0 - severe_cr / 100.0)
@@ -527,8 +547,10 @@ def calculate_p_and_c_stress(raw: Mapping[str, Any]) -> Dict[str, Any]:
         - severe_premiums * severe_reserve_shock_pct / 100.0
     )
     baseline_to_moderate_loss = max(0.0, pretax_income - moderate_pretax)
-    moderate_equity = equity - baseline_to_moderate_loss
-    moderate_equity_to_assets = _safe_div(moderate_equity, assets) * 100.0
+    after_tax_loss = baseline_to_moderate_loss * (1.0 - 0.21)
+    moderate_equity = equity - after_tax_loss
+    moderate_assets = assets - after_tax_loss
+    moderate_equity_to_assets = _safe_div(moderate_equity, moderate_assets) * 100.0
     moderate_roe = _safe_div(moderate_pretax * (1.0 - 0.21), average_equity) * 100.0
     survives = bool(moderate_pretax >= 0.0 and moderate_equity_to_assets >= 8.0)
     return {
@@ -540,6 +562,7 @@ def calculate_p_and_c_stress(raw: Mapping[str, Any]) -> Dict[str, Any]:
         "p_and_c_stress_underwriting_income_severe_b": severe_underwriting,
         "p_and_c_stress_pretax_income_moderate_b": moderate_pretax,
         "p_and_c_stress_pretax_income_severe_b": severe_pretax,
+        "p_and_c_stress_after_tax_equity_loss_moderate_b": after_tax_loss,
         "p_and_c_stress_roe_moderate_pct": moderate_roe,
         "p_and_c_stress_equity_to_assets_moderate_pct": moderate_equity_to_assets,
         "p_and_c_stress_survival_moderate": survives,
@@ -548,6 +571,8 @@ def calculate_p_and_c_stress(raw: Mapping[str, Any]) -> Dict[str, Any]:
         "p_and_c_stress_investment_yield_moderate_pct": moderate_yield,
         "p_and_c_stress_investment_yield_severe_pct": severe_yield,
         "p_and_c_stress_severe_reserve_shock_pct": severe_reserve_shock_pct,
+        "p_and_c_stress_premium_growth_moderate_pct": moderate_growth,
+        "p_and_c_stress_premium_growth_severe_pct": severe_growth,
     }
 
 
@@ -693,8 +718,12 @@ def evaluate_reit_mortgage(raw: Mapping[str, Any]) -> IndustryModelEvaluation:
         {
             "assets_to_equity_x": _safe_div(assets, equity),
             "equity_to_assets_pct": _safe_div(equity, assets) * 100.0,
-            "roe_pct": _safe_div(
+            "gaap_roe_pct": _safe_div(
                 net_income,
+                _coalesce_number(metrics.get("average_equity_b"), equity),
+            ) * 100.0,
+            "recurring_roe_pct": _safe_div(
+                recurring_earnings,
                 _coalesce_number(metrics.get("average_equity_b"), equity),
             ) * 100.0,
             "price_to_book_x": _safe_div(market_cap, equity),
@@ -711,8 +740,12 @@ def evaluate_reit_mortgage(raw: Mapping[str, Any]) -> IndustryModelEvaluation:
         hard.append("assets / equity exceeds 15x")
     if _finite(metrics["equity_to_assets_pct"]) and metrics["equity_to_assets_pct"] < 5.0:
         hard.append("equity / assets is below 5%")
+    if math.isfinite(recurring_earnings) and recurring_earnings <= 0:
+        hard.append("TTM recurring earnings are non-positive")
     if math.isfinite(net_income) and net_income <= 0:
-        hard.append("TTM net income is non-positive")
+        warnings.append(
+            "GAAP net income is non-positive; recurring earnings remain the profitability gate"
+        )
     if (
         _finite(metrics["dividend_to_gaap_net_income_pct"])
         and metrics["dividend_to_gaap_net_income_pct"] > 120.0
@@ -723,7 +756,7 @@ def evaluate_reit_mortgage(raw: Mapping[str, Any]) -> IndustryModelEvaluation:
     components = {
         "capital_strength": (_bounded(metrics["equity_to_assets_pct"], 5.0, 15.0), 25.0),
         "leverage": (_inverse(metrics["assets_to_equity_x"], 15.0, 5.0), 20.0),
-        "roe": (_bounded(metrics["roe_pct"], 0.0, 15.0), 20.0),
+        "recurring_roe": (_bounded(metrics["recurring_roe_pct"], 0.0, 15.0), 20.0),
         "dividend_coverage": (_inverse(metrics["dividend_payout_pct"], 120.0, 70.0), 15.0),
         "book_valuation": (_inverse(metrics["price_to_book_x"], 1.5, 0.7), 10.0),
         "net_interest_income_growth": (_bounded(metrics.get("net_interest_income_growth_pct"), -10.0, 10.0), 10.0),
@@ -735,12 +768,12 @@ def evaluate_reit_mortgage(raw: Mapping[str, Any]) -> IndustryModelEvaluation:
         required=[
             "assets_b",
             "equity_b",
-            "net_income_ttm_b",
             "recurring_earnings_ttm_b",
             "market_cap_b",
         ],
         optional=[
             "dividends_ttm_b",
+            "net_income_ttm_b",
             "net_interest_income_ttm_b",
             "net_interest_income_growth_pct",
         ],
@@ -968,29 +1001,38 @@ def evaluate_financial_fee(raw: Mapping[str, Any]) -> IndustryModelEvaluation:
     cash = _number(metrics.get("cash_b"))
     ebitda = _number(metrics.get("ebitda_ttm_b"))
     market_cap = _number(metrics.get("market_cap_b"))
+    net_debt = (
+        max(debt - cash, 0.0)
+        if math.isfinite(debt) and math.isfinite(cash)
+        else math.nan
+    )
     metrics.update(
         {
             "operating_margin_pct": _safe_div(ebit, revenue) * 100.0,
+            "net_margin_pct": _safe_div(net_income, revenue) * 100.0,
             "rotce_pct": _safe_div(
                 net_income,
                 _coalesce_number(metrics.get("average_tangible_equity_b"), equity),
             ) * 100.0,
             "ocf_to_net_income_x": _safe_div(ocf, net_income),
-            "net_debt_to_ebitda_x": _safe_div(max(debt - cash, 0.0), ebitda),
+            "net_debt_b": net_debt,
+            "net_debt_to_ebitda_x": _net_debt_to_positive_earnings(
+                debt, cash, ebitda
+            ),
             "ocf_yield_pct": _safe_div(ocf, market_cap) * 100.0,
             "tangible_equity_to_assets_pct": _safe_div(equity, assets) * 100.0,
         }
     )
     hard = []
-    if math.isfinite(equity) and equity <= 0:
-        hard.append("tangible equity is non-positive")
     if math.isfinite(net_income) and net_income <= 0:
         hard.append("TTM net income is non-positive")
     if math.isfinite(ocf) and ocf <= 0:
         hard.append("TTM operating cash flow is non-positive")
+    if math.isfinite(net_debt) and net_debt > 0 and math.isfinite(ebitda) and ebitda <= 0:
+        hard.append("positive net debt is unsupported by positive TTM EBITDA")
     components = {
         "operating_margin": (_bounded(metrics["operating_margin_pct"], 5.0, 35.0), 25.0),
-        "rotce": (_bounded(metrics["rotce_pct"], 0.0, 25.0), 20.0),
+        "net_margin": (_bounded(metrics["net_margin_pct"], 5.0, 25.0), 20.0),
         "cash_conversion": (_bounded(metrics["ocf_to_net_income_x"], 0.5, 1.3), 20.0),
         "revenue_growth": (_bounded(metrics.get("revenue_growth_pct"), -5.0, 15.0), 15.0),
         "balance_sheet": (_inverse(metrics["net_debt_to_ebitda_x"], 5.0, 0.0), 10.0),
@@ -1005,11 +1047,9 @@ def evaluate_financial_fee(raw: Mapping[str, Any]) -> IndustryModelEvaluation:
             "ebit_ttm_b",
             "ocf_ttm_b",
             "net_income_ttm_b",
-            "tangible_equity_b",
-            "assets_b",
             "debt_b",
             "cash_b",
-            "ebitda_ttm_b",
+            *(["ebitda_ttm_b"] if math.isfinite(net_debt) and net_debt > 0 else []),
             "market_cap_b",
         ],
         optional=["revenue_growth_pct"],
@@ -1028,6 +1068,24 @@ def _evaluate_asset_manager(
     cash = _number(metrics.get("cash_b"))
     fee_related_earnings = _number(metrics.get("fee_related_earnings_b"))
     ebitda = _number(metrics.get("ebitda_ttm_b"))
+    net_debt = (
+        max(debt - cash, 0.0)
+        if math.isfinite(debt) and math.isfinite(cash)
+        else math.nan
+    )
+    debt_service_candidates = (
+        [fee_related_earnings, ebitda]
+        if model_key in {"ALTERNATIVE_ASSET_MANAGER", "INSURANCE_LINKED_ASSET_MANAGER"}
+        else [ebitda]
+    )
+    debt_service_earnings = next(
+        (
+            value
+            for value in debt_service_candidates
+            if math.isfinite(value) and value > 0
+        ),
+        math.nan,
+    )
     metrics.update(
         {
             "ocf_to_net_income_x": _safe_div(ocf, net_income),
@@ -1035,11 +1093,12 @@ def _evaluate_asset_manager(
                 metrics.get("compensation_expense_b"), revenue
             )
             * 100.0,
-            "net_debt_to_fre_or_ebitda_x": _safe_div(
-                max(debt - cash, 0.0),
-                fee_related_earnings
-                if math.isfinite(fee_related_earnings) and fee_related_earnings > 0
-                else ebitda,
+            "net_debt_b": net_debt,
+            "debt_service_earnings_b": debt_service_earnings,
+            "net_debt_to_fre_or_ebitda_x": _net_debt_to_positive_earnings(
+                debt,
+                cash,
+                debt_service_earnings,
             ),
         }
     )
@@ -1078,6 +1137,11 @@ def _evaluate_asset_manager(
         "net_income_ttm_b",
         "debt_b",
         "cash_b",
+        *(
+            ["debt_service_earnings_b"]
+            if math.isfinite(net_debt) and net_debt > 0
+            else []
+        ),
         *required_by_model[model_key],
     ]
     hard = []
@@ -1085,6 +1149,13 @@ def _evaluate_asset_manager(
         hard.append("TTM net income is non-positive")
     if math.isfinite(ocf) and ocf <= 0:
         hard.append("TTM operating cash flow is non-positive")
+    if (
+        math.isfinite(net_debt)
+        and net_debt > 0
+        and all(math.isfinite(value) for value in debt_service_candidates)
+        and all(value <= 0 for value in debt_service_candidates)
+    ):
+        hard.append("positive net debt is unsupported by positive FRE or EBITDA")
     components = {
         "aum_growth": (_bounded(metrics.get("aum_growth_pct"), -5.0, 15.0), 20.0),
         "organic_net_flows": (_bounded(metrics.get("organic_net_flows_pct"), -5.0, 10.0), 15.0),
@@ -1128,6 +1199,414 @@ def evaluate_other_fee_financial(raw: Mapping[str, Any]) -> IndustryModelEvaluat
     return _evaluate_asset_manager(raw, "OTHER_FEE_FINANCIAL")
 
 
+def _stress_result(
+    model_key: str,
+    scenario: str,
+    missing: Sequence[str],
+    survives: bool = False,
+    reason: str = "",
+    **metrics: Any,
+) -> Dict[str, Any]:
+    status = "ABSTAIN" if missing else "PASS" if survives else "FAIL"
+    return {
+        "specialized_stress_model_key": model_key,
+        "specialized_stress_scenario": scenario,
+        "specialized_stress_status": status,
+        "specialized_stress_survival": bool(survives) if not missing else False,
+        "specialized_stress_missing_inputs": list(missing),
+        "specialized_stress_reason": reason,
+        **metrics,
+    }
+
+
+def _missing_numeric_inputs(raw: Mapping[str, Any], names: Sequence[str]) -> List[str]:
+    return [name for name in names if not _finite(raw.get(name))]
+
+
+def calculate_specialized_stress(
+    model_key: str,
+    raw: Mapping[str, Any],
+) -> Dict[str, Any]:
+    """Return a model-specific solvency stress without cross-industry EBITDA shortcuts."""
+    key = str(model_key or "").upper()
+
+    if key == "INSURANCE_P_AND_C":
+        p_and_c = calculate_p_and_c_stress(raw)
+        missing = list(p_and_c.get("p_and_c_stress_missing_inputs") or [])
+        status = str(p_and_c.get("p_and_c_stress_status") or "ABSTAIN").upper()
+        survives = status == "PASS"
+        return {
+            **p_and_c,
+            **_stress_result(
+                key,
+                "combined ratio +6pp, premium growth capped at 0%, investment yield -50bp",
+                missing,
+                survives,
+                "moderate underwriting and investment-income capital survival",
+            ),
+        }
+
+    if key == "BANK":
+        required = [
+            "assets_b",
+            "tangible_equity_b",
+            "loans_b",
+            "credit_loss_allowance_b",
+            "tier1_ratio_pct",
+            "tier1_well_capitalized_min_pct",
+        ]
+        missing = _missing_numeric_inputs(raw, required)
+        if missing:
+            return _stress_result(
+                key,
+                "3% cumulative loan loss after existing allowance",
+                missing,
+                reason="bank capital stress requires reported loans, allowance and Tier 1 capital",
+            )
+        assets = _number(raw.get("assets_b"))
+        equity = _number(raw.get("tangible_equity_b"))
+        loans = _number(raw.get("loans_b"))
+        allowance = max(_number(raw.get("credit_loss_allowance_b")), 0.0)
+        tier1 = _number(raw.get("tier1_ratio_pct"))
+        tier1_minimum = _number(raw.get("tier1_well_capitalized_min_pct"))
+        gross_credit_loss = max(loans, 0.0) * 0.03
+        incremental_pretax_loss = max(gross_credit_loss - allowance, 0.0)
+        after_tax_loss = incremental_pretax_loss * 0.79
+        stressed_equity = equity - after_tax_loss
+        stressed_assets = assets - after_tax_loss
+        stressed_tangible_ratio = _safe_div(stressed_equity, stressed_assets) * 100.0
+        stressed_tier1 = tier1 - _safe_div(after_tax_loss, assets) * 100.0
+        survives = bool(
+            stressed_equity > 0.0
+            and stressed_tangible_ratio >= 3.0
+            and stressed_tier1 >= tier1_minimum
+        )
+        return _stress_result(
+            key,
+            "3% cumulative loan loss after existing allowance",
+            [],
+            survives,
+            reason="survival requires Tier 1 above the reported minimum and tangible equity/assets >=3%",
+            bank_stress_gross_credit_loss_b=gross_credit_loss,
+            bank_stress_incremental_pretax_loss_b=incremental_pretax_loss,
+            bank_stress_after_tax_capital_loss_b=after_tax_loss,
+            bank_stress_tier1_ratio_pct=stressed_tier1,
+            bank_stress_tangible_equity_to_assets_pct=stressed_tangible_ratio,
+        )
+
+    if key == "INSURANCE_LIFE":
+        required = [
+            "premiums_earned_ttm_b",
+            "net_investment_income_ttm_b",
+            "policyholder_benefits_ttm_b",
+            "assets_b",
+            "equity_b",
+            "net_income_ttm_b",
+        ]
+        missing = _missing_numeric_inputs(raw, required)
+        if missing:
+            return _stress_result(
+                key,
+                "premiums -5%, investment income -10%, policy benefits +10%",
+                missing,
+                reason="life-insurance earnings and capital stress inputs are incomplete",
+            )
+        premiums = _number(raw.get("premiums_earned_ttm_b"))
+        investment_income = _number(raw.get("net_investment_income_ttm_b"))
+        benefits = _number(raw.get("policyholder_benefits_ttm_b"))
+        assets = _number(raw.get("assets_b"))
+        equity = _number(raw.get("equity_b"))
+        net_income = _number(raw.get("net_income_ttm_b"))
+        stressed_premiums = premiums * 0.95
+        stressed_investment_income = investment_income * 0.90
+        stressed_benefits = benefits * 1.10
+        pretax_delta = (
+            stressed_premiums
+            - premiums
+            + stressed_investment_income
+            - investment_income
+            - (stressed_benefits - benefits)
+        )
+        after_tax_loss = max(-pretax_delta, 0.0) * 0.79
+        stressed_net_income = net_income + pretax_delta * 0.79
+        stressed_equity = equity - after_tax_loss
+        stressed_assets = assets - after_tax_loss
+        stressed_capital_ratio = _safe_div(stressed_equity, stressed_assets) * 100.0
+        stressed_benefit_ratio = (
+            _safe_div(
+                stressed_benefits,
+                stressed_premiums + stressed_investment_income,
+            )
+            * 100.0
+        )
+        survives = bool(
+            stressed_net_income >= 0.0
+            and stressed_equity > 0.0
+            and stressed_capital_ratio >= 3.0
+        )
+        return _stress_result(
+            key,
+            "premiums -5%, investment income -10%, policy benefits +10%",
+            [],
+            survives,
+            reason="survival requires non-negative stressed earnings and equity/assets >=3%",
+            life_stress_net_income_b=stressed_net_income,
+            life_stress_after_tax_capital_loss_b=after_tax_loss,
+            life_stress_equity_to_assets_pct=stressed_capital_ratio,
+            life_stress_benefit_ratio_pct=stressed_benefit_ratio,
+        )
+
+    if key == "REIT_EQUITY":
+        required = [
+            "ebitdare_proxy_b",
+            "affo_proxy_b",
+            "interest_ttm_b",
+            "debt_b",
+            "cash_b",
+        ]
+        missing = _missing_numeric_inputs(raw, required)
+        if missing:
+            return _stress_result(
+                key,
+                "EBITDAre -20% and interest expense +25%",
+                missing,
+                reason="equity-REIT property cash-flow and debt-service inputs are incomplete",
+            )
+        ebitdare = _number(raw.get("ebitdare_proxy_b"))
+        affo = _number(raw.get("affo_proxy_b"))
+        interest = abs(_number(raw.get("interest_ttm_b")))
+        debt = _number(raw.get("debt_b"))
+        cash = _number(raw.get("cash_b"))
+        stressed_ebitdare = ebitdare * 0.80
+        stressed_interest = interest * 1.25
+        stressed_affo = affo - ebitdare * 0.20 - interest * 0.25
+        net_debt = max(debt - cash, 0.0)
+        stressed_leverage = _safe_div(net_debt, stressed_ebitdare)
+        stressed_coverage = _interest_coverage(stressed_ebitdare, stressed_interest, debt)
+        survives = bool(
+            stressed_affo > 0.0
+            and stressed_ebitdare > 0.0
+            and stressed_leverage <= 10.0
+            and (debt <= 0.0 or stressed_coverage >= 1.25)
+        )
+        return _stress_result(
+            key,
+            "EBITDAre -20% and interest expense +25%",
+            [],
+            survives,
+            reason="survival requires positive AFFO, interest coverage >=1.25x and net debt/EBITDAre <=10x",
+            reit_stress_ebitdare_b=stressed_ebitdare,
+            reit_stress_affo_b=stressed_affo,
+            reit_stress_interest_coverage_x=stressed_coverage,
+            reit_stress_net_debt_to_ebitdare_x=stressed_leverage,
+        )
+
+    if key == "REIT_MORTGAGE":
+        required = ["assets_b", "equity_b", "recurring_earnings_ttm_b"]
+        missing = _missing_numeric_inputs(raw, required)
+        if missing:
+            return _stress_result(
+                key,
+                "asset value -5% and recurring earnings -30%",
+                missing,
+                reason="mortgage-REIT mark-to-market capital inputs are incomplete",
+            )
+        assets = _number(raw.get("assets_b"))
+        equity = _number(raw.get("equity_b"))
+        recurring_earnings = _number(raw.get("recurring_earnings_ttm_b"))
+        asset_loss = max(assets, 0.0) * 0.05
+        stressed_assets = assets - asset_loss
+        stressed_equity = equity - asset_loss
+        stressed_recurring_earnings = recurring_earnings * 0.70
+        stressed_capital_ratio = _safe_div(stressed_equity, stressed_assets) * 100.0
+        survives = bool(
+            stressed_recurring_earnings > 0.0
+            and stressed_equity > 0.0
+            and stressed_capital_ratio >= 5.0
+        )
+        return _stress_result(
+            key,
+            "asset value -5% and recurring earnings -30%",
+            [],
+            survives,
+            reason="survival requires positive recurring earnings and equity/assets >=5%",
+            mortgage_reit_stress_asset_loss_b=asset_loss,
+            mortgage_reit_stress_recurring_earnings_b=stressed_recurring_earnings,
+            mortgage_reit_stress_equity_to_assets_pct=stressed_capital_ratio,
+        )
+
+    if key == "REGULATED_UTILITY":
+        required = [
+            "ebit_ttm_b",
+            "interest_ttm_b",
+            "debt_b",
+            "ocf_ttm_b",
+            "capex_ttm_b",
+        ]
+        missing = _missing_numeric_inputs(raw, required)
+        if missing:
+            return _stress_result(
+                key,
+                "EBIT and OCF -15%, interest expense +20%, CapEx unchanged",
+                missing,
+                reason="utility debt-service and construction-funding inputs are incomplete",
+            )
+        ebit = _number(raw.get("ebit_ttm_b"))
+        interest = abs(_number(raw.get("interest_ttm_b")))
+        debt = _number(raw.get("debt_b"))
+        ocf = _number(raw.get("ocf_ttm_b"))
+        capex = abs(_number(raw.get("capex_ttm_b")))
+        stressed_ebit = ebit * 0.85
+        stressed_interest = interest * 1.20
+        stressed_ocf = ocf * 0.85
+        stressed_coverage = _interest_coverage(stressed_ebit, stressed_interest, debt)
+        stressed_capex_funding = _safe_div(stressed_ocf, capex)
+        survives = bool(
+            stressed_ocf > 0.0
+            and stressed_capex_funding >= 0.50
+            and (debt <= 0.0 or stressed_coverage >= 1.25)
+        )
+        return _stress_result(
+            key,
+            "EBIT and OCF -15%, interest expense +20%, CapEx unchanged",
+            [],
+            survives,
+            reason="survival requires interest coverage >=1.25x and OCF/CapEx >=0.5x",
+            utility_stress_ebit_b=stressed_ebit,
+            utility_stress_ocf_b=stressed_ocf,
+            utility_stress_interest_coverage_x=stressed_coverage,
+            utility_stress_ocf_to_capex_x=stressed_capex_funding,
+        )
+
+    if key == "CYCLICAL_MIDCYCLE":
+        required = ["trough_ebitda_b", "net_debt_to_trough_ebitda_x"]
+        missing = _missing_numeric_inputs(raw, required)
+        debt = _number(raw.get("debt_b"))
+        cash = _number(raw.get("cash_b"))
+        fully_cash_covered = bool(
+            math.isfinite(debt) and math.isfinite(cash) and (debt <= 0.01 or cash >= debt)
+        )
+        coverage = raw.get("trough_interest_coverage_x")
+        coverage_value = float(coverage) if isinstance(coverage, (int, float)) else math.nan
+        if not fully_cash_covered and not math.isfinite(coverage_value):
+            missing.append("trough_interest_coverage_x")
+        if missing:
+            return _stress_result(
+                key,
+                "historical 20th-percentile EBITDA trough",
+                missing,
+                reason="cyclical trough leverage or debt-service evidence is incomplete",
+            )
+        trough = _number(raw.get("trough_ebitda_b"))
+        leverage = _number(raw.get("net_debt_to_trough_ebitda_x"))
+        survives = bool(
+            trough > 0.0
+            and leverage <= 5.0
+            and (fully_cash_covered or coverage_value >= 1.25)
+        )
+        return _stress_result(
+            key,
+            "historical 20th-percentile EBITDA trough",
+            [],
+            survives,
+            reason="survival requires positive trough EBITDA, coverage >=1.25x and net debt/trough EBITDA <=5x",
+            cyclical_stress_trough_ebitda_b=trough,
+            cyclical_stress_interest_coverage_x=coverage_value,
+            cyclical_stress_net_debt_to_ebitda_x=leverage,
+        )
+
+    if key == "FINANCIAL_LENDER":
+        required = [
+            "assets_b",
+            "tangible_equity_b",
+            "loans_b",
+            "credit_loss_allowance_b",
+        ]
+        missing = _missing_numeric_inputs(raw, required)
+        if missing:
+            return _stress_result(
+                key,
+                "5% cumulative loan loss after existing allowance",
+                missing,
+                reason="specialty-lender loss absorption inputs are incomplete",
+            )
+        assets = _number(raw.get("assets_b"))
+        equity = _number(raw.get("tangible_equity_b"))
+        loans = _number(raw.get("loans_b"))
+        allowance = max(_number(raw.get("credit_loss_allowance_b")), 0.0)
+        gross_credit_loss = max(loans, 0.0) * 0.05
+        incremental_pretax_loss = max(gross_credit_loss - allowance, 0.0)
+        after_tax_loss = incremental_pretax_loss * 0.79
+        stressed_equity = equity - after_tax_loss
+        stressed_assets = assets - after_tax_loss
+        stressed_capital_ratio = _safe_div(stressed_equity, stressed_assets) * 100.0
+        survives = bool(stressed_equity > 0.0 and stressed_capital_ratio >= 5.0)
+        return _stress_result(
+            key,
+            "5% cumulative loan loss after existing allowance",
+            [],
+            survives,
+            reason="survival requires tangible equity/assets >=5% after incremental provisions",
+            lender_stress_gross_credit_loss_b=gross_credit_loss,
+            lender_stress_after_tax_capital_loss_b=after_tax_loss,
+            lender_stress_tangible_equity_to_assets_pct=stressed_capital_ratio,
+        )
+
+    fee_models = {
+        "FINANCIAL_FEE",
+        "ALTERNATIVE_ASSET_MANAGER",
+        "TRADITIONAL_ASSET_MANAGER",
+        "INSURANCE_LINKED_ASSET_MANAGER",
+        "OTHER_FEE_FINANCIAL",
+    }
+    if key in fee_models:
+        earnings_field = (
+            "ebitda_ttm_b"
+            if key == "FINANCIAL_FEE"
+            else "debt_service_earnings_b"
+        )
+        required = ["ocf_ttm_b", "net_debt_b", earnings_field]
+        missing = _missing_numeric_inputs(raw, required)
+        if missing:
+            return _stress_result(
+                key,
+                "debt-service earnings -35% and OCF -30%",
+                missing,
+                reason="fee-business debt-service stress inputs are incomplete",
+            )
+        ocf = _number(raw.get("ocf_ttm_b"))
+        net_debt = max(_number(raw.get("net_debt_b")), 0.0)
+        earnings = _number(raw.get(earnings_field))
+        earnings_drop = 0.30 if key == "FINANCIAL_FEE" else 0.35
+        stressed_earnings = earnings * (1.0 - earnings_drop)
+        stressed_ocf = ocf * 0.70
+        stressed_leverage = (
+            0.0 if net_debt <= 0.0 else _safe_div(net_debt, stressed_earnings)
+        )
+        survives = bool(
+            stressed_ocf > 0.0
+            and stressed_earnings > 0.0
+            and stressed_leverage <= 5.0
+        )
+        return _stress_result(
+            key,
+            f"debt-service earnings -{earnings_drop * 100:.0f}% and OCF -30%",
+            [],
+            survives,
+            reason="survival requires positive stressed cash generation and net debt/earnings <=5x",
+            fee_stress_debt_service_earnings_b=stressed_earnings,
+            fee_stress_ocf_b=stressed_ocf,
+            fee_stress_net_debt_to_earnings_x=stressed_leverage,
+        )
+
+    return _stress_result(
+        key or "UNKNOWN",
+        "not implemented",
+        ["registered specialized stress model"],
+        reason="no specialized stress handler is registered",
+    )
+
+
 MODEL_EVALUATORS = {
     "BANK": evaluate_bank,
     "INSURANCE_P_AND_C": evaluate_insurance_p_and_c,
@@ -1146,7 +1625,8 @@ MODEL_EVALUATORS = {
 
 
 def evaluate_industry_model(model_key: str, metrics: Mapping[str, Any]) -> IndustryModelEvaluation:
-    evaluator = MODEL_EVALUATORS.get(str(model_key or "").upper())
+    normalized_key = str(model_key or "").upper()
+    evaluator = MODEL_EVALUATORS.get(normalized_key)
     if evaluator is None:
         return IndustryModelEvaluation(
             model_key=str(model_key or "UNKNOWN"),
@@ -1156,7 +1636,19 @@ def evaluate_industry_model(model_key: str, metrics: Mapping[str, Any]) -> Indus
             required_missing=["implemented model route"],
             warnings=["No specialized evaluator is registered for this model key"],
         )
-    return evaluator(metrics)
+    evaluation = evaluator(metrics)
+    stress = calculate_specialized_stress(normalized_key, evaluation.metrics)
+    evaluation.metrics.update(stress)
+    stress_status = str(stress.get("specialized_stress_status") or "ABSTAIN").upper()
+    if stress_status == "FAIL":
+        evaluation.warnings.append(
+            "Specialized stress failed; the candidate cannot pass the deep-screen gate"
+        )
+    elif stress_status == "ABSTAIN":
+        evaluation.warnings.append(
+            "Specialized stress is unavailable because required stress evidence is missing"
+        )
+    return evaluation
 
 
 def assess_specialized_data_confidence(
