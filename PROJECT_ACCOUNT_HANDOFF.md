@@ -8,13 +8,13 @@
 
 1. 本機專案：`D:\使用者\DoBird\Favorites\Documents\股票\dodoladodo-work`
 2. GitHub：`https://github.com/e34102309-lab/dodoladodo`
-3. 主要工作分支：`codex/metric-integrity-audit-v2`
-4. 本機 HEAD：`e98fffe Reconcile truncated remote branch with complete local tree`；其上另有 2026-09-04 至 2026-09-06 尚未提交的五段策略稽核修正，禁止重置工作樹。
+3. GitHub 生產分支：`main`；策略來源分支：`codex/metric-integrity-audit-v2`。
+4. 五段策略修正：`1fcbd6e Harden stock strategy across five-stage audit`；已由 `a7a0c1a Merge five-stage stock strategy audit into main` 整合至 `main`。
 5. 完整策略修正提交：`0fb550d Harden Mode C strategy logic and decision contracts`；已包含 8 月份的累積修正。
-6. 2026-08-30 已以非 force push 將完整樹 `e98fffe` 推到 GitHub 工作分支，修復舊 tip `52ff824` 的截斷檔案。尚未合併 main；本輪未重新連線查遠端，也未 commit／push。
+6. 2026-09-06 已抓取遠端 `main` 至 `5736083`，保留其最新月度 `qualified_universe.csv`，再以非 force push 完成整合；舊 tip `52ff824` 的截斷檔案修復亦已包含。
 7. 完整策略說明：`CURRENT_STRATEGY_LOGIC_FOR_AI_REVIEW.md`；本輪逐段紀錄：`STRATEGY_FIVE_STAGE_AUDIT.md`。
 8. 自動排程：每週四美股盤後跑 Mode C；每月 1 日另重抓全市場第一層 universe。
-9. 2026-09-06 五段工程驗證：完整 suite 215 項中 214 項先通過，修正唯一過期原始碼字串斷言後該項定點通過；離線 fixture validator 的 `invalid_zero = 0`。詳見第 9 節。
+9. 2026-09-06 五段工程驗證：整合最新 `main` 後完整 suite 215/215 通過；離線 fixture validator 的 `invalid_zero = 0`。詳見第 9 節。
 10. GitHub Actions 最近確認的週排程於 2026-08-20 成功完成；本機未重跑高成本全市場流程。
 
 新帳號接手後，先執行：
@@ -28,7 +28,7 @@ git log --oneline --decorate -5
 
 不要因為本機與遠端 commit SHA 不同就重置檔案。必須先比較檔案樹、實際 diff 與檔案大小；舊截斷提交已修復，仍不可用舊 tip 覆蓋完整版本。
 
-### 本輪新增修正（2026-09-04 至 2026-09-06，尚未提交）
+### 本輪新增修正（2026-09-04 至 2026-09-06，已合併 main）
 
 - SEC YTD 相減與 annual/YTD 橋接改查實際起訖日；四季／八季視窗必須連續，接受 52／53 週財年，拒絕錯置比較期與缺季。
 - Maintenance CapEx 營收成長、三季毛利、DSI、DSO／DPO 與 working-capital growth gap 共用期間檢查；當期餘額必須對齊流量期末，最新資料缺失不能回退舊訊號冒充最新。
@@ -40,7 +40,7 @@ git log --oneline --decorate -5
 - Starter 必須有明確 portfolio-fit PASS，未知風險布林不得當 false；validator 同步重算銀行壓力與稀釋公式。
 - 五段最終驗證涵蓋 215 個單元測試；完整執行 214/215，修正唯一過期靜態斷言後定點通過。Fixture 輸出在 `fixture_output_five_stage_20260904/`，屬離線測試資料。
 - 未調整未經回測的權重、未執行全市場抓取、未改排程、未新增自動續跑；8 月完成後的 heartbeat 已移除。
-- 下一步：經使用者授權後再檢查最新遠端、提交本輪修正並處理 main 整合；策略研究仍以 PIT walk-forward 與資料覆蓋率稽核為優先。
+- 下一步：確認合併後的 GitHub Actions 完成；策略研究仍以 PIT walk-forward 與資料覆蓋率稽核為優先。
 
 ## 2. 專案定位
 
@@ -186,13 +186,13 @@ TTM 流量不可把單季乘四。優先使用：
 - 一般企業決策已明定 reason precedence：ICR、三年 OCF、未歸因持續稀釋與營收／毛利雙重惡化等獨立硬失敗，不會再被低信心 Maintenance CapEx 的 `ABSTAIN` 覆蓋；只有依賴該估計的 FCF 判斷會暫不判斷。
 - 指標契約升級為 `2026-08-metric-status-v5`，CSV、evidence、報告、Dashboard、fixture 與 validator 已同步。
 
-### 5.11 2026-09-06 五段策略稽核（尚未提交）
+### 5.11 2026-09-06 五段策略稽核（已合併 main）
 
 - 完整紀錄在 `STRATEGY_FIVE_STAGE_AUDIT.md`，依初篩路由、財報期間、公式評分、風險排序、輸出驗證五段執行。
 - 初篩與深篩現在共用更嚴格的缺值語意；有效的負值不再被當成 missing，無效分類也不會默認走一般企業。
 - 完整年度、連續季度與最新年度錨點都有明確實際日期條件，避免 `FY` 標籤、缺季或缺最新 SBC 造成期間誤用。
 - 銀行壓力的 Tier 1 分母修正為 RWA，並由 validator 獨立勾稽；固定 RWA、3% 貸損與 21% 稅盾仍只是研究假設，不是監管壓測。
-- 所有本輪變更仍在工作樹，尚未 commit、push 或合併 main；沒有執行高成本即時市場抓取。
+- 策略修正已提交為 `1fcbd6e`，並由 `a7a0c1a` 合併至 `main`；沒有執行高成本即時市場抓取。
 
 ## 6. Dashboard 與主要輸出
 
@@ -242,10 +242,9 @@ Workflow：`.github/workflows/alpha_hunt.yml`
 
 ### 8.1 已知提交狀態與遠端截斷警告
 
-- 本機分支：`codex/metric-integrity-audit-v2`
-- 本機 HEAD：`e98fffe`；2026-08-30 已推送至工作分支。本輪未重新 fetch，遠端現況仍須於下次推送前確認。
-- 2026-08-27 fetch 後，本機 `origin/main` 與遠端 main 均為 `0b764e0...`。
-- 本機 upstream 為 `origin/codex/metric-integrity-audit-v2`；開始本輪時本機 tracking ref 與 HEAD 相同。
+- 策略分支 `codex/metric-integrity-audit-v2` 與遠端均為 `1fcbd6e`。
+- 遠端 `main` 已包含 merge commit `a7a0c1a`；整合時保留 `5736083` 的最新月度 universe。
+- 本機舊 `main` 曾停在未推送的 `afdbb9a`；該指標已保留為 `codex/legacy-main-afdbb9a`，本機 `main` 再對齊 `origin/main`。不要把 legacy 分支推成 main。
 - 歷史事故：舊遠端工作分支 `52ff824...` 並非本機完整版本的等價提交。曾發現下列 8 個檔案被截在約 30 KB，現已由 `e98fffe` 修復：
   - `AQR_ModeC_Agent_V12.py`
   - `CURRENT_STRATEGY_LOGIC_FOR_AI_REVIEW.md`
@@ -256,8 +255,7 @@ Workflow：`.github/workflows/alpha_hunt.yml`
   - `total_market_hunter_v2.py`
   - `validate_mode_c_outputs.py`
 - 修復保留完整本機檔案樹並連接舊遠端歷史，未使用 force push；禁止直接採用舊 `52ff824` 的檔案樹。
-- `main` 的最後確認基準為 `0b764e0...`；本輪未查最新遠端。工作分支尚未合併 main，因此不能宣稱原生排程已使用全部最新策略修正。
-- 8 月累積變更已提交推送；9 月 4 日新增修改仍在工作樹。新帳號不得用 clean/reset 動作清掉。
+- 全部五段策略修正已在 `main`；原生排程下一次執行會使用新邏輯。是否成功產出 artifacts 仍須看該次 Actions 結果。
 
 ### 8.2 新帳號連接步驟
 
@@ -273,8 +271,8 @@ git diff --stat HEAD origin/codex/metric-integrity-audit-v2
 ```
 
 6. 只有在 `git diff` 確實為空且關鍵檔案大小合理時，才能視為內容等價。
-7. 舊截斷已由 `e98fffe` 修復，不需重做修復合併。先保留本輪未提交修改，再依最新遠端 diff 判斷如何整合；不可 force push。
-8. 修復分支通過測試後，再以 PR 整合最新 `main` 的 universe refresh 與本機策略修改。
+7. 舊截斷已由 `e98fffe` 修復並整合 main，不需重做修復合併；不可 force push。
+8. `codex/legacy-main-afdbb9a` 只保留舊本機提交歷史，不是生產分支。
 9. 不要使用 `git reset --hard`，並確認 Actions secret、workflow permissions、Pages 與排程仍可用。
 
 ## 9. 上次驗證結果
@@ -282,7 +280,7 @@ git diff --stat HEAD origin/codex/metric-integrity-audit-v2
 2026-09-06 最近一次工程驗證結果：
 
 - Python compile：七個本輪生產模組已通過 `py_compile`。
-- 單元測試：完整 suite 共 215 項，約 4.0 秒，先有 214 項通過；唯一失敗是抽出 specialized decision helper 後，舊測試仍搜尋原變數名稱。測試改為檢查 helper 呼叫及明確 `ABSTAIN` gate 後，該項定點重跑通過。依低耗用原則未為純測試字串更新再跑完整 suite；215 項案例已跨完整與定點執行全部通過。
+- 單元測試：修正一項過期的 specialized decision 原始碼斷言後，整合遠端最新 `main` 再完整執行 215 項，全部通過，約 4.0 秒。
 - Fixture pipeline：5 檔，3 PASS、1 FAIL、1 ABSTAIN、3 eligible；KNSL fixture 因 P&C 壓力存活失敗退出 eligible。
 - Zero audit：`true_zero = 5`、`invalid_zero = 0`、`missing = 151`、`not_applicable = 347`；缺值與不適用分開保留，不以 0 補值。
 - Dashboard 離線重建成功。
@@ -331,12 +329,11 @@ D:\使用者\DoBird\Favorites\Documents\股票\dodoladodo-work
 3. STRATEGY_FIVE_STAGE_AUDIT.md
 4. .github/workflows/alpha_hunt.yml
 
-Repository 是 e34102309-lab/dodoladodo，主要工作分支是
-codex/metric-integrity-audit-v2。本機 HEAD 是 e98fffe，8 月累積修正已推送
-工作分支，舊 52ff824 的截斷樹已修復，尚未合併 main。其上的 2026-09-04
-至 2026-09-06 五段策略稽核修正尚未提交；215 項測試案例已跨完整 suite
-與單一定點重跑通過，離線 fixture 亦已通過。
-先看 git status、log、diff 確認真實狀態，保留未提交修改；未經授權不要推送。
+Repository 是 e34102309-lab/dodoladodo。五段策略提交 1fcbd6e 已由 merge commit
+a7a0c1a 整合至 main，並保留 5736083 的最新月度 universe；215 項單元測試
+在整合後全數通過，離線 fixture 亦已通過。策略來源分支是
+codex/metric-integrity-audit-v2。先看 git status、log、diff 確認真實狀態；
+未經授權不要再推送。
 
 這是一套美股長期價值研究漏斗，不是自動交易器。請維持 SEC point-in-time
 證據、禁止單季乘四、FAIL/ABSTAIN/N/A 分流、產業專用模型、同模型 percentile

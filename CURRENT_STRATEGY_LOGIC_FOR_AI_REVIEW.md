@@ -1,6 +1,6 @@
 # 股票篩選策略完整邏輯（供外部 AI 審查）
 
-> 版本基準：本機 `codex/metric-integrity-audit-v2`，HEAD `e98fffe`；本文件包含其上的 2026-09-04 至 2026-09-06 未提交修正。五段檢查紀錄見 `STRATEGY_FIVE_STAGE_AUDIT.md`。
+> 策略版本：`1fcbd6e`，已於 2026-09-06 透過 merge commit `a7a0c1a` 整合至 `main`。五段檢查紀錄見 `STRATEGY_FIVE_STAGE_AUDIT.md`。
 > 本文件描述「程式目前真的會做什麼」，不是理想藍圖，也不是投資建議。
 > 金額若無特別註明，以十億美元（USD B）處理；百分比欄位以程式輸出的百分點表示。
 

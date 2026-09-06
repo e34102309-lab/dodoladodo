@@ -1,7 +1,7 @@
 # 股票策略五段檢查
 
-完成日期：2026-09-06。基準為 `codex/metric-integrity-audit-v2` 的 `e98fffe` 加上既有未提交修正。
-本輪保留既有工作樹，不抓全市場、不調整未經驗證的權重，也不自行提交或推送。
+完成日期：2026-09-06。策略修正提交為 `1fcbd6e`，並已透過 merge commit `a7a0c1a` 整合至 `main`。
+本輪保留既有工作，不抓全市場、不調整未經驗證的權重，且全程使用非 force push。
 
 | 段落 | 範圍 | 進度 |
 |---|---|---|
@@ -9,7 +9,7 @@
 | 2 | 財報期間、PIT、TTM | 完成，7 項聚焦測試通過 |
 | 3 | 選股公式與評分 | 完成，公式回歸案例通過 |
 | 4 | 風險閘門與研究排序 | 完成，11 項聚焦測試通過 |
-| 5 | 輸出契約、整合驗證與文件 | 完成；完整 suite 214/215，修正唯一過期斷言後定點通過 |
+| 5 | 輸出契約、整合驗證與文件 | 完成；合併最新 main 後完整 suite 215/215 通過 |
 
 ## 第一段：初篩與產業分流
 
@@ -48,10 +48,10 @@
 
 - Validator 新增銀行壓力獨立重算：重新計算增量貸損、稅後資本損失、RWA 分母的 Tier 1 比率及存活結果；舊 total-assets 分母或 RWA 缺失都會被擋下。
 - Validator 的稀釋總影響同步使用可用因子權重，避免程式與稽核器採不同公式。
-- 完整 unit suite 共 215 項，首次執行 214 項通過；唯一失敗是原始碼字串斷言仍指向抽函式前的 `evaluation.decision`。更新為檢查 `determine_specialized_status` 的呼叫與明確 `ABSTAIN` gate 後，該項定點重跑通過。依低耗用原則沒有為純測試文字變更再跑第二次完整 suite；215 項案例已跨這兩次執行全部通過。
+- 稽核分支首次完整執行有 214/215 項通過；唯一失敗是原始碼字串斷言仍指向抽函式前的 `evaluation.decision`。更新為檢查 `determine_specialized_status` 的呼叫與明確 `ABSTAIN` gate 後，該項定點重跑通過。整合遠端最新 `main` 後再完整執行一次，215/215 項全部通過，約 4.0 秒。
 - 離線 fixture `fixture_output_five_stage_20260904/` 通過：5 檔、3 `PASS`、1 `FAIL`、1 `ABSTAIN`、3 eligible、3 shortlist，`invalid_zero = 0`。
 - 七個本輪生產模組通過 `py_compile`，`git diff --check` 無錯誤；僅有 Git 對 Windows CRLF 正規化的提示。
-- 已同步本文件、`CURRENT_STRATEGY_LOGIC_FOR_AI_REVIEW.md` 與 `PROJECT_ACCOUNT_HANDOFF.md`；沒有執行全市場即時抓取，也沒有提交或推送。
+- 已同步本文件、`CURRENT_STRATEGY_LOGIC_FOR_AI_REVIEW.md` 與 `PROJECT_ACCOUNT_HANDOFF.md`；保留 `main` 最新 `qualified_universe.csv`，沒有執行全市場即時抓取。
 
 ## 結論與邊界
 
