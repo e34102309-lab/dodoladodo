@@ -3,9 +3,30 @@ from __future__ import annotations
 from typing import Dict
 
 
-def route_industry_model(sector: str, industry: str) -> Dict[str, object]:
-    sector_text = str(sector or "").strip().lower()
-    industry_text = str(industry or "").strip().lower()
+ASSET_MANAGER_SUBTYPE_BY_TICKER = {
+    "BX": "ALTERNATIVE_ASSET_MANAGER",
+    "ARES": "ALTERNATIVE_ASSET_MANAGER",
+    "OWL": "ALTERNATIVE_ASSET_MANAGER",
+    "TPG": "ALTERNATIVE_ASSET_MANAGER",
+    "KKR": "ALTERNATIVE_ASSET_MANAGER",
+    "BAM": "INSURANCE_LINKED_ASSET_MANAGER",
+    "AMG": "TRADITIONAL_ASSET_MANAGER",
+    "VCTR": "TRADITIONAL_ASSET_MANAGER",
+}
+
+
+def _classification_text(value: object) -> str:
+    if not isinstance(value, str):
+        return ""
+    text = value.strip().lower()
+    return "" if text in {"nan", "none", "null", "n/a", "<na>", "nat"} else text
+
+
+def route_industry_model(
+    sector: str, industry: str, ticker: str = ""
+) -> Dict[str, object]:
+    sector_text = _classification_text(sector)
+    industry_text = _classification_text(industry)
     blob = f"{sector_text} {industry_text}"
     if not sector_text or not industry_text:
         return {
@@ -42,7 +63,34 @@ def route_industry_model(sector: str, industry: str) -> Dict[str, object]:
             "supported": True,
             "reason": "Dedicated underwriting, claims, capital and reserve-development model",
         }
+    # A specific REIT industry takes precedence over a broad financial sector.
+    if "reit" in industry_text or "real estate investment trust" in industry_text:
+        return {
+            "route": "REIT",
+            "model_key": "REIT_MORTGAGE" if "mortgage" in industry_text else "REIT_EQUITY",
+            "supported": True,
+            "reason": (
+                "Mortgage-REIT book capital, leverage, income and dividend-coverage model"
+                if "mortgage" in industry_text
+                else "Nareit FFO/EBITDAre proxy, AFFO coverage, leverage and lease-growth model"
+            ),
+        }
     if sector_text in {"financial services", "financials"}:
+        if "asset management" in industry_text:
+            model_key = ASSET_MANAGER_SUBTYPE_BY_TICKER.get(
+                _classification_text(ticker).upper(),
+                "ALTERNATIVE_ASSET_MANAGER"
+                if any(token in industry_text for token in ("alternative", "private equity", "private credit"))
+                else "TRADITIONAL_ASSET_MANAGER"
+                if "traditional" in industry_text
+                else "OTHER_FEE_FINANCIAL",
+            )
+            return {
+                "route": "ASSET_MANAGEMENT",
+                "model_key": model_key,
+                "supported": True,
+                "reason": "Asset-manager subtype separates alternative, traditional and insurance-linked economics",
+            }
         if any(token in industry_text for token in ["bank", "banks", "savings", "mortgage finance"]):
             if "mortgage finance" in industry_text and "bank" not in industry_text:
                 route = "FINANCIAL_SPECIALTY"
@@ -62,17 +110,6 @@ def route_industry_model(sector: str, industry: str) -> Dict[str, object]:
                 else "Fee-financial margin, cash conversion, tangible capital and balance-sheet model"
             )
         return {"route": route, "model_key": model_key, "supported": True, "reason": reason}
-    if "reit" in industry_text or "real estate investment trust" in industry_text:
-        return {
-            "route": "REIT",
-            "model_key": "REIT_MORTGAGE" if "mortgage" in industry_text else "REIT_EQUITY",
-            "supported": True,
-            "reason": (
-                "Mortgage-REIT book capital, leverage, income and dividend-coverage model"
-                if "mortgage" in industry_text
-                else "Nareit FFO/EBITDAre proxy, AFFO coverage, leverage and lease-growth model"
-            ),
-        }
     if sector_text == "utilities" and any(
         token in industry_text
         for token in ["independent power", "renewable", "power producer"]

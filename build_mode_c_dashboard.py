@@ -3,14 +3,22 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
 
+from mode_c_research_priority import (
+    GLOBAL_RESEARCH_QUEUE_SIZE,
+    RESEARCH_PRIORITY_VERSION,
+    annotate_research_priorities,
+)
 
-DASHBOARD_TREND_POLICY_VERSION = "2026-07-metric-status-v3"
+DASHBOARD_TREND_POLICY_VERSION = (
+    f"2026-07-model-relative-trends-v4:{RESEARCH_PRIORITY_VERSION}"
+)
 TREND_INCLUDE_ESTIMATED = False
 
 
@@ -89,7 +97,10 @@ THEME_RULES: list[dict[str, Any]] = [
 
 
 TREND_FIELDS = {
-    "avg_score": "Long_Term_Score",
+    "avg_raw_score": "Raw_Model_Score",
+    "avg_shrunk_score": "Shrunk_Within_Model_Percentile",
+    "avg_confidence": "Data_Confidence_Score",
+    "avg_kpi_coverage": "Core_Metric_Coverage_pct",
     "avg_quality": "Quality_Score",
     "avg_revenue_change": "Rev_3Q_Change_pct",
     "avg_margin_change": "GM_3Q_Change_pp",
@@ -136,8 +147,288 @@ def as_number(value: Any) -> float | None:
 
 
 def score(row: dict[str, Any]) -> float:
-    value = as_number(row.get("Long_Term_Score"))
+    value = as_number(row.get("Shrunk_Within_Model_Percentile"))
     return value if value is not None else -1.0
+
+
+def median_value(rows: list[dict[str, Any]], field: str) -> float | None:
+    values = sorted(
+        value
+        for row in rows
+        if (value := as_number(row.get(field))) is not None
+    )
+    if not values:
+        return None
+    middle = len(values) // 2
+    if len(values) % 2:
+        return round(values[middle], 2)
+    return round((values[middle - 1] + values[middle]) / 2.0, 2)
+
+
+def core_kpi_summary(row: dict[str, Any]) -> list[dict[str, Any]]:
+    model_key = str(row.get("Industry_Model_Key") or "GENERAL_CORPORATE")
+    metrics = parse_object(row.get("Industry_Model_Metrics_JSON"))
+
+    def first(*names: str) -> Any:
+        for name in names:
+            if name in row and clean(row.get(name)) is not None:
+                return clean(row.get(name))
+            if name in metrics and clean(metrics.get(name)) is not None:
+                return clean(metrics.get(name))
+        return None
+
+    if model_key == "INSURANCE_P_AND_C":
+        source_status = str(row.get("Combined_Ratio_Source_Status") or "")
+        ratio_label = (
+            "Combined ratio (proxy; unreconciled)"
+            if source_status == "SEC_PROXY_UNRECONCILED"
+            else "Combined ratio"
+        )
+        values = (
+            (ratio_label, first("Company_Reported_Combined_Ratio", "SEC_Combined_Ratio_Proxy", "combined_ratio_for_model_pct", "combined_ratio_proxy_pct"), "%"),
+            ("Premium growth", first("Premium_Growth_pct", "premium_growth_pct"), "%"),
+            ("P/B", first("Price_to_Book_x", "price_to_book_x"), "x"),
+        )
+    elif model_key == "BANK":
+        values = (
+            ("Tier 1 buffer", first("tier1_buffer_pp"), "pp"),
+            ("ROTCE", first("rotce_pct"), "%"),
+            ("P/TBV", first("price_to_tangible_book_x"), "x"),
+        )
+    elif model_key == "REIT_EQUITY":
+        values = (
+            ("AFFO yield", first("affo_yield_pct"), "%"),
+            ("Net debt/EBITDAre", first("net_debt_to_ebitdare_x"), "x"),
+            ("Dividend/AFFO", first("dividend_to_affo_pct"), "%"),
+        )
+    elif model_key in {
+        "ALTERNATIVE_ASSET_MANAGER",
+        "TRADITIONAL_ASSET_MANAGER",
+        "INSURANCE_LINKED_ASSET_MANAGER",
+        "OTHER_FEE_FINANCIAL",
+    }:
+        values = (
+            ("AUM growth", first("AUM_Growth_pct", "aum_growth_pct"), "%"),
+            ("Organic net flows", first("Organic_Net_Flows_pct", "organic_net_flows_pct"), "%"),
+            ("Compensation/revenue", first("Compensation_to_Revenue_pct", "compensation_to_revenue_pct"), "%"),
+        )
+    elif model_key != "GENERAL_CORPORATE":
+        specialized_fields = {
+            "INSURANCE_LIFE": (
+                ("Benefits/operating inflow", "benefit_ratio_pct", "%"),
+                ("Equity/assets", "equity_to_assets_pct", "%"),
+                ("ROE", "roe_pct", "%"),
+            ),
+            "REIT_MORTGAGE": (
+                ("Recurring ROE", "recurring_roe_pct", "%"),
+                ("Assets/equity", "assets_to_equity_x", "x"),
+                ("Dividend payout", "dividend_payout_pct", "%"),
+            ),
+            "REGULATED_UTILITY": (
+                ("Interest coverage", "interest_coverage_x", "x"),
+                ("Debt/capital", "debt_to_capital_pct", "%"),
+                ("Earnings/dividend", "earnings_to_dividend_x", "x"),
+            ),
+            "CYCLICAL_MIDCYCLE": (
+                ("EV/midcycle EBITDA", "ev_to_midcycle_ebitda_x", "x"),
+                ("Net debt/trough EBITDA", "net_debt_to_trough_ebitda_x", "x"),
+                ("Trough interest coverage", "trough_interest_coverage_x", "x"),
+            ),
+            "FINANCIAL_LENDER": (
+                ("ROTCE", "rotce_pct", "%"),
+                ("Tangible equity/assets", "tangible_equity_to_assets_pct", "%"),
+                ("Allowance/loans", "credit_loss_allowance_to_loans_pct", "%"),
+            ),
+            "FINANCIAL_FEE": (
+                ("OCF/net income", "ocf_to_net_income_x", "x"),
+                ("Net debt/EBITDA", "net_debt_to_ebitda_x", "x"),
+                ("EBIT margin", "operating_margin_pct", "%"),
+            ),
+        }.get(model_key, ())
+        values = tuple(
+            (label, first(field), suffix)
+            for label, field, suffix in specialized_fields
+        )
+        if len(values) < 3:
+            padding = (
+                ("Model score", first("Industry_Model_Score"), ""),
+            ) * (3 - len(values))
+            values = (*values, *padding)
+    else:
+        maintenance_yield_lower = as_number(
+            first(
+                "Maintenance_Real_FCF_Yield_Lower_pct",
+                "Maintenance_Real_FCF_Yield_Low_pct",
+            )
+        )
+        maintenance_yield_upper = as_number(
+            first(
+                "Maintenance_Real_FCF_Yield_Upper_pct",
+                "Maintenance_Real_FCF_Yield_High_pct",
+            )
+        )
+        maintenance_yield_range = first("Maintenance_FCF_Yield_Range_Text")
+        if (
+            maintenance_yield_range is None
+            and maintenance_yield_lower is not None
+            and maintenance_yield_upper is not None
+        ):
+            maintenance_yield_range = (
+                f"{maintenance_yield_lower:.2f}%-{maintenance_yield_upper:.2f}%"
+            )
+        values = (
+            ("Maintenance FCF yield range", maintenance_yield_range, ""),
+            ("Conservative FCF yield", first("Conservative_Real_FCF_Yield_pct"), "%"),
+            ("EV/EBITDA", first("EV_EBITDA_x"), "x"),
+        )
+    return [
+        {"label": label, "value": value, "suffix": suffix}
+        for label, value, suffix in values
+    ]
+
+
+def core_metric_coverage(row: dict[str, Any]) -> float | None:
+    model_key = str(row.get("Industry_Model_Key") or "GENERAL_CORPORATE")
+    value = (
+        as_number(row.get("Factor_Coverage"))
+        if model_key == "GENERAL_CORPORATE"
+        else as_number(row.get("Industry_Model_Coverage"))
+    )
+    if value is not None and model_key == "GENERAL_CORPORATE" and value <= 1.0:
+        value *= 100.0
+    if value is None:
+        value = as_number(row.get("Metric_Evidence_Coverage"))
+        if value is not None and value <= 1.0:
+            value *= 100.0
+    return round(value, 2) if value is not None else None
+
+
+def valuation_summary(row: dict[str, Any]) -> str:
+    model_key = str(row.get("Industry_Model_Key") or "GENERAL_CORPORATE")
+    metrics = parse_object(row.get("Industry_Model_Metrics_JSON"))
+    if model_key == "INSURANCE_P_AND_C":
+        value = as_number(row.get("Price_to_Book_x"))
+        value = value if value is not None else as_number(metrics.get("price_to_book_x"))
+        return f"P/B {value:.2f}x" if value is not None else "P/B N/A"
+    if model_key == "BANK":
+        value = as_number(metrics.get("price_to_tangible_book_x"))
+        return f"P/TBV {value:.2f}x" if value is not None else "P/TBV N/A"
+    if model_key == "REIT_EQUITY":
+        value = as_number(metrics.get("price_to_ffo_x"))
+        return f"P/FFO {value:.2f}x" if value is not None else "P/FFO N/A"
+    if model_key in {
+        "ALTERNATIVE_ASSET_MANAGER",
+        "TRADITIONAL_ASSET_MANAGER",
+        "INSURANCE_LINKED_ASSET_MANAGER",
+        "OTHER_FEE_FINANCIAL",
+    }:
+        return str(row.get("Valuation_Method") or metrics.get("valuation_method") or "Valuation KPI pending")
+    if model_key != "GENERAL_CORPORATE":
+        return str(row.get("Valuation_Method") or "Specialized valuation in model details")
+    value = as_number(row.get("EV_EBITDA_x"))
+    return f"EV/EBITDA {value:.2f}x" if value is not None else "EV/EBITDA N/A"
+
+
+def driver_risk_summary(row: dict[str, Any]) -> tuple[list[str], list[str], list[str]]:
+    positives: list[str] = []
+    risks: list[str] = []
+    tasks: list[str] = []
+    model_key = str(row.get("Industry_Model_Key") or "GENERAL_CORPORATE")
+    if model_key == "GENERAL_CORPORATE":
+        for label, field in (
+            ("Quality score", "Quality_Score"),
+            ("Value score", "Value_Score"),
+            ("Operating inflection", "Operating_Inflection_Score"),
+            ("Conservative FCF yield", "Conservative_Real_FCF_Yield_pct"),
+            ("ROIC", "ROIC_pct"),
+        ):
+            value = as_number(row.get(field))
+            if value is not None:
+                positives.append(f"{label}: {value:.2f}")
+    else:
+        components = parse_object(row.get("Industry_Model_Components_JSON"))
+        ranked = sorted(
+            ((name, as_number(value)) for name, value in components.items()),
+            key=lambda item: (item[1] is None, -(item[1] or 0.0), item[0]),
+        )
+        positives.extend(
+            f"{name}: {value:.2f}"
+            for name, value in ranked
+            if value is not None
+        )
+
+    required_missing = str(row.get("Required_Missing_Metrics") or "").strip()
+    optional_missing = str(row.get("Optional_Missing_Metrics") or "").strip()
+    if required_missing:
+        risks.append(f"Required evidence missing: {required_missing}")
+    if str(row.get("Specialized_Stress_Status") or "").upper() not in {
+        "", "PASS", "IMPLEMENTED_PASS", "NOT_APPLICABLE"
+    }:
+        stress_reason = str(row.get("Specialized_Stress_Reason") or "").strip()
+        risks.append(
+            f"Specialized stress: {row.get('Specialized_Stress_Status')}"
+            + (f" ({stress_reason})" if stress_reason else "")
+        )
+    growth_capex_state = str(row.get("Growth_CapEx_Risk_State") or "").upper()
+    if growth_capex_state in {"WATCH", "HIGH_RISK"}:
+        growth_capex_reasons = str(
+            row.get("Growth_CapEx_Risk_Reasons") or ""
+        ).strip()
+        risks.append(
+            f"Growth CapEx {growth_capex_state}"
+            + (f": {growth_capex_reasons}" if growth_capex_reasons else "")
+        )
+    lower_fcf = as_number(row.get("Maintenance_Real_FCF_Yield_Lower_pct"))
+    conservative_fcf = as_number(row.get("Conservative_Real_FCF_Yield_pct"))
+    if lower_fcf is not None and lower_fcf < 0:
+        risks.append(f"Lower-bound maintenance FCF yield: {lower_fcf:.2f}%")
+    if conservative_fcf is not None and conservative_fcf < 0:
+        risks.append(f"Conservative FCF yield: {conservative_fcf:.2f}%")
+    if truthy(row.get("Persistent_Dilution_Hard_Gate")):
+        risks.append("Persistent dilution hard gate")
+    working_capital_state = str(
+        row.get("Working_Capital_Quality_State") or ""
+    ).upper()
+    if working_capital_state in {"WATCH", "HIGH_RISK"}:
+        working_capital_reasons = str(
+            row.get("Working_Capital_Quality_Reasons") or ""
+        ).strip()
+        risks.append(
+            f"Working capital {working_capital_state}"
+            + (
+                f": {working_capital_reasons}"
+                if working_capital_reasons
+                else ""
+            )
+        )
+    flags = str(row.get("Data_Quality_Flags") or "").strip()
+    if flags:
+        risks.extend(item.strip() for item in flags.split("|") if item.strip())
+    agent_tasks = row.get("Agent_Tasks")
+    if isinstance(agent_tasks, list):
+        tasks.extend(str(item) for item in agent_tasks if str(item).strip())
+    else:
+        tasks.extend(
+            item.strip()
+            for item in str(agent_tasks or "").split("|")
+            if item.strip()
+        )
+    if truthy(row.get("Human_KPI_Review_Required")):
+        tasks.insert(0, "Reconcile company-reported KPI with SEC proxy")
+    if truthy(row.get("Specialized_Stress_Pending")):
+        missing_stress = str(
+            row.get("Specialized_Stress_Missing_Inputs") or ""
+        ).strip()
+        tasks.insert(
+            0,
+            "Complete specialized stress evidence"
+            + (f": {missing_stress}" if missing_stress else ""),
+        )
+    if truthy(row.get("Acquisition_Accretion_Review_Required")):
+        tasks.insert(0, "Verify acquisition-related issuance is accretive per share")
+    if optional_missing:
+        tasks.append(f"Optional evidence to collect: {optional_missing}")
+    return positives[:3], risks[:3], tasks[:6]
 
 
 def parse_object(value: Any) -> dict[str, Any]:
@@ -310,8 +601,14 @@ def group_snapshot(group_key: str, name: str, kind: str, rows: list[dict[str, An
         "name": name,
         "kind": kind,
         "theme_id": theme_id,
+        "model_keys": sorted({
+            str(row.get("Industry_Model_Key") or "GENERAL_CORPORATE")
+            for row in rows
+        }),
+        "model_version": RESEARCH_PRIORITY_VERSION,
         "count": len(rows),
         "eligible": sum(truthy(row.get("Long_Term_Eligible")) for row in rows),
+        "research_queue": sum(bool(row.get("IsShortlist")) for row in rows),
         "shortlist": sum(bool(row.get("IsShortlist")) for row in rows),
         "top": [ticker(row) for row in ordered[:8]],
         "metric_coverage": summaries,
@@ -390,7 +687,7 @@ def delta(current: dict[str, Any], previous: dict[str, Any], field: str) -> floa
     return round(now - old, 2)
 
 
-def build_emerging_candidates(groups: dict[str, dict[str, Any]], history: dict[str, Any]) -> list[dict[str, Any]]:
+def _build_legacy_emerging_candidates(groups: dict[str, dict[str, Any]], history: dict[str, Any]) -> list[dict[str, Any]]:
     previous_groups = history.get("groups", {}) if isinstance(history.get("groups"), dict) else {}
     candidates: list[dict[str, Any]] = []
     for key, group in groups.items():
@@ -480,15 +777,149 @@ def build_emerging_candidates(groups: dict[str, dict[str, Any]], history: dict[s
     return candidates[:12]
 
 
+def build_emerging_candidates(
+    groups: dict[str, dict[str, Any]], history: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """Find high-scoring clusters using model-relative scores only."""
+    previous_groups = history.get("groups", {}) if isinstance(history.get("groups"), dict) else {}
+    candidates: list[dict[str, Any]] = []
+    for key, group in groups.items():
+        coverage = group.get("metric_coverage", {})
+        shrunk_coverage = coverage.get("avg_shrunk_score", {})
+        if float(shrunk_coverage.get("coverage") or 0.0) < 0.50:
+            continue
+
+        reasons: list[str] = []
+        deltas: dict[str, Any] = {}
+        signal = 0.0
+
+        def covered_value(field: str) -> float | None:
+            summary = coverage.get(field, {}) if isinstance(coverage, dict) else {}
+            if float(summary.get("coverage") or 0.0) < 0.50:
+                return None
+            return as_number(group.get(field))
+
+        avg_shrunk = covered_value("avg_shrunk_score")
+        avg_confidence = covered_value("avg_confidence")
+        avg_kpi_coverage = covered_value("avg_kpi_coverage")
+        avg_revenue = covered_value("avg_revenue_change")
+        avg_margin = covered_value("avg_margin_change")
+        avg_fcf = covered_value("avg_real_fcf_yield")
+        if avg_shrunk is not None and avg_shrunk >= 60:
+            reasons.append("模型內收縮百分位平均達 60 以上")
+            signal += 2.0
+        elif avg_shrunk is not None and avg_shrunk >= 55:
+            reasons.append("模型內收縮百分位平均達 55 以上")
+            signal += 1.0
+        if (group.get("eligible") or 0) >= 2:
+            reasons.append("至少兩檔通過模型門檻")
+            signal += 2.0
+        elif (group.get("eligible") or 0) >= 1:
+            reasons.append("至少一檔通過模型門檻")
+            signal += 1.0
+        if (group.get("research_queue") or 0) >= 1:
+            reasons.append("至少一檔進入 Global Research Queue")
+            signal += 1.5
+        if avg_confidence is not None and avg_confidence >= 75:
+            reasons.append("平均資料信心達 75 以上")
+            signal += 1.0
+        if avg_kpi_coverage is not None and avg_kpi_coverage >= 70:
+            reasons.append("核心 KPI 平均覆蓋率達 70% 以上")
+            signal += 1.0
+        if avg_revenue is not None and avg_revenue >= 8:
+            reasons.append("近三季營收趨勢改善")
+            signal += 1.0
+        if avg_margin is not None and avg_margin >= 1:
+            reasons.append("近三季毛利率擴張")
+            signal += 1.0
+        if avg_fcf is not None and avg_fcf >= 3:
+            reasons.append("Real FCF yield 具研究吸引力")
+            signal += 1.0
+
+        previous = previous_groups.get(key, {}) if isinstance(previous_groups, dict) else {}
+        if previous:
+            for field, label, threshold in (
+                ("count", "樣本數", 2),
+                ("eligible", "合格檔數", 1),
+                ("research_queue", "研究佇列", 1),
+                ("avg_shrunk_score", "模型內收縮百分位", 3),
+                ("avg_confidence", "資料信心", 3),
+                ("avg_kpi_coverage", "核心 KPI 覆蓋率", 5),
+                ("avg_revenue_change", "營收趨勢", 4),
+                ("avg_margin_change", "毛利率趨勢", 1),
+                ("avg_real_fcf_yield", "Real FCF yield", 1),
+            ):
+                change = delta(group, previous, field)
+                if change is not None:
+                    deltas[field] = change
+                    if change >= threshold:
+                        reasons.append(f"{label}較前期增加 {change:g}")
+                        signal += 1.5
+        else:
+            reasons.append("模型版本或群組首次建立基準")
+            signal += 0.5
+
+        if signal >= 4 and reasons:
+            confidence = "HIGH" if signal >= 7 else "MEDIUM" if signal >= 5 else "LOW"
+            candidates.append(
+                {
+                    "key": key,
+                    "name": group["name"],
+                    "kind": group["kind"],
+                    "theme_id": group.get("theme_id"),
+                    "status": "RESEARCH_CLUSTER_SIGNAL",
+                    "confidence": confidence,
+                    "signal_score": round(signal, 2),
+                    "reasons": reasons[:7],
+                    "metrics": {
+                        field: group.get(field)
+                        for field in (
+                            "count", "eligible", "research_queue",
+                            "avg_raw_score", "avg_shrunk_score",
+                            "avg_confidence", "avg_kpi_coverage",
+                            "avg_revenue_change", "avg_margin_change",
+                            "avg_real_fcf_yield",
+                        )
+                    },
+                    "metric_coverage": coverage,
+                    "deltas": deltas,
+                    "top": group.get("top", []),
+                    "model_keys": group.get("model_keys", []),
+                    "model_version": group.get("model_version"),
+                }
+            )
+    candidates.sort(
+        key=lambda item: (-float(item.get("signal_score") or 0), str(item.get("name") or ""))
+    )
+    return candidates[:12]
+
+
 def build_payload(screen: Path, shortlist: Path, universe: Path, history: Path | None = None) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
-    shortlist_set = {ticker(row) for row in records(shortlist) if ticker(row)}
+    screen_rows = records(screen)
+    priority_upgrade_required = any(
+        str(row.get("Research_Priority_Version") or "")
+        != RESEARCH_PRIORITY_VERSION
+        for row in screen_rows
+    )
+    if priority_upgrade_required:
+        annotate_research_priorities(
+            screen_rows,
+            queue_size=GLOBAL_RESEARCH_QUEUE_SIZE,
+        )
+        shortlist_set = {
+            ticker(row)
+            for row in screen_rows
+            if ticker(row) and truthy(row.get("Global_Research_Queue"))
+        }
+    else:
+        shortlist_set = {ticker(row) for row in records(shortlist) if ticker(row)}
     cik_map = {
         ticker(row): str(row.get("CIK") or "").replace(".0", "").zfill(10)
         for row in records(universe)
         if ticker(row)
     }
     stocks = []
-    for row in records(screen):
+    for row in screen_rows:
         symbol = ticker(row)
         if symbol:
             metadata = parse_object(row.get("Metric_Metadata_JSON"))
@@ -504,11 +935,26 @@ def build_payload(screen: Path, shortlist: Path, universe: Path, history: Path |
             for field, meta in metadata.items():
                 if field in normalized and isinstance(meta, dict):
                     normalized[field] = clean(meta.get("value"))
+            normalized["Core_KPI_Summary"] = core_kpi_summary(normalized)
+            normalized["Core_Metric_Coverage_pct"] = core_metric_coverage(normalized)
+            normalized["Valuation_Summary"] = valuation_summary(normalized)
+            positives, risks, tasks = driver_risk_summary(normalized)
+            normalized["Top_Positive_Drivers"] = positives
+            normalized["Top_Risks"] = risks
+            normalized["Manual_Review_Tasks"] = tasks
             stocks.append(normalized)
 
-    stocks.sort(key=lambda row: (-score(row), ticker(row)))
+    stocks.sort(
+        key=lambda row: (
+            as_number(row.get("Research_Priority_Rank")) is None,
+            as_number(row.get("Research_Priority_Rank")) or math.inf,
+            -score(row),
+            ticker(row),
+        )
+    )
     for rank, row in enumerate(stocks, 1):
-        row["Rank"] = rank
+        row["Dashboard_Rank"] = rank
+        row["Rank"] = clean(row.get("Research_Priority_Rank")) or rank
     attach_theme_tags(stocks)
     integrity_totals = {
         status: sum(
@@ -522,20 +968,79 @@ def build_payload(screen: Path, shortlist: Path, universe: Path, history: Path |
     }
     groups = build_trend_groups(stocks)
     history_payload = load_trend_history(history)
+    previous_policy_version = history_payload.get("policy_version")
+    model_version_changed = bool(
+        history_payload
+        and previous_policy_version != DASHBOARD_TREND_POLICY_VERSION
+    )
     if history_payload.get("policy_version") != DASHBOARD_TREND_POLICY_VERSION:
         history_payload = {}
     generated_at = datetime.now(timezone.utc).isoformat()
+    coverage_medians = {
+        "data_confidence": median_value(stocks, "Data_Confidence_Score"),
+        "core_metric_all": median_value(stocks, "Core_Metric_Coverage_pct"),
+        "core_metric_eligible": median_value(
+            [row for row in stocks if truthy(row.get("Long_Term_Eligible"))],
+            "Core_Metric_Coverage_pct",
+        ),
+        "core_metric_research_queue": median_value(
+            [row for row in stocks if row.get("IsShortlist")],
+            "Core_Metric_Coverage_pct",
+        ),
+    }
+    metadata = {
+        "decision_timestamp": next(
+            (row.get("Decision_Timestamp") for row in stocks if row.get("Decision_Timestamp")),
+            "UNKNOWN",
+        ),
+        "price_data_date": max(
+            (str(row.get("Price_Data_Date")) for row in stocks if row.get("Price_Data_Date")),
+            default="UNKNOWN",
+        ),
+        "latest_sec_availability_date": max(
+            (
+                str(row.get("Latest_SEC_Availability_Date"))
+                for row in stocks
+                if row.get("Latest_SEC_Availability_Date")
+                and str(row.get("Latest_SEC_Availability_Date")).upper() != "UNKNOWN"
+            ),
+            default="UNKNOWN",
+        ),
+        "universe_version": next(
+            (row.get("Universe_Version") for row in stocks if row.get("Universe_Version")),
+            "UNKNOWN",
+        ),
+        "model_version": RESEARCH_PRIORITY_VERSION,
+        "git_commit": next(
+            (row.get("Git_Commit") for row in stocks if row.get("Git_Commit")),
+            "UNKNOWN",
+        ),
+    }
+    total_metric_statuses = sum(integrity_totals.values())
+    status_ratios = {
+        status: round(count / total_metric_statuses, 4) if total_metric_statuses else 0.0
+        for status, count in integrity_totals.items()
+    }
     return {
         "generated_at": generated_at,
+        "research_priority_version": RESEARCH_PRIORITY_VERSION,
+        "trend_policy_version": DASHBOARD_TREND_POLICY_VERSION,
+        "metadata": metadata,
+        "score_disclaimer": "模型內百分位，不代表跨模型未來報酬已校準",
         "stats": {
             "total": len(stocks),
             "eligible": sum(truthy(row.get("Long_Term_Eligible")) for row in stocks),
+            "research_queue": len(shortlist_set),
             "shortlist": len(shortlist_set),
             "metric_status_counts": integrity_totals,
+            "metric_status_ratios": status_ratios,
+            "coverage_medians": coverage_medians,
         },
         "trend_baseline": {
             "status": "與上次比較" if history_payload.get("groups") else "建立基準中",
             "previous_generated_at": history_payload.get("generated_at"),
+            "previous_policy_version": previous_policy_version,
+            "model_version_changed": model_version_changed,
         },
         "emerging_candidates": build_emerging_candidates(groups, history_payload),
         "trend_groups": groups,
@@ -576,6 +1081,7 @@ function renderEmerging(){let base=data.trend_baseline||{};$('#baseline').textCo
 function renderThemes(){let sel=$('#theme');sel.innerHTML='<option value="">不限主題</option>'+themes.map(t=>`<option value="${e(t.id)}">${e(t.name)}</option>`).join('');$('#themeCards').innerHTML=themes.map(t=>`<div class="theme-card" data-theme="${e(t.id)}"><b>${e(t.name)}</b><small>${e(t.thesis)}</small><div class="nums">${t.count} 檔 · eligible ${t.eligible} · shortlist ${t.shortlist}</div><small>Top: ${(t.top||[]).map(e).join(', ')||'待資料'}</small><div class="layers">${(t.layers||[]).map(l=>`${e(l.name)}：${(l.top||[]).slice(0,5).map(e).join(', ')||'待資料'}`).join('<br>')}</div></div>`).join('');document.querySelectorAll('[data-theme]').forEach(card=>card.onclick=()=>{$('#theme').value=card.dataset.theme;render()})}
 function render(){let out=visible(),active=$('#theme').value;document.querySelectorAll('[data-theme]').forEach(card=>card.classList.toggle('active',card.dataset.theme===active));$('#rows').innerHTML=out.map(x=>`<tr data-t="${e(x.Ticker)}"><td>${x.Rank||'-'}</td><td><b>${e(x.Ticker)}</b> ${yes(x.IsShortlist)?'<span class="badge good">Shortlist</span>':''}</td><td>${metricHtml(x,'Long_Term_Score')}</td><td>${e(x.Verdict||x.Status||'待查')}</td><td class="optional">${e(x.Sector||x.Industry||'N/A')}</td><td class="optional">${tagBadges(x)}</td><td class="optional">${metricHtml(x,'Real_FCF_Yield_pct',2,'%')}</td><td><button data-w="${e(x.Ticker)}">${watch.has(x.Ticker)?'移除':'加入'}</button></td></tr>`).join('');$('#empty').hidden=out.length>0;document.querySelectorAll('tr[data-t]').forEach(r=>r.onclick=a=>{if(!a.target.dataset.w)openDetail(r.dataset.t)});document.querySelectorAll('[data-w]').forEach(b=>b.onclick=a=>{a.stopPropagation();toggle(b.dataset.w)})}
 const fields=[['資料信心','Data_Confidence_Score'],['EDGAR acceptance 比例 (0-1)','Evidence_AcceptedAt_Ratio'],['長期綜合分數','Long_Term_Score'],['專用模型分數','Industry_Model_Score'],['專用模型覆蓋','Industry_Model_Coverage','%'],['品質分數','Quality_Score'],['價值分數','Value_Score'],['市場預期分數','Expectations_Score'],['營運拐點分數','Operating_Inflection_Score'],['資本配置分數','Capital_Allocation_Score'],['風險扣分','Risk_Penalty'],['TTM OCF','TTM_OCF_B','B'],['全部 CapEx','Dynamic_CapEx_B','B'],['Maintenance CapEx','Maintenance_CapEx_B','B'],['Growth CapEx','Growth_CapEx_B','B'],['CapEx / D&A','CapEx_to_DnA_x','x'],['TTM SBC','TTM_SBC_B','B'],['Real FCF Yield','Real_FCF_Yield_pct','%'],['全額 CapEx FCF Yield','Conservative_Real_FCF_Yield_pct','%'],['總負債','Total_Debt_B','B'],['現金','Cash_B','B'],['淨負債','Net_Debt_B','B'],['ICR','ICR','x'],['30% 壓力 ICR','Stress_ICR_30x','x'],['30% 壓力淨負債 / EBITDA','NetDebt_to_Stress_EBITDA_30x','x'],['30% 壓力 Real FCF','Stress_Real_FCF_30_B','B'],['ROIC','ROIC_pct','%'],['ROCE','ROCE_pct','%'],['5Y Real FCF 正值年數','Real_FCF_Positive_Years_5Y'],['5Y OCF / 淨利','OCF_to_NetIncome_5Y','x'],['EV / EBITDA','EV_EBITDA_x','x'],['P / E','PE_x','x'],['最新毛利率','GM_Latest_pct','%'],['三季毛利變化','GM_3Q_Change_pp','pp'],['三季營收變化','Rev_3Q_Change_pct','%'],['DSI 季變化','DSI_QoQ_Change_pct','%'],['DSI 年變化','DSI_YoY_Change_pct','%'],['一年股數變化','Share_Count_Change_pct','%'],['三年股數變化','Share_Count_Change_3Y_pct','%'],['一年拆股因子','Share_Split_Factor_1Y','x'],['三年拆股因子','Share_Split_Factor_3Y','x'],['隱含 EBITDA CAGR','Implied_EBITDA_CAGR_3Y_pct','%'],['CAGR 動態上限','Implied_CAGR_Limit_pct','%'],['CAGR 餘裕','Implied_CAGR_Headroom_pct','pp'],['反向估值必要報酬','Reverse_DCF_Required_Return_pct','%'],['EBITDA -30% 下檔','EBITDA_Drawdown_30_pct','%']];
+fields.push(['DSO','DSO_Days',' days'],['DPO','DPO_Days',' days'],['Cash conversion cycle','Cash_Conversion_Cycle_Days',' days'],['AR growth vs revenue','AR_vs_Revenue_Growth_Gap_pp','pp'],['AP growth vs COGS','AP_vs_COGS_Growth_Gap_pp','pp'],['Working-capital risk penalty','Working_Capital_Risk_Penalty'],['Gross buyback','TTM_Gross_Buyback_B','B'],['Stock issuance','TTM_Stock_Issuance_B','B'],['Acquisition stock consideration','Acquisition_Stock_Consideration_B','B']);
 function sec(x){let c=String(x.CIK||'').replace(/\D/g,'');return c?`https://www.sec.gov/edgar/browse/?CIK=${encodeURIComponent(c)}&owner=exclude&action=getcompany`:''}function yahoo(t,p=''){return`https://finance.yahoo.com/quote/${encodeURIComponent(t)}/${p}`}function obj(raw){try{let v=JSON.parse(raw||'{}');return v&&typeof v==='object'?v:{}}catch{return{}}}function specializedPanel(x){if(!x.Industry_Model_Key||x.Industry_Model_Key==='GENERAL_CORPORATE')return'';let metrics=obj(x.Industry_Model_Metrics_JSON),components=obj(x.Industry_Model_Components_JSON),items=o=>Object.entries(o).map(([k,v])=>`<div class="metric"><small>${e(k)}</small><b>${typeof v==='number'?f(v):e(v??'N/A')}</b></div>`).join('');return`<div class="section"><h3>${e(x.Industry_Model_Key)} 專用模型</h3><div class="grid">${items(components)}${items(metrics)}</div><div class="box">${e(x.Industry_Model_Hard_Failures||'無硬性失敗')}<br>${e(x.Industry_Model_Warnings||'無模型警示')}</div></div>`}
 function prompt(x){let themeText=tags(x).length?tags(x).join('、'):'無明確主題標籤',layerText=layerTags(x).length?layerTags(x).join('；'):'尚無層級標籤',special=x.Industry_Model_Key&&x.Industry_Model_Key!=='GENERAL_CORPORATE';return[`請以中長期價值投資角度研究 ${x.Ticker}，不要直接下買賣指令。`,special?`專用模型：${x.Industry_Model_Key}；分數：${f(x.Industry_Model_Score)}；覆蓋：${f(x.Industry_Model_Coverage,1,'%')}；資料信心：${f(x.Data_Confidence_Score)}。`:`Quant 分數：${f(x.Long_Term_Score)}；品質：${f(x.Quality_Score)}；價值：${f(x.Value_Score)}；資本配置：${f(x.Capital_Allocation_Score)}。`,`主題標籤：${themeText}。受益層級：${layerText}。請判斷它是一階、二階或三階受益者，還是只是被題材蹭到。`,special?`專用指標：${x.Industry_Model_Metrics_JSON||'待查'}；警示：${x.Data_Quality_Flags||'無'}。`:`Real FCF Yield：${f(x.Real_FCF_Yield_pct,2,'%')}；ICR：${f(x.ICR,2,'x')}；ROIC：${f(x.ROIC_pct,2,'%')}。`,`債務來源：${x.Debt_Source_Method||'待查'}；ICR 口徑：${x.ICR_Method||'待查'}。`,'請用最新官方財報回答：','1. 三句話投資論點。','2. 最強反方論點。','3. thesis 失效條件。','4. 悲觀、基準、樂觀情境。','5. 核對該產業專用 KPI、現金流與資產負債表警訊。','6. 股數稀釋與管理層資本配置。','7. 與 QQQ/VOO 的重疊，以及額外持有理由。','8. 主題供應鏈位置、訂單能見度、瓶頸、二階受益是否已開始進財報，以及是否已反映在估值。','9. 尚無法確認的監管、產業或公司自訂揭露。'].join('\n')}
 async function copy(t){try{await navigator.clipboard.writeText(t)}catch{let a=document.createElement('textarea');a.value=t;document.body.append(a);a.select();document.execCommand('copy');a.remove()}alert('已複製 AI 研究提示。')}
@@ -585,12 +1091,53 @@ $('#total').textContent=data.stats.total;$('#eligible').textContent=data.stats.e
 </script></body></html>'''
 
 
+MODERN_DASHBOARD_SCRIPT = r'''
+<script>
+const researchScore=x=>n(x.Shrunk_Within_Model_Percentile)??-1;
+function visible(){let q=$('#search').value.toLowerCase(),v=$('#view').value,m=Number($('#min').value),theme=$('#theme').value;let out=stocks.filter(x=>{let hay=[x.Ticker,x.Sector,x.Industry,x.Status,x.Verdict,x.Model_Route,x.Industry_Model_Key,x.Decision_State,x.Research_Action_State,x.Decision_Reason_Code,...tags(x),...layerTags(x)].join(' ').toLowerCase(),special=x.Industry_Model_Key&&x.Industry_Model_Key!=='GENERAL_CORPORATE';return(!q||hay.includes(q))&&(m<=0||researchScore(x)>=m)&&(!theme||themeIds(x).includes(theme))&&(v!=='complete'||yes(x.Data_Integrity_Complete))&&(v!=='estimated'||integrityCount(x,'ESTIMATED')>0)&&(v!=='missing'||integrityCount(x,'MISSING')>0)&&(v!=='specialized'||special)&&(v!=='general'||!special)&&(v!=='shortlist'||yes(x.IsShortlist))&&(v!=='eligible'||yes(x.Long_Term_Eligible))&&(v!=='abstain'||x.Decision_State==='ABSTAIN')&&(v!=='watch'||watch.has(x.Ticker))});if(v==='watch')for(let t of watch)if(!map.has(t)&&(!q||t.toLowerCase().includes(q)))out.push({Ticker:t,Status:'尚未出現在本次資料',Theme_Tags:[],Theme_Ids:[],Theme_Layer_Map:{},Theme_Layer_Tags:[],Core_KPI_Summary:[]});return out}
+function coreKpiHtml(x){let items=x.Core_KPI_Summary||[];return items.map(k=>{let value=n(k.value);let shown=value===null?e(k.value??'N/A'):e(value.toFixed(2)+(k.suffix||''));return `<span class="badge" title="${e(k.label)}">${e(k.label)} ${shown}</span>`}).join('')||'<span class="muted">N/A</span>'}
+function listHtml(items){return(items||[]).length?`<ul>${items.map(item=>`<li>${e(item)}</li>`).join('')}</ul>`:'<span class="muted">None reported</span>'}
+function render(){let out=visible(),active=$('#theme').value;document.querySelectorAll('[data-theme]').forEach(card=>card.classList.toggle('active',card.dataset.theme===active));$('#rows').innerHTML=out.map(x=>`<tr data-t="${e(x.Ticker)}"><td>${x.Research_Priority_Rank||'-'}</td><td><b>${e(x.Ticker)}</b> ${yes(x.IsShortlist)?'<span class="badge good">Queue</span>':''}</td><td>${e(x.Industry_Model_Key||'GENERAL_CORPORATE')}</td><td>${metricHtml(x,'Raw_Model_Score')}</td><td>${metricHtml(x,'Shrunk_Within_Model_Percentile',2,'%')}</td><td>${metricHtml(x,'Data_Confidence_Score')}</td><td class="optional">${coreKpiHtml(x)}</td><td class="optional">${e(x.Valuation_Summary||'N/A')}</td><td>${e(x.Research_Action_State||x.Decision_State||'N/A')}</td><td><button data-w="${e(x.Ticker)}">${watch.has(x.Ticker)?'移除':'加入'}</button></td></tr>`).join('');$('#empty').hidden=out.length>0;document.querySelectorAll('tr[data-t]').forEach(r=>r.onclick=a=>{if(!a.target.dataset.w)openDetail(r.dataset.t)});document.querySelectorAll('[data-w]').forEach(b=>b.onclick=a=>{a.stopPropagation();toggle(b.dataset.w)})}
+function renderEmerging(){let base=data.trend_baseline||{};$('#baseline').textContent=`基準狀態：${base.model_version_changed?'模型版本變更，重新建立基準':(base.status||'首次建立')}${base.previous_generated_at?'；前次 '+new Date(base.previous_generated_at).toLocaleString('zh-TW'):''}。訊號只使用模型內收縮百分位，模型改版會重設基準。`;$('#emergingCards').innerHTML=emerging.length?emerging.map(c=>{let m=c.metrics||{},delta=Object.entries(c.deltas||{}).map(([k,v])=>`${k} ${v>=0?'+':''}${v}`).join(' · ')||'首次基準';return `<div class="emerging-card" data-candidate="${e(c.key)}"><b>${e(c.name)}</b><span class="badge warn">研究線索</span><span class="badge ${c.confidence==='HIGH'?'good':'warn'}">${e(c.confidence)}</span><div class="nums">${e(c.kind)} · 樣本 ${e(m.count??'N/A')} · eligible ${e(m.eligible??'N/A')} · queue ${e(m.research_queue??'N/A')}</div><small>模型：${(c.model_keys||[]).map(e).join(', ')||'N/A'}<br>Raw ${f(m.avg_raw_score,1)} · Shrunk ${f(m.avg_shrunk_score,1)} · Confidence ${f(m.avg_confidence,1)} · KPI coverage ${f(m.avg_kpi_coverage,1,'%')}<br>變化：${e(delta)} · 版本 ${e(c.model_version||'N/A')}</small><div class="reasons">${(c.reasons||[]).map(r=>'• '+e(r)).join('<br>')}</div></div>`}).join(''):'<div class="emerging-card"><b>本期沒有達門檻的研究群聚</b><small>這不是負面投資訊號，只代表目前資料尚未形成足夠強的模型內群聚。</small></div>'}
+const legacyOpenDetail=openDetail;
+openDetail=function(t){legacyOpenDetail(t);let x=map.get(t)||{},body=$('#detailBody');if(!body)return;let source=x.Combined_Ratio_Source_Status||'N/A',stress=x.Specialized_Stress_Status||x.P_and_C_Stress_Status||'N/A';body.insertAdjacentHTML('afterbegin',`<div class="section"><h3>研究優先序與待查事項</h3><div class="grid"><div class="metric"><small>模型</small><b>${e(x.Industry_Model_Key||'GENERAL_CORPORATE')}</b></div><div class="metric"><small>Raw model score</small><b>${f(x.Raw_Model_Score)}</b></div><div class="metric"><small>Within-model percentile</small><b>${f(x.Within_Model_Percentile,2,'%')}</b></div><div class="metric"><small>Shrunk percentile</small><b>${f(x.Shrunk_Within_Model_Percentile,2,'%')}</b></div><div class="metric"><small>Data confidence</small><b>${f(x.Data_Confidence_Score)}</b></div><div class="metric"><small>Core KPI coverage</small><b>${f(x.Core_Metric_Coverage_pct,1,'%')}</b></div><div class="metric"><small>Research state</small><b>${e(x.Research_Action_State||'N/A')}</b></div><div class="metric"><small>Specialized stress</small><b>${e(stress)}</b></div><div class="metric"><small>Research round</small><b>${e(x.Research_Priority_Round||'N/A')}</b></div><div class="metric"><small>Cross-model calibration</small><b>${e(x.Cross_Model_Calibration_Status||'UNCALIBRATED')}</b></div></div><div class="box">${coreKpiHtml(x)}<br><b>Valuation</b>: ${e(x.Valuation_Summary||'N/A')}<br><b>Stress scenario</b>: ${e(x.Specialized_Stress_Scenario||'N/A')}<br><b>Stress reason</b>: ${e(x.Specialized_Stress_Reason||'N/A')}<br><small>Combined-ratio source: ${e(source)} · model version: ${e(data.research_priority_version||'N/A')}</small></div><div class="grid section"><div class="box"><b>Top 3 Positive Drivers</b>${listHtml(x.Top_Positive_Drivers)}</div><div class="box"><b>Top 3 Risks</b>${listHtml(x.Top_Risks)}</div><div class="box"><b>Manual Review Tasks</b>${listHtml(x.Manual_Review_Tasks)}</div></div><div class="box"><b>Required Missing Metrics</b>: ${e(x.Required_Missing_Metrics||'None')}<br><b>Optional Missing Metrics</b>: ${e(x.Optional_Missing_Metrics||'None')}<br><b>Decision reason</b>: ${e(x.Decision_Reason_Code||'N/A')}</div></div>`)};
+const integrityOpenDetail=openDetail;
+openDetail=function(t){integrityOpenDetail(t);let x=map.get(t)||{},body=$('#detailBody');if(!body||x.Industry_Model_Key!=='GENERAL_CORPORATE')return;body.insertAdjacentHTML('afterbegin',`<div class="section"><h3>營運資金、稀釋與組合閘門</h3><div class="box"><b>Working-capital quality</b>: ${e(x.Working_Capital_Quality_State||'MISSING')} · coverage ${f((n(x.Working_Capital_Quality_Coverage)||0)*100,1,'%')} · penalty ${f(x.Working_Capital_Risk_Penalty)}<br><b>Acquisition issuance</b>: ${e(x.Acquisition_Issuance_Attribution_Status||'MISSING')} · ${e(x.Acquisition_Issuance_Reconciliation_Status||'NOT_APPLICABLE')} · accretion review ${yes(x.Acquisition_Accretion_Review_Required)?'required':'not triggered'}<br><b>Portfolio fit</b>: ${e(x.Portfolio_Fit_Status||'PENDING_INPUT')} · ${e(x.Portfolio_Fit_Reason||'holdings and risk inputs are required')}<br><small>As of ${e(x.Portfolio_Fit_AsOf||'N/A')} · age ${f(x.Portfolio_Fit_Input_Age_Days,0,'d')} · ETF top-10 ${yes(x.Portfolio_ETF_Top10_Overlap)?'yes':'no'} · correlation ${e(x.Portfolio_Correlation_Stress_Status||'N/A')}</small><br><small>${e(x.Working_Capital_Quality_Reasons||'No auditable AR/AP growth comparison')}</small></div></div>`)};
+const coverage=(data.stats||{}).coverage_medians||{},ratios=(data.stats||{}).metric_status_ratios||{},integrity=document.querySelector('#integritySummary');if(integrity){integrity.innerHTML=Object.entries(integrityLabels).map(([k,label])=>`<span><small>${e(label)}</small><b>${e(integrityTotals[k]||0)} (${f((ratios[k]||0)*100,1,'%')})</b></span>`).join('');integrity.insertAdjacentHTML('beforeend',`<span><small>Median Core Metric Coverage</small><b>${f(coverage.core_metric_all,1,'%')}</b></span><span><small>Eligible Core Metric Coverage</small><b>${f(coverage.core_metric_eligible,1,'%')}</b></span><span><small>Queue Core Metric Coverage</small><b>${f(coverage.core_metric_research_queue,1,'%')}</b></span>`)}
+const runMeta=data.metadata||{},hero=document.querySelector('.hero');if(hero&&!document.querySelector('#runMetadata'))hero.insertAdjacentHTML('afterend',`<section id="runMetadata" class="panel" style="padding:12px;margin-top:12px"><div class="grid"><div><small>Decision Timestamp</small><br>${e(runMeta.decision_timestamp||'UNKNOWN')}</div><div><small>Price Data Date</small><br>${e(runMeta.price_data_date||'UNKNOWN')}</div><div><small>Latest SEC Availability Date</small><br>${e(runMeta.latest_sec_availability_date||'UNKNOWN')}</div><div><small>Universe Version</small><br>${e(runMeta.universe_version||'UNKNOWN')}</div><div><small>Model Version</small><br>${e(runMeta.model_version||'UNKNOWN')}</div><div><small>Git Commit</small><br>${e(runMeta.git_commit||'UNKNOWN')}</div></div></section>`);
+document.querySelector('#shortlist').textContent=(data.stats||{}).research_queue||0;document.querySelector('#shortlist').previousElementSibling.textContent='Global Research Queue';
+document.querySelector('#updated').insertAdjacentHTML('beforebegin',`<div class="footer warn">${e(data.score_disclaimer||'模型內百分位，不代表跨模型未來報酬已校準')}</div>`);
+renderEmerging();render();
+</script>
+'''
+
+
+def modernize_page(page: str) -> str:
+    page = re.sub(
+        r'(<section class="emerging panel"><h2>).*?(</h2>)',
+        r'\1高分群聚與研究線索\2',
+        page,
+        count=1,
+    )
+    page = re.sub(
+        r'(<section class="table panel"><table><thead><tr>).*?(</tr></thead>)',
+        r'\1<th>研究排名</th><th>Ticker</th><th>模型</th><th>Raw score</th><th>模型內收縮百分位</th><th>資料信心</th><th class="optional">核心 KPI</th><th class="optional">估值</th><th>研究狀態</th><th>Watch</th>\2',
+        page,
+        count=1,
+    )
+    page = page.replace(
+        "metricHtml(x, 'Real_FCF_Yield_pct'",
+        "metricHtml(x,'Real_FCF_Yield_pct'",
+    )
+    return page.replace("</body></html>", MODERN_DASHBOARD_SCRIPT + "</body></html>")
+
+
 def build_dashboard(screen: Path, shortlist: Path, universe: Path, output: Path, history: Path | None = None) -> Path:
     payload, trend_groups = build_payload(screen, shortlist, universe, history)
     output.mkdir(parents=True, exist_ok=True)
     embedded = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).replace("</", "<\\/")
     index = output / "index.html"
-    index.write_text(PAGE.replace("__DATA__", embedded), encoding="utf-8")
+    index.write_text(modernize_page(PAGE).replace("__DATA__", embedded), encoding="utf-8")
     (output / "data.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     (output / ".nojekyll").write_text("", encoding="utf-8")
     save_trend_history(history, trend_groups, payload["generated_at"])

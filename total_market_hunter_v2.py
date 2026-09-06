@@ -61,7 +61,7 @@ MIN_INSTITUTIONAL_OWN = 0.40
 # excluding otherwise valid businesses during the very first screening stage.
 DEFAULT_REQUIRE_INSTITUTIONAL_OWNERSHIP = False
 DEFAULT_ENABLE_PPE_FILTER = False
-HUNTER_POLICY_VERSION = "2026-07-industry-models-v7"
+HUNTER_POLICY_VERSION = "2026-09-industry-models-v8"
 
 SUPPORTED_EQUITY_EXCHANGES = {"NMS", "NYQ", "NGM", "NCM", "ASE", "PCX"}
 SUPPORTED_SEC_EXCHANGES = {"NASDAQ", "NYSE", "NYSE AMERICAN"}
@@ -1017,9 +1017,11 @@ def first_number(mapping: dict, *keys: str) -> Optional[float]:
 
 def first_text(mapping: dict, *keys: str) -> str:
     for key in keys:
-        value = str(mapping.get(key) or "").strip()
-        if value:
-            return value
+        value = mapping.get(key)
+        if isinstance(value, str) and value.strip().lower() not in {
+            "", "nan", "none", "null", "n/a", "<na>", "nat",
+        }:
+            return value.strip()
     return ""
 
 
@@ -1182,7 +1184,9 @@ def evaluate_candidate(
         )
     if sector in STRATEGY_EXCLUDED_SECTORS:
         return make_result(candidate, config, f"Drop: 產業隔離 ({sector})")
-    model_route = route_industry_model(sector, industry)
+    model_route = route_industry_model(
+        sector, industry, ticker=str(candidate.get("Ticker") or "")
+    )
     if not bool(model_route["supported"]):
         return make_result(
             candidate,
@@ -1246,10 +1250,10 @@ def evaluate_candidate(
     if ocf is None:
         first_layer_warnings.append("Yahoo OCF missing; defer to SEC")
     elif ocf <= 0:
-        return make_result(candidate, config, "Drop: 營運現金流非正值")
+        first_layer_warnings.append("Yahoo OCF is non-positive; require SEC corroboration")
 
     gross_margin = first_number(merged, "grossMargins", "grossMargin")
-    if gross_margin is None or not 0 <= gross_margin <= 1:
+    if gross_margin is None or gross_margin > 1:
         gross_margin = None
         first_layer_warnings.append("Yahoo gross margin missing; defer to SEC")
     elif gross_margin <= config.min_gross_margin_floor:
@@ -1272,25 +1276,39 @@ def evaluate_candidate(
     if ebitda is None:
         first_layer_warnings.append("Yahoo EBITDA missing; defer to SEC")
     elif ebitda <= 0:
-        return make_result(candidate, config, "Drop: EBITDA 非正值")
+        first_layer_warnings.append("Yahoo EBITDA is non-positive; require SEC corroboration")
+    if (
+        ocf is not None
+        and ocf <= 0
+        and ebitda is not None
+        and ebitda <= 0
+    ):
+        return make_result(
+            candidate,
+            config,
+            "Drop: Yahoo OCF 與 EBITDA 同時非正值",
+            Sector=sector,
+            Industry=industry,
+            MarketCap_B=round(market_cap_b, 3),
+        )
     if total_debt is None or total_debt < 0:
         total_debt = None
         first_layer_warnings.append("Yahoo total debt missing; defer to SEC")
     if revenue is None:
         first_layer_warnings.append("Yahoo revenue missing; defer to SEC")
     elif revenue <= 0:
-        return make_result(candidate, config, "Drop: 營收非正值")
+        first_layer_warnings.append("Yahoo revenue is non-positive; require SEC corroboration")
 
     debt_ebitda = (
         total_debt / ebitda
-        if total_debt is not None and ebitda is not None
+        if total_debt is not None and ebitda is not None and ebitda > 0
         else None
     )
     total_cash = first_number(merged, "totalCash", "cash")
     cash_is_usable = total_cash is not None and total_cash >= 0
     net_debt_ebitda = (
         max(total_debt - total_cash, 0.0) / ebitda
-        if cash_is_usable and total_debt is not None and ebitda is not None
+        if cash_is_usable and total_debt is not None and ebitda is not None and ebitda > 0
         else None
     )
     screening_leverage = (
@@ -1305,7 +1323,7 @@ def evaluate_candidate(
         if debt_ebitda is not None
         else "待 SEC 確認"
     )
-    if screening_leverage is not None and screening_leverage > config.max_debt_ebitda:
+    if net_debt_ebitda is not None and net_debt_ebitda > config.max_debt_ebitda:
         return make_result(
             candidate,
             config,
@@ -1324,6 +1342,14 @@ def evaluate_candidate(
                 else None
             ),
             LeverageBasis=leverage_label,
+        )
+    if (
+        net_debt_ebitda is None
+        and debt_ebitda is not None
+        and debt_ebitda > config.max_debt_ebitda
+    ):
+        first_layer_warnings.append(
+            "Yahoo gross debt / EBITDA exceeds the limit but cash is unavailable; defer net leverage to SEC"
         )
     leverage_warning = bool(
         screening_leverage is not None
@@ -1351,9 +1377,9 @@ def evaluate_candidate(
 
     ppe_revenue: Optional[float] = None
     if config.enable_ppe_filter:
-        if revenue is None:
+        if revenue is None or revenue <= 0:
             first_layer_warnings.append(
-                "Yahoo revenue missing; PP&E ratio deferred to SEC"
+                "Yahoo revenue is unavailable or non-positive; PP&E ratio deferred to SEC"
             )
         else:
             net_ppe = first_number(merged, "netPPE", "propertyPlantEquipment")

@@ -30,12 +30,17 @@ class ModeCLongTermRuleTests(unittest.TestCase):
         ast.parse(self.industry_models)
 
     def test_quality_first_weighting_and_capital_allocation(self):
-        self.assertIn("quality_score * 0.35", self.mode_c)
-        self.assertIn("value_score * 0.30", self.mode_c)
-        self.assertIn("expectations_score * 0.20", self.mode_c)
-        self.assertIn("momentum_score * 0.05", self.mode_c)
-        self.assertIn("inflection_score * 0.05", self.mode_c)
-        self.assertIn("r.Capital_Allocation_Score * 0.05", self.mode_c)
+        for marker in (
+            '"quality": (quality_score, 35.0, True)',
+            '"value": (value_score, 30.0, True)',
+            '"expectations": (expectations_score, 20.0, True)',
+            '"momentum": (momentum_score, 5.0, True)',
+            '"inventory_inflection": (',
+            '"capital_allocation": (',
+            "weighted_sum / available_weight",
+            '"factor_coverage": round(safe_div(available_weight, applicable_weight, 0.0), 4)',
+        ):
+            self.assertIn(marker, self.mode_c)
 
     def test_cash_flow_and_return_on_capital_metrics_exist(self):
         for marker in (
@@ -78,11 +83,11 @@ class ModeCLongTermRuleTests(unittest.TestCase):
             self.workflow.count("github.event.schedule == '0 3 1 * *'"),
             4,
         )
-        self.assertIn('contact_email="${USER_EMAIL:-a7924177@gmail.com}"', self.workflow)
-        self.assertIn(
-            'os.environ.get("USER_EMAIL") or "a7924177@gmail.com"',
-            self.mode_c,
-        )
+        self.assertIn('contact_email="${USER_EMAIL}"', self.workflow)
+        self.assertIn("Missing USER_EMAIL repository secret", self.workflow)
+        self.assertIn("user_email = require_sec_contact_email()", self.mode_c)
+        self.assertNotIn("a7924177@gmail.com", self.workflow)
+        self.assertNotIn("a7924177@gmail.com", self.mode_c)
 
     def test_insurance_route_is_not_changed_to_match_available_tags(self):
         self.assertNotIn("alternate_key =", self.mode_c)
@@ -126,7 +131,12 @@ class ModeCLongTermRuleTests(unittest.TestCase):
         self.assertIn("if not sbc_metric_evidence_id", self.mode_c)
         self.assertIn("cannot be treated as zero", self.mode_c)
         self.assertIn('("OCF", "CapEx", "DnA", "Revenue", "SBC")', self.mode_c)
-        self.assertIn('evaluation.decision == "ABSTAIN"', self.mode_c)
+        self.assertIn("determine_specialized_status(", self.mode_c)
+        self.assertIn(
+            'if model_decision == "ABSTAIN" or confidence_abstain:',
+            self.mode_c,
+            "The specialized decision helper must preserve its explicit ABSTAIN gate",
+        )
 
     def test_specialized_recency_contract_only_references_fetched_concepts(self):
         tree = ast.parse(self.mode_c)

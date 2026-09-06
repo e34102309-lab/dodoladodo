@@ -24,6 +24,7 @@ from __future__ import annotations
 
 
 import concurrent.futures
+import hashlib
 import json
 import logging
 import math
@@ -37,7 +38,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 
 import numpy as np
@@ -48,6 +49,11 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 from mode_c_evidence import EVIDENCE_COLUMNS, GLOBAL_EVIDENCE_LEDGER
+from mode_c_decision_inputs import (
+    PORTFOLIO_FIT_CONTRACT_VERSION,
+    evaluate_portfolio_fit,
+    load_portfolio_fit_inputs,
+)
 from mode_c_metric_contract import annotate_rows, finite_number
 from mode_c_industry_models import (
     SPECIALIZED_MODEL_KEYS,
@@ -56,6 +62,15 @@ from mode_c_industry_models import (
     evaluate_industry_model,
 )
 from mode_c_routing import route_industry_model
+from mode_c_research_priority import (
+    CROSS_MODEL_CALIBRATION_STATUS,
+    RESEARCH_PRIORITY_METHOD,
+    annotate_research_priorities,
+    global_research_queue,
+    refresh_research_status,
+    shortlist_by_model,
+    starter_candidate_gate,
+)
 
 
 # ==============================================================================
@@ -73,6 +88,7 @@ CACHE_FILE_SHARES = "local_shares_vector_cache.json"
 QUALIFIED_UNIVERSE = "qualified_universe.csv"
 OUTPUT_CSV = "mode_c_screen.csv"
 OUTPUT_SHORTLIST_CSV = "mode_c_shortlist.csv"
+OUTPUT_SHORTLIST_BY_MODEL_CSV = "mode_c_shortlist_by_model.csv"
 OUTPUT_MD = "mode_c_report.md"
 OUTPUT_JSON = "mode_c_agent_payload.json"
 OUTPUT_EVIDENCE_CSV = "mode_c_evidence_ledger.csv"
@@ -109,6 +125,13 @@ HIGH_PRIORITY_SCORE = 80.0
 ETF_TOP10_MIN_BUY_SCORE = 80.0
 STARTER_WEIGHT_MIN_PCT_TOTAL = 1.0
 MIN_DATA_CONFIDENCE = 70.0
+MIN_INVENTORY_TO_REVENUE_PCT = 1.0
+MIN_INVENTORY_TO_ASSETS_PCT = 1.0
+AR_REVENUE_GROWTH_GAP_WATCH_PP = 15.0
+AP_COGS_GROWTH_GAP_WATCH_PP = 20.0
+WORKING_CAPITAL_MIN_MATERIAL_DAYS = 5.0
+WORKING_CAPITAL_WATCH_PENALTY = 5.0
+WORKING_CAPITAL_HIGH_RISK_PENALTY = 10.0
 MAX_DOMESTIC_CORE_FACT_AGE_DAYS = 240
 MAX_FOREIGN_ANNUAL_FACT_AGE_DAYS = 550
 MAX_CORE_FACT_AGE_DAYS = MAX_FOREIGN_ANNUAL_FACT_AGE_DAYS
@@ -494,6 +517,20 @@ class SECDataDistiller:
             "GrossProfit": ["GrossProfit"],
             "COGS": ["CostOfRevenue", "CostOfGoodsAndServicesSold", "CostOfGoodsAndServiceExcludingDepreciationDepletionAndAmortization"],
             "Inventory": ["InventoryNet", "Inventory"],
+            "AccountsReceivable": [
+                "AccountsReceivableNetCurrent",
+                "AccountsReceivableNet",
+            ],
+            "AccountsPayable": [
+                "AccountsPayableCurrent",
+                "AccountsPayable",
+            ],
+            "DeferredRevenue": [
+                "ContractWithCustomerLiabilityCurrent",
+                "ContractWithCustomerLiability",
+                "DeferredRevenueCurrent",
+                "DeferredRevenue",
+            ],
             "DebtTotal": [
                 "DebtCurrentAndLongTerm",
                 "DebtAndFinanceLeaseObligations",
@@ -522,8 +559,17 @@ class SECDataDistiller:
             ],
             "Equity": ["StockholdersEquity", "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest"],
             "NetIncome": ["NetIncomeLoss", "ProfitLoss"],
+            "PretaxIncome": [
+                "IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest",
+                "IncomeLossFromContinuingOperationsBeforeIncomeTaxesMinorityInterestAndIncomeLossFromEquityMethodInvestments",
+                "IncomeLossFromContinuingOperationsBeforeIncomeTaxes",
+            ],
             "Buyback": ["PaymentsForRepurchaseOfCommonStock", "PaymentsForRepurchaseOfEquity"],
             "StockIssuance": ["ProceedsFromIssuanceOfCommonStock", "StockIssuedDuringPeriodValueNewIssues"],
+            "AcquisitionStockConsideration": [
+                "BusinessCombinationConsiderationTransferredEquityInterestsIssuedAndIssuable",
+                "BusinessCombinationConsiderationTransferredEquityInterestsIssued",
+            ],
             "Dividend": ["PaymentsOfDividendsCommonStock", "PaymentsOfDividends"],
             "EPSDiluted": ["EarningsPerShareDiluted"],
             "SharesDiluted": ["WeightedAverageNumberOfDilutedSharesOutstanding"],
@@ -556,6 +602,7 @@ class SECDataDistiller:
                 "ProvisionForLoanLossesExpensed",
             ],
             "Tier1Ratio": ["TierOneRiskBasedCapitalToRiskWeightedAssets"],
+            "RiskWeightedAssets": ["RiskWeightedAssets"],
             "Tier1WellCapitalizedMinimum": [
                 "TierOneRiskBasedCapitalRequiredToBeWellCapitalizedToRiskWeightedAssets"
             ],
@@ -588,6 +635,12 @@ class SECDataDistiller:
             "NetInvestmentIncome": [
                 "NetInvestmentIncome",
                 "SupplementaryInsuranceInformationNetInvestmentIncome",
+            ],
+            "InvestedAssets": [
+                "InvestmentSecurities",
+                "MarketableSecuritiesCurrent",
+                "ShortTermInvestments",
+                "DebtAndEquitySecurities",
             ],
             "InsuranceReserves": [
                 "LiabilityForClaimsAndClaimsAdjustmentExpense",
@@ -973,12 +1026,7 @@ class SECDataDistiller:
         d = df.copy()
         is_annual_form = d["form"].astype(str).str.upper().isin(ANNUAL_FILING_FORMS)
         is_annual_duration = d["duration_days"].between(330, 380, inclusive="both")
-        annual = d[
-            is_annual_form
-            & (is_annual_duration | d["fp"].astype(str).str.upper().eq("FY"))
-        ]
-        if annual.empty:
-            annual = d[is_annual_form]
+        annual = d[is_annual_form & is_annual_duration]
         if annual.empty:
             return annual
         annual = annual.copy()
@@ -1042,6 +1090,28 @@ class SECDataDistiller:
         return float(row["val"]) / 1e9
 
 
+    def balance_series(
+        self,
+        df: pd.DataFrame,
+        normalized_metric: str = "",
+    ) -> pd.Series:
+        facts = self._instant_facts(df)
+        if facts.empty:
+            return pd.Series(dtype=float)
+        self._mark_rows_used(facts, f"{normalized_metric}:balance-series")
+        series = pd.Series(
+            facts["val"].to_numpy(dtype=float),
+            index=pd.to_datetime(facts["end"]),
+        ).sort_index()
+        series = series[~series.index.duplicated(keep="last")]
+        series.attrs["source_evidence_ids"] = [
+            str(item)
+            for item in facts.get("evidence_id", pd.Series(dtype=str)).dropna().tolist()
+            if str(item)
+        ]
+        return series
+
+
     def latest_balance_with_concept(
         self,
         df: pd.DataFrame,
@@ -1070,17 +1140,23 @@ class SECDataDistiller:
             return None
         fp = str(fp).upper()
         expected = {"Q1": 90, "Q2": 180, "Q3": 270, "FY": 365}.get(fp)
-        d = df[(df["fy"].astype(str) == str(fy)) & (df["fp"].astype(str).str.upper() == fp)].copy()
+        fiscal_year = pd.to_numeric(fy, errors="coerce")
+        if pd.isna(fiscal_year) or not math.isfinite(fiscal_year) or fiscal_year % 1:
+            return None
+        d = df[(pd.to_numeric(df["fy"], errors="coerce") == fiscal_year) & (df["fp"].astype(str).str.upper() == fp)].copy()
         if d.empty:
             return None
         if expected:
-            d["score"] = (d["duration_days"].fillna(expected) - expected).abs()
+            d = d[d["duration_days"].notna()].copy()
+            d["score"] = (d["duration_days"] - expected).abs()
             if fp == "Q2":
                 d = d[d["duration_days"].fillna(180).between(140, 220, inclusive="both")]
             elif fp == "Q3":
                 d = d[d["duration_days"].fillna(270).between(230, 310, inclusive="both")]
             elif fp == "Q1":
                 d = d[d["duration_days"].fillna(90).between(60, 130, inclusive="both")]
+            elif fp == "FY":
+                d = d[d["duration_days"].between(330, 380, inclusive="both")]
         if d.empty:
             return None
         # SEC facts include comparative periods from later filings. Restricting to
@@ -1143,9 +1219,25 @@ class SECDataDistiller:
             latest_q = latest_q_candidates.iloc[-1]
             fy, fp = latest_q.get("fy"), str(latest_q.get("fp", "")).upper()
             latest_ytd = self._select_ytd(d, fy, fp)
-            prior_ytd = self._select_ytd(d, int(fy) - 1 if str(fy).isdigit() else fy, fp)
+            prior_ytd = self._select_ytd(d, pd.to_numeric(fy, errors="coerce") - 1, fp)
             annual_before = annual[annual["end"] < latest_q["end"]]
-            if latest_ytd is not None and prior_ytd is not None and not annual_before.empty:
+            annual_row = annual_before.iloc[-1] if not annual_before.empty else None
+            aligned_ytd = False
+            if latest_ytd is not None and prior_ytd is not None and annual_row is not None:
+                starts = [
+                    pd.to_datetime(row.get("start"), errors="coerce")
+                    for row in (annual_row, latest_ytd, prior_ytd)
+                ]
+                aligned_ytd = (
+                    all(pd.notna(start) for start in starts)
+                    and starts[1] == pd.Timestamp(annual_row["end"]) + pd.Timedelta(days=1)
+                    and starts[2] == starts[0]
+                    and latest_ytd["end"] == latest_10q_end
+                    and prior_ytd["end"] <= annual_row["end"]
+                    and 350 <= (latest_ytd["end"] - prior_ytd["end"]).days <= 380
+                    and abs(latest_ytd["duration_days"] - prior_ytd["duration_days"]) <= 7
+                )
+            if aligned_ytd:
                 ann = float(annual_before.iloc[-1]["val"])
                 ly = float(latest_ytd["val"])
                 py = float(prior_ytd["val"])
@@ -1171,9 +1263,11 @@ class SECDataDistiller:
                 }
 
 
-        qs = self.quarterly_series(df, normalized_metric)
-        if len(qs) >= 4:
-            ttm = float(qs.tail(4).sum()) / 1e9
+        qs = _trailing_quarter_window(
+            self.quarterly_series(df, normalized_metric), 4, anchor_end=d["end"].max()
+        )
+        if len(qs) == 4:
+            ttm = float(qs.sum()) / 1e9
             result = ttm if signed else abs(ttm)
             source_ids = qs.attrs.get("source_evidence_ids", [])
             source_frame = (
@@ -1185,11 +1279,11 @@ class SECDataDistiller:
                 normalized_metric,
                 result,
                 "USD_B",
-                "sum(last 4 derived quarters)",
+                "sum(latest 4 consecutive derived quarters)",
                 [source_frame],
                 f"{normalized_metric}:ttm-fallback",
             )
-            return result, "TTM=fallback sum(last 4 derived quarters)", {
+            return result, "TTM=fallback sum(latest 4 consecutive derived quarters)", {
                 "q4sum": ttm,
                 "evidence_id": evidence_id,
             }
@@ -1225,6 +1319,17 @@ class SECDataDistiller:
         years = sorted([y for y in d["fy"].dropna().unique() if str(y).replace(".", "").isdigit()])
         out: List[Tuple[pd.Timestamp, float]] = []
         source_ids = set()
+
+        def adjacent_ytd(later, earlier) -> bool:
+            if later is None or earlier is None:
+                return False
+            start = pd.to_datetime(later.get("start"), errors="coerce")
+            prior_start = pd.to_datetime(earlier.get("start"), errors="coerce")
+            return bool(
+                pd.notna(start) and start == prior_start
+                and 60 <= (later["end"] - earlier["end"]).days <= 130
+            )
+
         for fy in years:
             q1 = self._select_ytd(d, fy, "Q1")
             q2 = self._select_ytd(d, fy, "Q2")
@@ -1237,14 +1342,17 @@ class SECDataDistiller:
             if q1 is not None:
                 q_vals.append((pd.Timestamp(q1["end"]), float(q1["val"])))
                 source_ids.update(self._mark_rows_used(q1, f"{normalized_metric}:quarterly-series"))
-            if q2 is not None and q1 is not None:
+            if adjacent_ytd(q2, q1):
                 q_vals.append((pd.Timestamp(q2["end"]), float(q2["val"]) - float(q1["val"])))
+                source_ids.update(self._mark_rows_used(q1, f"{normalized_metric}:quarterly-series"))
                 source_ids.update(self._mark_rows_used(q2, f"{normalized_metric}:quarterly-series"))
-            if q3 is not None and q2 is not None:
+            if adjacent_ytd(q3, q2):
                 q_vals.append((pd.Timestamp(q3["end"]), float(q3["val"]) - float(q2["val"])))
+                source_ids.update(self._mark_rows_used(q2, f"{normalized_metric}:quarterly-series"))
                 source_ids.update(self._mark_rows_used(q3, f"{normalized_metric}:quarterly-series"))
-            if fyv is not None and q3 is not None:
+            if adjacent_ytd(fyv, q3):
                 q_vals.append((pd.Timestamp(fyv["end"]), float(fyv["val"]) - float(q3["val"])))
+                source_ids.update(self._mark_rows_used(q3, f"{normalized_metric}:quarterly-series"))
                 source_ids.update(self._mark_rows_used(fyv, f"{normalized_metric}:quarterly-series"))
             for end, val in q_vals:
                 if math.isfinite(val):
@@ -1254,6 +1362,7 @@ class SECDataDistiller:
         s = pd.Series({end: val for end, val in out}).sort_index()
         s = s[~s.index.duplicated(keep="last")]
         s.attrs["source_evidence_ids"] = sorted(source_ids)
+        s.attrs["latest_reported_end"] = d["end"].max()
         return s
 
 
@@ -1408,6 +1517,87 @@ def first_finite_positive(*values: Any) -> float:
     return np.nan
 
 
+def decision_reason_code(status: Any, decision_state: Any = "") -> str:
+    text = str(status or "").lower()
+    state = str(decision_state or "").upper()
+    if any(
+        token in text
+        for token in (
+            "季度毛利資料不足",
+            "三季毛利",
+            "quarterly",
+            "annual-only",
+            "annual filing",
+        )
+    ):
+        return "INSUFFICIENT_QUARTERLY_EVIDENCE"
+    if "company-reported" in text or "公司reported" in text:
+        return "MISSING_COMPANY_REPORTED_KPI"
+    if "unreconciled" in text or "未勾稽" in text:
+        return "UNRECONCILED_PROXY"
+    if "過舊" in text or "stale" in text or "too old" in text:
+        return "STALE_CORE_FACTS"
+    if "fx" in text or "foreign currency" in text or "幣別" in text or "adr ratio" in text:
+        return "FX_CHAIN_UNAVAILABLE"
+    if "未註冊模型" in text or "模型路由不可判定" in text or "model unavailable" in text:
+        return "MODEL_NOT_APPLICABLE"
+    if "stress" in text and (
+        "missing" in text
+        or "not available" in text
+        or "incomplete" in text
+        or "未完成" in text
+    ):
+        return "SPECIALIZED_STRESS_NOT_AVAILABLE"
+    if "acquisition-related share issuance" in text or "accretion review" in text:
+        return "ACQUISITION_ACCRETION_REVIEW"
+    if any(token in text for token in ("核心資料缺失", "證據鏈不完整", "required evidence incomplete", "missing critical")):
+        return "MISSING_REQUIRED_EVIDENCE"
+    if "xbrl" in text or "mapping" in text:
+        return "XBRL_MAPPING_UNAVAILABLE"
+    if any(
+        token in text
+        for token in (
+            "無價格資料",
+            "價格失真",
+            "no price",
+            "missing price",
+            "market data unavailable",
+        )
+    ):
+        return "MISSING_MARKET_DATA"
+    if state == "FAIL" or text.startswith("fail"):
+        return "FINANCIAL_HARD_GATE"
+    if state == "ABSTAIN" or text.startswith("abstain"):
+        return "INSUFFICIENT_VERIFIABLE_EVIDENCE"
+    return "MODEL_PASS"
+
+
+def enforce_decision_semantics(result: "ModeCResult") -> "ModeCResult":
+    code = decision_reason_code(result.Status, result.Decision_State)
+    missing_data_fail_codes = {
+        "INSUFFICIENT_QUARTERLY_EVIDENCE",
+        "MISSING_COMPANY_REPORTED_KPI",
+        "STALE_CORE_FACTS",
+        "UNRECONCILED_PROXY",
+        "FX_CHAIN_UNAVAILABLE",
+        "MODEL_NOT_APPLICABLE",
+        "SPECIALIZED_STRESS_NOT_AVAILABLE",
+        "ACQUISITION_ACCRETION_REVIEW",
+        "MISSING_REQUIRED_EVIDENCE",
+        "XBRL_MAPPING_UNAVAILABLE",
+        "MISSING_MARKET_DATA",
+    }
+    if result.Decision_State == "FAIL" and code in missing_data_fail_codes:
+        result.Decision_State = "ABSTAIN"
+        if result.Status.startswith("Fail:"):
+            result.Status = "Abstain:" + result.Status[len("Fail:"):]
+        result.Long_Term_Eligible = False
+        result.Long_Term_Score = np.nan
+        result.Suggested_Starter_Weight_pct_Total = 0.0
+    result.Decision_Reason_Code = code
+    return result
+
+
 
 def annual_values_by_year(
     sec: SECDataDistiller,
@@ -1515,8 +1705,8 @@ def estimate_maintenance_capex_profile(
             dna_anchor = max(dna_anchor, recent_dna / 1e9)
 
     revenue_growth = np.nan
-    rev_q = sec.quarterly_series(df_rev, "Revenue")
-    if len(rev_q) >= 8:
+    rev_q = _trailing_quarter_window(sec.quarterly_series(df_rev, "Revenue"), 8)
+    if len(rev_q) == 8:
         rev_now = float(rev_q.tail(4).sum())
         rev_prev = float(rev_q.iloc[-8:-4].sum())
         revenue_growth = safe_div(rev_now, rev_prev) - 1.0 if rev_prev > 0 else np.nan
@@ -1538,12 +1728,27 @@ def estimate_maintenance_capex_profile(
         confidence = "HIGH"
     else:
         confidence = "MEDIUM"
-    growth_capex_trap = bool(
+    growth_capex_monitor = bool(
         math.isfinite(revenue_growth)
         and revenue_growth <= 0.0
         and math.isfinite(capex_to_dna)
         and capex_to_dna >= 1.5
     )
+    revenue_decline_years = 0
+    ordered_revenue_years = sorted(revenue)
+    for index in range(len(ordered_revenue_years) - 1, 0, -1):
+        current_year = ordered_revenue_years[index]
+        prior_year = ordered_revenue_years[index - 1]
+        if current_year - prior_year != 1:
+            break
+        current_revenue = float(revenue[current_year])
+        prior_revenue = float(revenue[prior_year])
+        if not (math.isfinite(current_revenue) and math.isfinite(prior_revenue)):
+            break
+        if prior_revenue > 0 and current_revenue < prior_revenue:
+            revenue_decline_years += 1
+        else:
+            break
     return {
         "maintenance_capex_b": maintenance,
         "maintenance_capex_low_b": maintenance_low,
@@ -1552,7 +1757,8 @@ def estimate_maintenance_capex_profile(
         "dna_anchor_b": dna_anchor,
         "revenue_growth_pct": revenue_growth * 100 if math.isfinite(revenue_growth) else np.nan,
         "capex_to_dna": capex_to_dna,
-        "growth_capex_trap": growth_capex_trap,
+        "growth_capex_monitor": growth_capex_monitor,
+        "revenue_decline_years": revenue_decline_years,
         "confidence": confidence,
         "method": (
             "D&A anchored maintenance CapEx; excess CapEx classified by trailing revenue growth"
@@ -1580,9 +1786,13 @@ def calculate_fcf_stability(
     net_income = annual_values_by_year(sec, df_net_income, "NetIncome")
     # A missing SBC fact is unknown, not zero. Restrict maintenance-FCF history
     # to consecutive years with a complete OCF/CapEx/SBC/revenue/income chain.
-    years = _trailing_consecutive_years(
-        set(ocf) & set(capex) & set(sbc) & set(revenue) & set(net_income),
-        5,
+    complete_years = set(ocf) & set(capex) & set(sbc) & set(revenue) & set(net_income)
+    latest_reported_year = max(
+        set(ocf) | set(capex) | set(sbc) | set(revenue) | set(net_income), default=None,
+    )
+    years = (
+        _trailing_consecutive_years(complete_years, 5)
+        if latest_reported_year in complete_years else []
     )
     real_fcf_values: List[float] = []
     margins: List[float] = []
@@ -1636,9 +1846,9 @@ def calculate_per_share_growth_3y(
     complete_years = sorted(set(ocf) & set(capex) & set(sbc) & set(revenue) & set(net_income))
     if not complete_years:
         return {"fcf_cagr_pct": np.nan, "eps_cagr_pct": np.nan, "years": 0.0}
-    latest_year = complete_years[-1]
+    latest_year = max(set(ocf) | set(capex) | set(sbc) | set(revenue) | set(net_income))
     base_year = latest_year - 3
-    if base_year not in complete_years:
+    if latest_year not in complete_years or base_year not in complete_years:
         return {"fcf_cagr_pct": np.nan, "eps_cagr_pct": np.nan, "years": 0.0}
 
     share_facts = sec._instant_facts(df_shares)
@@ -1691,28 +1901,31 @@ def calculate_per_share_growth_3y(
 
 
 def calculate_capital_allocation_score(
-    real_buyback_b: float,
+    gross_buyback_b: float,
     issuance_b: float,
     share_change_1y_pct: float,
     share_change_3y_pct: float,
     market_cap_b: float = np.nan,
 ) -> float:
     """Reward net buyback yield only when it actually reduces share count."""
+    if not all(math.isfinite(value) for value in (gross_buyback_b, issuance_b)):
+        return np.nan
+    if not any(math.isfinite(value) for value in (share_change_1y_pct, share_change_3y_pct)):
+        return np.nan
     score = 60.0
-    net_buyback_yield = safe_div(real_buyback_b, market_cap_b) * 100 if market_cap_b > 0 else np.nan
+    net_buyback_b = gross_buyback_b - issuance_b
+    net_buyback_yield = safe_div(net_buyback_b, market_cap_b) * 100 if market_cap_b > 0 else np.nan
     if math.isfinite(share_change_3y_pct):
         if share_change_3y_pct <= -3.0:
             score += 15.0
-        elif share_change_3y_pct > 3.0:
-            score -= 35.0
-    if real_buyback_b > 0 and math.isfinite(share_change_1y_pct):
+    if net_buyback_b > 0 and math.isfinite(share_change_1y_pct):
         if share_change_1y_pct < 0:
             score += 15.0
             if math.isfinite(net_buyback_yield) and net_buyback_yield >= 1.0:
                 score += 10.0
         else:
             score -= 35.0
-    if issuance_b > max(real_buyback_b, 0.0) and math.isfinite(share_change_1y_pct) and share_change_1y_pct > 0:
+    if issuance_b > max(gross_buyback_b, 0.0) and math.isfinite(share_change_1y_pct) and share_change_1y_pct > 0:
         score -= 10.0
     return round(max(0.0, min(100.0, score)), 2)
 
@@ -1735,9 +1948,35 @@ def low_percentile(history: Iterable[float], pct: float = LOW_VALUATION_PERCENTI
     return float(np.nanpercentile(vals, pct))
 
 
+def historical_valuation_quantile(valid_years: int) -> float:
+    if valid_years < 5:
+        return np.nan
+    if valid_years <= 6:
+        return 25.0
+    if valid_years <= 9:
+        return 20.0
+    return 15.0
+
+
+def downside_multiple_floor(
+    current_multiple: float,
+    historical_floor: float,
+    fallback_floor: float = 4.0,
+) -> float:
+    """Return a stress multiple that can compress or stay flat, never expand."""
+    if not math.isfinite(current_multiple) or current_multiple <= 0:
+        return np.nan
+    if math.isfinite(historical_floor) and historical_floor > 0:
+        return min(current_multiple, historical_floor)
+    fallback = max(current_multiple * 0.60, fallback_floor)
+    return min(current_multiple, fallback)
+
+
 
 
 def classify_three_quarter_trend(rev_q: pd.Series, gp_q: pd.Series) -> Tuple[str, dict]:
+    rev_q = _trailing_quarter_window(rev_q, 3)
+    gp_q = _trailing_quarter_window(gp_q, 3)
     common = pd.concat([rev_q.rename("revenue"), gp_q.rename("gross_profit")], axis=1, join="inner").dropna()
     common = common[common["revenue"] > 0].tail(3)
     if len(common) < 3:
@@ -1769,6 +2008,7 @@ def calc_dsi_series(
     cogs_q: pd.Series,
     sec: Optional[SECDataDistiller] = None,
 ) -> pd.Series:
+    cogs_q = _clean_financial_series(cogs_q)
     if inv_df.empty or cogs_q.empty or len(cogs_q) < 4:
         return pd.Series(dtype=float)
     inventory_facts = SECDataDistiller._instant_facts(inv_df)
@@ -1779,7 +2019,7 @@ def calc_dsi_series(
     selected_rows = []
     for end in cogs_q.index[-8:]:
         current_candidates = inventory_facts[
-            pd.to_datetime(inventory_facts["end"], errors="coerce") <= end
+            pd.to_datetime(inventory_facts["end"], errors="coerce") == end
         ]
         if current_candidates.empty:
             continue
@@ -1795,10 +2035,13 @@ def calc_dsi_series(
         if prior_candidates.empty:
             continue
         prior_row = prior_candidates.iloc[-1]
-        last4 = cogs_q[cogs_q.index <= end].tail(4)
+        last4 = _trailing_quarter_window(cogs_q, 4, anchor_end=end)
         if len(last4) < 4 or last4.sum() <= 0:
             continue
-        average_inventory = (float(prior_row["val"]) + float(current_row["val"])) / 2.0
+        balances = [float(prior_row["val"]), float(current_row["val"])]
+        if any(not math.isfinite(value) or value < 0 for value in balances):
+            continue
+        average_inventory = sum(balances) / 2.0
         out[pd.Timestamp(end)] = average_inventory / float(last4.sum()) * 365
         selected_rows.extend([prior_row, current_row])
     if sec is not None and selected_rows:
@@ -1811,11 +2054,284 @@ def calc_dsi_series(
         if dedup_columns:
             selected = selected.drop_duplicates(subset=dedup_columns)
         sec._mark_rows_used(selected, "Inventory:DSI-average-balance")
-    return pd.Series(out).sort_index()
+    result = pd.Series(out, dtype=float).sort_index()
+    result.attrs["latest_reported_end"] = cogs_q.attrs.get("latest_reported_end")
+    return result
+
+
+def _clean_financial_series(series: pd.Series) -> pd.Series:
+    if series is None or len(series) == 0:
+        return pd.Series(dtype=float)
+    values = pd.to_numeric(series, errors="coerce")
+    dates = pd.to_datetime(series.index, errors="coerce")
+    clean = pd.Series(values.to_numpy(dtype=float), index=dates)
+    clean = clean[~clean.index.isna() & np.isfinite(clean.to_numpy())]
+    clean = clean.sort_index()
+    clean = clean[~clean.index.duplicated(keep="last")]
+    clean.attrs.update(series.attrs)
+    latest = dates.max()
+    source_latest = pd.to_datetime(series.attrs.get("latest_reported_end"), errors="coerce")
+    if pd.notna(source_latest) and (pd.isna(latest) or source_latest > latest):
+        latest = source_latest
+    clean.attrs["latest_reported_end"] = latest
+    return clean
+
+
+def _trailing_quarter_window(
+    series: pd.Series, count: int, anchor_end: Any = None,
+) -> pd.Series:
+    """Reject gaps and missing latest periods instead of promoting older observations."""
+    clean = _clean_financial_series(series)
+    if clean.empty:
+        return pd.Series(dtype=float)
+    anchor = pd.to_datetime(
+        anchor_end if anchor_end is not None else clean.attrs.get("latest_reported_end"),
+        errors="coerce",
+    )
+    window = clean[clean.index <= anchor].tail(count) if pd.notna(anchor) else clean.iloc[:0]
+    if len(window) != count or window.index[-1] != anchor:
+        return pd.Series(dtype=float)
+    gaps = window.index.to_series().diff().dt.days.iloc[1:]
+    annual_gaps = window.index.to_series().diff(4).dt.days.iloc[4:]
+    if not gaps.between(60, 130).all() or not annual_gaps.between(350, 380).all():
+        return pd.Series(dtype=float)
+    window.attrs["latest_reported_end"] = anchor
+    return window
+
+
+def _balance_pair_at_or_before(
+    balance_series: pd.Series,
+    anchor_end: Any,
+) -> Tuple[float, float]:
+    clean = _clean_financial_series(balance_series)
+    anchor = pd.to_datetime(anchor_end, errors="coerce")
+    if clean.empty or pd.isna(anchor):
+        return np.nan, np.nan
+    eligible = clean[clean.index <= anchor]
+    if eligible.empty:
+        return np.nan, np.nan
+    current_end = pd.Timestamp(eligible.index[-1])
+    if current_end != anchor:
+        return np.nan, np.nan
+    current = float(eligible.iloc[-1])
+    age_days = (current_end - eligible.index).days
+    prior = eligible[(age_days >= 300) & (age_days <= 450)]
+    if prior.empty:
+        return current, np.nan
+    return current, float(prior.iloc[-1])
+
+
+def _balance_growth_pct(balance_series: pd.Series, anchor_end: Any) -> float:
+    current, prior = _balance_pair_at_or_before(balance_series, anchor_end)
+    if not math.isfinite(current) or not math.isfinite(prior) or prior <= 0:
+        return np.nan
+    return (current / prior - 1.0) * 100.0
+
+
+def _ttm_flow_growth_pct(flow_q: pd.Series) -> float:
+    clean = _trailing_quarter_window(flow_q, 8)
+    if len(clean) != 8:
+        return np.nan
+    current = float(clean.tail(4).sum())
+    prior = float(clean.iloc[-8:-4].sum())
+    if current <= 0 or prior <= 0:
+        return np.nan
+    return (current / prior - 1.0) * 100.0
+
+
+def _balance_days_series(
+    balance_series: pd.Series,
+    flow_q: pd.Series,
+) -> pd.Series:
+    balances = _clean_financial_series(balance_series)
+    flows = _clean_financial_series(flow_q)
+    if balances.empty or len(flows) < 4:
+        return pd.Series(dtype=float)
+    values: Dict[pd.Timestamp, float] = {}
+    for end in flows.index[-8:]:
+        current, prior = _balance_pair_at_or_before(balances, end)
+        trailing_four = _trailing_quarter_window(flows, 4, anchor_end=end)
+        denominator = float(trailing_four.sum()) if len(trailing_four) == 4 else np.nan
+        if (
+            not math.isfinite(current)
+            or not math.isfinite(prior)
+            or current < 0
+            or prior < 0
+            or not math.isfinite(denominator)
+            or denominator <= 0
+        ):
+            continue
+        values[pd.Timestamp(end)] = ((current + prior) / 2.0) / denominator * 365.0
+    result = pd.Series(values, dtype=float).sort_index()
+    result.attrs["latest_reported_end"] = flows.attrs.get("latest_reported_end")
+    return result
+
+
+def _latest_yoy_change_pct(series: pd.Series) -> float:
+    clean = _clean_financial_series(series)
+    if clean.empty:
+        return np.nan
+    current, prior = _balance_pair_at_or_before(clean, clean.index[-1])
+    if not math.isfinite(current) or not math.isfinite(prior) or prior <= 0:
+        return np.nan
+    return (current / prior - 1.0) * 100.0
+
+
+def analyze_working_capital_quality(
+    accounts_receivable: pd.Series,
+    accounts_payable: pd.Series,
+    deferred_revenue: pd.Series,
+    revenue_q: pd.Series,
+    cogs_q: pd.Series,
+    dsi_latest: float = np.nan,
+) -> Dict[str, Any]:
+    """Diagnose recent OCF working-capital support without treating missing as zero."""
+    revenue = _clean_financial_series(revenue_q)
+    cogs = _clean_financial_series(cogs_q)
+    revenue_anchor = revenue.attrs.get("latest_reported_end", pd.NaT)
+    cogs_anchor = cogs.attrs.get("latest_reported_end", pd.NaT)
+
+    dso_series = _balance_days_series(accounts_receivable, revenue)
+    dpo_series = _balance_days_series(accounts_payable, cogs)
+    dso = float(dso_series.get(revenue_anchor, np.nan))
+    dpo = float(dpo_series.get(cogs_anchor, np.nan))
+    dso_yoy = _latest_yoy_change_pct(dso_series) if math.isfinite(dso) else np.nan
+    dpo_yoy = _latest_yoy_change_pct(dpo_series) if math.isfinite(dpo) else np.nan
+
+    ar_growth = _balance_growth_pct(accounts_receivable, revenue_anchor)
+    ap_growth = _balance_growth_pct(accounts_payable, cogs_anchor)
+    deferred_growth = _balance_growth_pct(deferred_revenue, revenue_anchor)
+    revenue_growth = _ttm_flow_growth_pct(revenue)
+    cogs_growth = _ttm_flow_growth_pct(cogs)
+    ar_gap = (
+        ar_growth - revenue_growth
+        if math.isfinite(ar_growth) and math.isfinite(revenue_growth)
+        else np.nan
+    )
+    ap_gap = (
+        ap_growth - cogs_growth
+        if math.isfinite(ap_growth) and math.isfinite(cogs_growth)
+        else np.nan
+    )
+
+    ar_comparable = math.isfinite(ar_gap) and math.isfinite(dso)
+    ap_comparable = math.isfinite(ap_gap) and math.isfinite(dpo)
+    ar_material = ar_comparable and dso >= WORKING_CAPITAL_MIN_MATERIAL_DAYS
+    ap_material = ap_comparable and dpo >= WORKING_CAPITAL_MIN_MATERIAL_DAYS
+    ar_adverse = bool(
+        ar_material and ar_gap >= AR_REVENUE_GROWTH_GAP_WATCH_PP
+    )
+    ap_adverse = bool(
+        ap_material and ap_gap >= AP_COGS_GROWTH_GAP_WATCH_PP
+    )
+    reasons: List[str] = []
+    if ar_adverse:
+        reasons.append(
+            f"accounts receivable growth exceeds TTM revenue growth by {ar_gap:.1f}pp"
+        )
+    if ap_adverse:
+        reasons.append(
+            f"accounts payable growth exceeds TTM COGS growth by {ap_gap:.1f}pp"
+        )
+    if (
+        ar_comparable
+        and ar_gap >= AR_REVENUE_GROWTH_GAP_WATCH_PP
+        and not ar_material
+    ):
+        reasons.append(
+            f"accounts receivable growth gap is immaterial at {dso:.1f} DSO days"
+        )
+    if (
+        ap_comparable
+        and ap_gap >= AP_COGS_GROWTH_GAP_WATCH_PP
+        and not ap_material
+    ):
+        reasons.append(
+            f"accounts payable growth gap is immaterial at {dpo:.1f} DPO days"
+        )
+
+    comparable_count = int(ar_comparable) + int(ap_comparable)
+    adverse_count = int(ar_adverse) + int(ap_adverse)
+    if comparable_count == 0:
+        state = "MISSING"
+    elif adverse_count >= 2:
+        state = "HIGH_RISK"
+    elif adverse_count == 1:
+        state = "WATCH"
+    else:
+        state = "CLEAR"
+    risk_penalty = (
+        WORKING_CAPITAL_HIGH_RISK_PENALTY
+        if state == "HIGH_RISK"
+        else WORKING_CAPITAL_WATCH_PENALTY
+        if state == "WATCH"
+        else 0.0
+    )
+    ccc = (
+        dso + float(dsi_latest) - dpo
+        if revenue_anchor == cogs_anchor
+        and all(math.isfinite(value) for value in (dso, dpo, dsi_latest))
+        else np.nan
+    )
+    return {
+        "status": "VALID" if comparable_count else "MISSING",
+        "state": state,
+        "coverage": comparable_count / 2.0,
+        "risk_penalty": risk_penalty,
+        "reasons": reasons,
+        "dso_days": dso,
+        "dpo_days": dpo,
+        "cash_conversion_cycle_days": ccc,
+        "dso_yoy_change_pct": dso_yoy,
+        "dpo_yoy_change_pct": dpo_yoy,
+        "accounts_receivable_growth_pct": ar_growth,
+        "accounts_payable_growth_pct": ap_growth,
+        "deferred_revenue_growth_pct": deferred_growth,
+        "ttm_revenue_growth_pct": revenue_growth,
+        "ttm_cogs_growth_pct": cogs_growth,
+        "ar_vs_revenue_growth_gap_pp": ar_gap,
+        "ap_vs_cogs_growth_gap_pp": ap_gap,
+        "ar_adverse": ar_adverse,
+        "ap_adverse": ap_adverse,
+    }
+
+
+def classify_acquisition_issuance(
+    acquisition_stock_consideration_b: float,
+    acquisition_evidence_id: str,
+    stock_issuance_b: float,
+    stock_issuance_evidence_id: str,
+) -> Dict[str, Any]:
+    has_acquisition_evidence = bool(str(acquisition_evidence_id or ""))
+    has_issuance_evidence = bool(str(stock_issuance_evidence_id or ""))
+    if not has_acquisition_evidence or not math.isfinite(
+        acquisition_stock_consideration_b
+    ):
+        status = "MISSING"
+    elif acquisition_stock_consideration_b > 0:
+        status = "DIRECT_XBRL_EVIDENCE"
+    else:
+        status = "DIRECT_XBRL_ZERO"
+    flag = status == "DIRECT_XBRL_EVIDENCE"
+    reconciliation_status = (
+        "RECONCILED_TO_TTM_STOCK_ISSUANCE"
+        if flag
+        and has_issuance_evidence
+        and math.isfinite(stock_issuance_b)
+        and stock_issuance_b > 0
+        else "DIRECT_ACQUISITION_EVIDENCE_ONLY"
+        if flag
+        else "NOT_APPLICABLE"
+    )
+    return {
+        "status": status,
+        "acquisition_related_issuance": flag,
+        "reconciliation_status": reconciliation_status,
+    }
 
 
 def analyze_dsi_signal(dsi: pd.Series) -> Dict[str, float | str | bool]:
-    clean = pd.to_numeric(dsi, errors="coerce").dropna().sort_index()
+    clean = _trailing_quarter_window(dsi, 1)
     if clean.empty:
         return {
             "latest": np.nan,
@@ -1824,19 +2340,24 @@ def analyze_dsi_signal(dsi: pd.Series) -> Dict[str, float | str | bool]:
             "sequential_down": False,
             "inflection": False,
             "deterioration": False,
-            "signal": "資料不足或不適用",
-            "score": 50.0,
+            "signal": "資料不足：DSI 無法建立",
+            "score": np.nan,
         }
     latest = float(clean.iloc[-1])
-    qoq_change = safe_div(latest, float(clean.iloc[-2])) - 1.0 if len(clean) >= 2 else np.nan
-    yoy_change = safe_div(latest, float(clean.iloc[-5])) - 1.0 if len(clean) >= 5 else np.nan
-    sequential_down = bool(len(clean) >= 3 and clean.iloc[-1] < clean.iloc[-2] < clean.iloc[-3])
-    sequential_up = bool(len(clean) >= 3 and clean.iloc[-1] > clean.iloc[-2] > clean.iloc[-3])
+    two = _trailing_quarter_window(dsi, 2)
+    three = _trailing_quarter_window(dsi, 3)
+    five = _trailing_quarter_window(dsi, 5)
+    qoq_change = safe_div(latest, float(two.iloc[0])) - 1.0 if len(two) == 2 else np.nan
+    yoy_change = safe_div(latest, float(five.iloc[0])) - 1.0 if len(five) == 5 else np.nan
+    sequential_down = bool(len(three) == 3 and three.iloc[-1] < three.iloc[-2] < three.iloc[-3])
+    sequential_up = bool(len(three) == 3 and three.iloc[-1] > three.iloc[-2] > three.iloc[-3])
     seasonally_confirmed_down = math.isfinite(yoy_change) and yoy_change <= -0.05
     seasonally_confirmed_up = math.isfinite(yoy_change) and yoy_change >= 0.05
     inflection = bool(sequential_down and seasonally_confirmed_down)
     deterioration = bool(sequential_up and seasonally_confirmed_up)
-    if inflection:
+    if len(three) < 3:
+        signal, score = "資料不足：DSI 無可稽核連續三季", np.nan
+    elif inflection:
         signal, score = "去庫存改善（連兩季下降且季節性確認）", 80.0
     elif deterioration:
         signal, score = "庫存惡化（連兩季上升且季節性確認）", 20.0
@@ -1854,6 +2375,191 @@ def analyze_dsi_signal(dsi: pd.Series) -> Dict[str, float | str | bool]:
         "signal": signal,
         "score": score,
     }
+
+
+def assess_growth_capex_risk(
+    capex_profile: Mapping[str, Any],
+    conservative_real_fcf_b: float,
+    roic_pct: float,
+) -> Dict[str, Any]:
+    """Require corroborating evidence before treating high CapEx as a value trap."""
+    monitor = bool(capex_profile.get("growth_capex_monitor", False))
+    if not monitor:
+        return {
+            "state": "CLEAR",
+            "hard_fail": False,
+            "corroboration_count": 0,
+            "reasons": [],
+        }
+
+    reasons: List[str] = []
+    decline_years = int(capex_profile.get("revenue_decline_years") or 0)
+    if decline_years >= 2:
+        reasons.append("revenue declined in at least two consecutive annual periods")
+    if math.isfinite(roic_pct) and roic_pct < 8.0:
+        reasons.append("ROIC is below 8%")
+    if math.isfinite(conservative_real_fcf_b) and conservative_real_fcf_b <= 0.0:
+        reasons.append("FCF after total CapEx and SBC is non-positive")
+
+    corroboration_count = len(reasons)
+    state = (
+        "HIGH_RISK"
+        if corroboration_count >= 2
+        else "WATCH"
+        if corroboration_count == 1
+        else "MONITOR"
+    )
+    return {
+        "state": state,
+        "hard_fail": state == "HIGH_RISK",
+        "corroboration_count": corroboration_count,
+        "reasons": reasons,
+    }
+
+
+def determine_general_corporate_status(
+    *,
+    gm_diagnosis: str,
+    icr: float,
+    real_fcf_b: float,
+    growth_capex_hard_fail: bool,
+    ocf_3y_years: float,
+    ocf_3y_cumulative_b: float,
+    fcf_years_available: float,
+    fcf_positive_years: float,
+    acquisition_accretion_review_required: bool,
+    persistent_dilution: bool,
+    maintenance_capex_confidence: str,
+) -> str:
+    """Apply confirmed independent failures before estimate-dependent abstentions."""
+    diagnosis = str(gm_diagnosis or "")
+    if math.isfinite(icr) and icr < 1.0:
+        return "Fail: ICR < 1.0，財務韌性不足"
+    if (
+        ocf_3y_years >= 3
+        and math.isfinite(ocf_3y_cumulative_b)
+        and ocf_3y_cumulative_b <= 0
+    ):
+        return "Fail: 近三年累計 OCF 非正值"
+    if persistent_dilution and not acquisition_accretion_review_required:
+        return "Fail: 近三年股數持續明顯稀釋"
+    if "雙重惡化" in diagnosis:
+        return "Fail: 營收與毛利同步惡化"
+    if diagnosis.startswith("資料不足"):
+        return "Abstain: 季度毛利資料不足"
+    if acquisition_accretion_review_required:
+        return "Abstain: acquisition-related share issuance requires accretion review"
+    if str(maintenance_capex_confidence or "").upper() == "LOW":
+        return "Abstain: Maintenance CapEx estimate confidence is LOW"
+    if real_fcf_b <= 0:
+        return "Fail: Real FCF 非正值"
+    if growth_capex_hard_fail:
+        return "Fail: Growth CapEx risk confirmed by multiple independent signals"
+    required_positive_fcf_years = minimum_positive_fcf_years(fcf_years_available)
+    if required_positive_fcf_years > 0 and fcf_positive_years < required_positive_fcf_years:
+        return "Fail: 可得連續年度 Real FCF 正值比例不足 60%"
+    return "Pass"
+
+
+def determine_specialized_status(
+    model_key: str, model_decision: str, hard_failures: Sequence[str],
+    confidence_score: float, confidence_abstain: bool, stress_status: str,
+) -> Tuple[str, str]:
+    if hard_failures:
+        return "FAIL", f"Fail: {hard_failures[0]}"
+    if stress_status == "FAIL":
+        return "FAIL", f"Fail: {model_key} specialized stress survival failed"
+    if model_decision == "ABSTAIN" or confidence_abstain:
+        reason = (
+            f"{model_key} required evidence incomplete"
+            if model_decision == "ABSTAIN"
+            else f"{model_key} data confidence {confidence_score:.0f}"
+        )
+        return "ABSTAIN", f"Abstain: {reason}"
+    if model_decision == "FAIL":
+        return "FAIL", f"Fail: {model_key} specialized score below threshold"
+    if stress_status != "PASS":
+        return "ABSTAIN", f"Abstain: {model_key} specialized stress evidence incomplete"
+    return "PASS", "Pass"
+
+
+def assess_inventory_factor_applicability(
+    sector: str,
+    industry: str,
+    inventory_b: float,
+    revenue_b: float,
+    assets_b: float,
+    model_key: str = "GENERAL_CORPORATE",
+) -> Dict[str, float | str]:
+    key = str(model_key or "GENERAL_CORPORATE").upper()
+    blob = f"{sector or ''} {industry or ''}".lower()
+    structurally_not_applicable = key != "GENERAL_CORPORATE" or any(
+        token in blob
+        for token in (
+            "software",
+            "platform",
+            "internet content",
+            "advertising agencies",
+            "consulting",
+            "asset management",
+            "financial data",
+            "insurance",
+            "bank",
+            "reit",
+        )
+    )
+    if structurally_not_applicable:
+        return {
+            "status": "NOT_APPLICABLE",
+            "reason": "Inventory is not an economically material operating factor for this business model",
+            "inventory_to_revenue_pct": np.nan,
+            "inventory_to_assets_pct": np.nan,
+        }
+    if not all(math.isfinite(value) for value in (inventory_b, revenue_b, assets_b)):
+        return {
+            "status": "MISSING",
+            "reason": "Inventory, revenue and assets are required before DSI applicability can be tested",
+            "inventory_to_revenue_pct": np.nan,
+            "inventory_to_assets_pct": np.nan,
+        }
+    inventory_to_revenue = safe_div(inventory_b, revenue_b) * 100.0
+    inventory_to_assets = safe_div(inventory_b, assets_b) * 100.0
+    if (
+        inventory_to_revenue < MIN_INVENTORY_TO_REVENUE_PCT
+        and inventory_to_assets < MIN_INVENTORY_TO_ASSETS_PCT
+    ):
+        status = "NOT_APPLICABLE"
+        reason = "Inventory is below both materiality thresholds"
+    else:
+        status = "VALID"
+        reason = "Inventory is material enough for DSI analysis"
+    return {
+        "status": status,
+        "reason": reason,
+        "inventory_to_revenue_pct": inventory_to_revenue,
+        "inventory_to_assets_pct": inventory_to_assets,
+    }
+
+
+def maintenance_fcf_research_warnings(
+    lower_bound_yield_pct: float,
+    conservative_yield_pct: float,
+    sensitivity_spread_pp: float,
+) -> List[str]:
+    warnings: List[str] = []
+    if math.isfinite(lower_bound_yield_pct) and lower_bound_yield_pct < 0:
+        warnings.append(
+            "Review Maintenance CapEx assumptions: lower-bound FCF yield is negative"
+        )
+    if math.isfinite(conservative_yield_pct) and conservative_yield_pct < 0:
+        warnings.append(
+            "Review total CapEx commitments: conservative FCF yield is negative"
+        )
+    if math.isfinite(sensitivity_spread_pp) and sensitivity_spread_pp > 3.0:
+        warnings.append(
+            "Review Maintenance CapEx sensitivity: yield range exceeds 3 percentage points"
+        )
+    return warnings
 
 
 
@@ -1964,6 +2670,9 @@ def historical_valuation(
         "total_years": 0,
         "coverage": 0.0,
         "coverage_status": "MISSING",
+        "quantile_used": np.nan,
+        "quantile_value": np.nan,
+        "sample_quality": "INSUFFICIENT",
     }
     # Use the first filing for each historical period so later restatements do
     # not introduce look-ahead into the price/multiple history.
@@ -1980,10 +2689,10 @@ def historical_valuation(
     if debt_component_frames:
         debt_inputs.update(debt_component_frames)
     debt_history = {
-        name: sec._annual_facts(frame, latest_filed=False)
+        name: sec._instant_facts(frame, latest_filed=False)
         for name, frame in debt_inputs.items()
     }
-    cash_a = sec._annual_facts(df_cash, latest_filed=False)
+    cash_a = sec._instant_facts(df_cash, latest_filed=False)
     shares_facts = sec._instant_facts(df_shares, latest_filed=False)
     long_term_only = {
         "LongTermDebt",
@@ -2209,6 +2918,26 @@ def historical_valuation(
     valid_years = len(ev_hist)
     coverage = valid_years / total_years if total_years else 0.0
     coverage_status = "VALID" if valid_years >= min_history and coverage >= 0.60 else "MISSING"
+    quantile_used = historical_valuation_quantile(valid_years)
+    ev_floor = (
+        low_percentile(ev_hist, quantile_used)
+        if math.isfinite(quantile_used)
+        else np.nan
+    )
+    pe_floor = (
+        low_percentile(pe_hist, historical_valuation_quantile(len(pe_hist)))
+        if len(pe_hist) >= min_history
+        else np.nan
+    )
+    sample_quality = (
+        "HIGH"
+        if valid_years >= 10 and coverage >= 0.80
+        else "MEDIUM"
+        if valid_years >= 7 and coverage >= 0.60
+        else "LOW"
+        if coverage_status == "VALID"
+        else "INSUFFICIENT"
+    )
     return {
         "ev_ebitda_hist": rows,
         "pe_hist": pe_hist,
@@ -2216,12 +2945,15 @@ def historical_valuation(
         "pe_evidence_ids": [r["pe_evidence_id"] for r in rows if r.get("pe_evidence_id")],
         "ev_ebitda_percentile": percentile_rank(ev_hist, current_ev_ebitda) if len(ev_hist) >= min_history else np.nan,
         "pe_percentile": percentile_rank(pe_hist, current_pe) if len(pe_hist) >= min_history else np.nan,
-        "ev_ebitda_floor": low_percentile(ev_hist) if len(ev_hist) >= min_history else np.nan,
-        "pe_floor": low_percentile(pe_hist) if len(pe_hist) >= min_history else np.nan,
+        "ev_ebitda_floor": ev_floor,
+        "pe_floor": pe_floor,
         "valid_years": valid_years,
         "total_years": total_years,
         "coverage": coverage,
         "coverage_status": coverage_status,
+        "quantile_used": quantile_used,
+        "quantile_value": ev_floor,
+        "sample_quality": sample_quality,
     }
 
 def implied_ebitda_cagr(
@@ -2535,6 +3267,7 @@ def assess_data_confidence(
     debt_fully_cash_covered: bool = False,
     tax_rate_sec_evidence_available: bool = True,
     interest_cash_proxy_used: bool = False,
+    roic_average_capital_available: bool = True,
 ) -> Dict[str, object]:
     score = 100.0
     reasons: List[str] = []
@@ -2579,6 +3312,9 @@ def assess_data_confidence(
     if not roic_available:
         score -= 35.0
         reasons.append("ROIC cannot be verified from reported invested capital")
+    elif not roic_average_capital_available:
+        score -= 10.0
+        reasons.append("ROIC uses ending invested capital because a beginning balance is unavailable")
     if not valuation_history_available:
         score -= 35.0
         reasons.append("Comparable point-in-time valuation history is unavailable")
@@ -2733,6 +3469,52 @@ def dynamic_implied_cagr_limit(roic_pct: float, gm_change_pp: float) -> float:
     return round(limit, 2)
 
 
+def calculate_roic_capital_metrics(
+    nopat_b: float,
+    beginning_invested_capital_b: float,
+    ending_invested_capital_b: float,
+    beginning_goodwill_b: float = np.nan,
+    ending_goodwill_b: float = np.nan,
+) -> Dict[str, float | str]:
+    ending = float(ending_invested_capital_b)
+    beginning = float(beginning_invested_capital_b)
+    if math.isfinite(beginning) and beginning > 0 and math.isfinite(ending) and ending > 0:
+        average = (beginning + ending) / 2.0
+        method = "BEGINNING_ENDING_AVERAGE"
+    else:
+        average = ending
+        method = "ENDING_CAPITAL_FALLBACK_ESTIMATED"
+    ending_roic = safe_div(nopat_b, ending) * 100.0 if ending > 0 else np.nan
+    average_roic = safe_div(nopat_b, average) * 100.0 if average > 0 else np.nan
+    goodwill_values = (
+        [beginning_goodwill_b, ending_goodwill_b]
+        if method == "BEGINNING_ENDING_AVERAGE" else [ending_goodwill_b]
+    )
+    average_goodwill = (
+        float(np.mean(goodwill_values))
+        if all(math.isfinite(value) and value >= 0 for value in goodwill_values)
+        else np.nan
+    )
+    ex_goodwill_capital = (
+        average - average_goodwill
+        if math.isfinite(average_goodwill)
+        else np.nan
+    )
+    ex_goodwill_roic = (
+        safe_div(nopat_b, ex_goodwill_capital) * 100.0
+        if math.isfinite(ex_goodwill_capital) and ex_goodwill_capital > 0
+        else np.nan
+    )
+    return {
+        "average_invested_capital_b": average,
+        "ending_roic_pct": ending_roic,
+        "average_roic_pct": average_roic,
+        "including_goodwill_roic_pct": average_roic,
+        "excluding_goodwill_roic_pct": ex_goodwill_roic,
+        "capital_method": method,
+    }
+
+
 def _expectations_score(implied_cagr: float, roic_pct: float = np.nan, gm_change_pp: float = np.nan) -> float:
     if not math.isfinite(implied_cagr):
         return 20.0
@@ -2757,7 +3539,12 @@ def calculate_long_term_scores(r: "ModeCResult") -> Dict[str, float]:
         icr_score = 100.0
     else:
         icr_score = _bounded_score(r.ICR, 1.0, 10.0, missing=20.0)
-    fcf_quality = 100.0 if r.Real_FCF_Yield_pct >= 5.0 else 70.0 if r.Real_FCF_Yield_pct >= 2.0 else 35.0 if r.Real_FCF_Yield_pct > 0 else 0.0
+    fcf_quality = _bounded_score(
+        r.Real_FCF_to_NetIncome_5Y,
+        0.2,
+        1.0,
+        missing=35.0,
+    )
     if "暫時落難好股" in r.GM_Diagnosis:
         trend_score = 85.0
     elif "中性" in r.GM_Diagnosis:
@@ -2780,8 +3567,12 @@ def calculate_long_term_scores(r: "ModeCResult") -> Dict[str, float]:
     quality_score = icr_score * 0.25 + fcf_quality * 0.20 + trend_score * 0.20 + roic_score * 0.20 + stability_score * 0.15
 
     expectations_score = _expectations_score(r.Implied_EBITDA_CAGR_3Y_pct, r.ROIC_pct, r.GM_3Q_Change_pp)
-    momentum_score = _bounded_score(r.Momentum_12M_pct, -30.0, 30.0, missing=50.0)
-    inflection_score = r.Operating_Inflection_Score if math.isfinite(r.Operating_Inflection_Score) else 50.0
+    momentum_score = _bounded_score(r.Momentum_12M_pct, -30.0, 30.0, missing=np.nan)
+    inflection_score = (
+        r.DSI_Score
+        if r.DSI_Status == "VALID" and math.isfinite(r.DSI_Score)
+        else np.nan
+    )
 
     risk_penalty = 0.0
     if math.isfinite(r.EBITDA_Drawdown_30_pct):
@@ -2795,20 +3586,38 @@ def calculate_long_term_scores(r: "ModeCResult") -> Dict[str, float]:
             risk_penalty += 5.0
     else:
         risk_penalty += 10.0
-    if r.Dilution_Illusion:
-        risk_penalty += 5.0
-    if r.Persistent_Dilution:
-        risk_penalty += 25.0
+    ownership_dilution_penalty = 0.0
+    if (
+        not r.Persistent_Dilution
+        and math.isfinite(r.Share_Count_Change_pct)
+        and r.Share_Count_Change_pct > 0.5
+        and (not math.isfinite(r.Real_Buyback_B) or r.Real_Buyback_B <= 0)
+        and r.Capital_Allocation_Score >= 60.0
+    ):
+        ownership_dilution_penalty = 5.0
+        risk_penalty += ownership_dilution_penalty
     if math.isfinite(r.OCF_3Y_Cumulative_B) and r.OCF_3Y_Cumulative_B <= 0:
         risk_penalty += 15.0
     if "結構性價值陷阱" in r.GM_Diagnosis:
-        risk_penalty += 25.0
-    if "雙重惡化" in r.GM_Diagnosis:
-        risk_penalty += 35.0
-    if r.Squeeze_Risk:
+        risk_penalty += 15.0
+    if str(r.Growth_CapEx_Risk_State or "").upper() == "WATCH":
         risk_penalty += 8.0
+    # Revenue plus margin deterioration is already a pipeline hard failure;
+    # do not count the same signal again as an independent risk penalty.
+    # Non-point-in-time short-interest data is an informational catalyst flag only.
     if "庫存惡化" in r.Inventory_Signal:
         risk_penalty += 8.0
+    working_capital_state = str(
+        r.Working_Capital_Quality_State or "MISSING"
+    ).upper()
+    working_capital_risk_penalty = (
+        WORKING_CAPITAL_HIGH_RISK_PENALTY
+        if working_capital_state == "HIGH_RISK"
+        else WORKING_CAPITAL_WATCH_PENALTY
+        if working_capital_state == "WATCH"
+        else 0.0
+    )
+    risk_penalty += working_capital_risk_penalty
     if math.isfinite(r.Stress_ICR_30x):
         if r.Stress_ICR_30x < 1.0:
             risk_penalty += 25.0
@@ -2821,23 +3630,52 @@ def calculate_long_term_scores(r: "ModeCResult") -> Dict[str, float]:
             risk_penalty += 15.0
         elif r.NetDebt_to_Stress_EBITDA_30x > 4.0:
             risk_penalty += 8.0
-    long_term_score = (
-        quality_score * 0.35
-        + value_score * 0.30
-        + expectations_score * 0.20
-        + momentum_score * 0.05
-        + inflection_score * 0.05
-        + r.Capital_Allocation_Score * 0.05
-        - risk_penalty
+    factor_inputs = {
+        "quality": (quality_score, 35.0, True),
+        "value": (value_score, 30.0, True),
+        "expectations": (expectations_score, 20.0, True),
+        "momentum": (momentum_score, 5.0, True),
+        "inventory_inflection": (
+            inflection_score,
+            5.0,
+            r.DSI_Status != "NOT_APPLICABLE",
+        ),
+        "capital_allocation": (
+            r.Capital_Allocation_Score,
+            5.0,
+            not r.Persistent_Dilution,
+        ),
+    }
+    applicable_weight = sum(
+        weight for _, weight, applicable in factor_inputs.values() if applicable
     )
+    available_weight = sum(
+        weight
+        for score, weight, applicable in factor_inputs.values()
+        if applicable and math.isfinite(score)
+    )
+    weighted_sum = sum(
+        score * weight
+        for score, weight, applicable in factor_inputs.values()
+        if applicable and math.isfinite(score)
+    )
+    long_term_score = (
+        weighted_sum / available_weight if available_weight > 0 else 0.0
+    ) - risk_penalty
     return {
         "value_score": round(value_score, 2),
         "quality_score": round(quality_score, 2),
         "expectations_score": round(expectations_score, 2),
-        "inflection_score": round(inflection_score, 2),
+        "inflection_score": round(inflection_score, 2) if math.isfinite(inflection_score) else np.nan,
         "risk_penalty": round(risk_penalty, 2),
         "long_term_score": round(max(0.0, min(100.0, long_term_score)), 2),
         "implied_cagr_limit": round(dynamic_implied_cagr_limit(r.ROIC_pct, r.GM_3Q_Change_pp), 2),
+        "applicable_factor_weight": round(applicable_weight, 2),
+        "available_factor_weight": round(available_weight, 2),
+        "factor_coverage": round(safe_div(available_weight, applicable_weight, 0.0), 4),
+        "weight_renormalized": not math.isclose(available_weight, 100.0),
+        "ownership_dilution_penalty": ownership_dilution_penalty,
+        "working_capital_risk_penalty": working_capital_risk_penalty,
     }
 
 
@@ -2875,6 +3713,26 @@ def apply_long_term_framework(r: "ModeCResult") -> "ModeCResult":
     r.Operating_Inflection_Score = scores["inflection_score"]
     r.Risk_Penalty = scores["risk_penalty"]
     r.Long_Term_Score = scores["long_term_score"]
+    r.Applicable_Factor_Weight = scores["applicable_factor_weight"]
+    r.Available_Factor_Weight = scores["available_factor_weight"]
+    r.Factor_Coverage = scores["factor_coverage"]
+    r.Weight_Renormalized = bool(scores["weight_renormalized"])
+    r.Ownership_Dilution_Penalty = scores["ownership_dilution_penalty"]
+    r.Working_Capital_Risk_Penalty = scores[
+        "working_capital_risk_penalty"
+    ]
+    r.Capital_Allocation_Penalty = (
+        0.0
+        if r.Persistent_Dilution or not math.isfinite(r.Capital_Allocation_Score)
+        else round(max(0.0, 60.0 - r.Capital_Allocation_Score), 2)
+    )
+    r.Persistent_Dilution_Hard_Gate = bool(r.Persistent_Dilution)
+    r.Dilution_Total_Score_Impact = round(
+        r.Ownership_Dilution_Penalty
+        + r.Capital_Allocation_Penalty * safe_div(5.0, r.Available_Factor_Weight, 0.0),
+        2,
+    )
+    r.Dilution_Double_Count_Check = "PASS"
     r.Implied_CAGR_Limit_pct = scores["implied_cagr_limit"]
     r.Implied_CAGR_Headroom_pct = (
         r.Implied_CAGR_Limit_pct - r.Implied_EBITDA_CAGR_3Y_pct
@@ -2885,7 +3743,7 @@ def apply_long_term_framework(r: "ModeCResult") -> "ModeCResult":
     expectations_ok = math.isfinite(r.Implied_EBITDA_CAGR_3Y_pct) and r.Expectations_Score >= 15.0
     drawdown_ok = math.isfinite(r.EBITDA_Drawdown_30_pct) and r.EBITDA_Drawdown_30_pct > -75.0
     stress_survival_ok = bool(r.Stress_Survival_30)
-    trend_ok = not any(x in r.GM_Diagnosis for x in ["結構性價值陷阱", "雙重惡化", "資料不足"])
+    trend_ok = not any(x in r.GM_Diagnosis for x in ["雙重惡化", "資料不足"])
     required_positive_fcf_years = minimum_positive_fcf_years(
         r.Real_FCF_Years_Available
     )
@@ -2949,9 +3807,16 @@ def select_diversified_shortlist(
     target_size: int = TARGET_SHORTLIST_SIZE,
     max_per_sector: int = MAX_PER_SECTOR,
 ) -> List["ModeCResult"]:
+    annotate_research_priorities(results, queue_size=0)
     candidates = sorted(
-        [r for r in results if r.Status == "Pass" and r.Long_Term_Eligible],
-        key=lambda r: (-r.Long_Term_Score, r.Ticker),
+        [
+            r
+            for r in results
+            if r.Status == "Pass"
+            and r.Long_Term_Eligible
+            and math.isfinite(r.Shrunk_Within_Model_Percentile)
+        ],
+        key=lambda r: (r.Research_Priority_Rank, r.Ticker),
     )
     selected: List[ModeCResult] = []
     sector_counts: Dict[str, int] = {}
@@ -2960,10 +3825,213 @@ def select_diversified_shortlist(
         if max_per_sector > 0 and sector_counts.get(sector, 0) >= max_per_sector:
             continue
         selected.append(r)
+        r.Global_Research_Queue = True
+        refresh_research_status(r)
         sector_counts[sector] = sector_counts.get(sector, 0) + 1
         if len(selected) >= target_size:
             break
     return selected
+
+
+def apply_portfolio_fit_contract(
+    results: Sequence["ModeCResult"],
+    portfolio_inputs: Mapping[str, Mapping[str, Any]],
+    decision_timestamp: Any,
+    input_error: str = "",
+) -> None:
+    for result in results:
+        raw_score = (
+            result.Long_Term_Score
+            if result.Industry_Model_Key == "GENERAL_CORPORATE"
+            else result.Industry_Model_Score
+        )
+        result.Portfolio_Fit_Contract_Version = PORTFOLIO_FIT_CONTRACT_VERSION
+        if not result.Long_Term_Eligible or not math.isfinite(raw_score) or raw_score < 75.0:
+            result.Portfolio_Fit_Status = "NOT_APPLICABLE"
+            result.Portfolio_Fit_Reason = (
+                "model eligibility and minimum starter score are required before portfolio fit"
+            )
+            result.Portfolio_Fit_Pending = False
+            result.Starter_Candidate = False
+            refresh_research_status(result)
+            continue
+        if (
+            result.Industry_Model_Key != "GENERAL_CORPORATE"
+            and not result.Cross_Model_Comparable
+        ):
+            result.Portfolio_Fit_Status = "PENDING_CALIBRATION"
+            result.Portfolio_Fit_Reason = (
+                "specialized model cannot clear starter sizing before cross-model calibration"
+            )
+            result.Portfolio_Fit_Pending = True
+            result.Starter_Candidate = False
+            refresh_research_status(result)
+            continue
+
+        assessment = evaluate_portfolio_fit(
+            portfolio_inputs.get(result.Ticker.upper()),
+            decision_timestamp=decision_timestamp,
+            proposed_weight_pct_total=result.Suggested_Starter_Weight_pct_Total,
+            raw_model_score=raw_score,
+            single_name_limit_pct_total=MAX_POSITION_WEIGHT_PCT_TOTAL,
+            active_sleeve_limit_pct_total=ACTIVE_SLEEVE_LIMIT_PCT,
+            sector_limit_pct_total=MAX_SECTOR_WEIGHT_PCT_TOTAL,
+            economic_risk_limit_pct_total=MAX_SECTOR_WEIGHT_PCT_TOTAL,
+            etf_top10_min_score=ETF_TOP10_MIN_BUY_SCORE,
+        )
+        if assessment["status"] == "PENDING_INPUT" and input_error:
+            assessment["reason"] = input_error
+            if any(
+                marker in input_error
+                for marker in (
+                    "cannot be read",
+                    "missing columns",
+                    "blank ticker",
+                    "duplicate tickers",
+                )
+            ):
+                assessment["status"] = "INVALID"
+        result.Portfolio_Fit_Status = str(assessment["status"])
+        result.Portfolio_Fit_Reason = str(assessment["reason"])
+        result.Portfolio_Fit_AsOf = str(assessment.get("as_of") or "")
+        result.Portfolio_Fit_Input_Age_Days = float(
+            assessment.get("input_age_days", np.nan)
+        )
+        result.Portfolio_Current_Position_Weight_pct_Total = float(
+            assessment.get("current_position_weight_pct_total", np.nan)
+        )
+        result.Portfolio_PreTrade_Active_Sleeve_Weight_pct_Total = float(
+            assessment.get("pre_trade_active_sleeve_weight_pct_total", np.nan)
+        )
+        result.Portfolio_PreTrade_Sector_Weight_pct_Total = float(
+            assessment.get("pre_trade_sector_weight_pct_total", np.nan)
+        )
+        result.Portfolio_PreTrade_Economic_Risk_Weight_pct_Total = float(
+            assessment.get("pre_trade_economic_risk_weight_pct_total", np.nan)
+        )
+        result.Portfolio_PostTrade_Position_Weight_pct_Total = float(
+            assessment.get("post_trade_position_weight_pct_total", np.nan)
+        )
+        result.Portfolio_PostTrade_Active_Sleeve_Weight_pct_Total = float(
+            assessment.get("post_trade_active_sleeve_weight_pct_total", np.nan)
+        )
+        result.Portfolio_PostTrade_Sector_Weight_pct_Total = float(
+            assessment.get("post_trade_sector_weight_pct_total", np.nan)
+        )
+        result.Portfolio_PostTrade_Economic_Risk_Weight_pct_Total = float(
+            assessment.get("post_trade_economic_risk_weight_pct_total", np.nan)
+        )
+        result.ETF_Lookthrough_Weight_pct_Total = float(
+            assessment.get("etf_lookthrough_weight_pct_total", np.nan)
+        )
+        result.Portfolio_ETF_Top10_Overlap = bool(
+            assessment.get("etf_top10_overlap", False)
+        )
+        result.Portfolio_Correlation_Stress_Status = str(
+            assessment.get("correlation_stress_status") or ""
+        )
+        result.Economic_Risk_Bucket = str(
+            assessment.get("economic_risk_bucket") or ""
+        )
+        result.Portfolio_Fit_Pending = result.Portfolio_Fit_Status in {
+            "PENDING_INPUT",
+            "PENDING_REVIEW",
+            "PENDING_CALIBRATION",
+            "STALE",
+            "INVALID",
+        }
+        result.Starter_Candidate = starter_candidate_gate(result)
+        refresh_research_status(result)
+
+
+def calibrate_exit_multiples(results: Sequence["ModeCResult"]) -> None:
+    """Blend company, peer and rate-adjusted exit multiples before ranking."""
+    general = [
+        row
+        for row in results
+        if row.Industry_Model_Key == "GENERAL_CORPORATE"
+        and row.Decision_State != "ABSTAIN"
+        and math.isfinite(row.EV_EBITDA_x)
+        and row.EV_EBITDA_x > 0
+    ]
+    healthy_peers = [
+        row
+        for row in general
+        if row.Status == "Pass" and row.Decision_State == "PASS"
+    ]
+    treasury = get_cached_series("^TNX", "Close")
+    treasury_yield = (
+        float(treasury.iloc[-1])
+        if treasury is not None and not treasury.empty and math.isfinite(float(treasury.iloc[-1]))
+        else np.nan
+    )
+    for row in general:
+        company = row.Exit_Multiple_Company_History
+        if not math.isfinite(company) or company <= 0:
+            company = row.Exit_Multiple_Final
+        industry_name = str(row.Industry or "").strip().casefold()
+        sector_name = str(row.Sector or "").strip().casefold()
+        industry_peers = [
+            peer.EV_EBITDA_x
+            for peer in healthy_peers
+            if peer is not row
+            and industry_name
+            and str(peer.Industry or "").strip().casefold() == industry_name
+            and math.isfinite(peer.EV_EBITDA_x)
+            and peer.EV_EBITDA_x > 0
+        ]
+        sector_peers = [
+            peer.EV_EBITDA_x
+            for peer in healthy_peers
+            if peer is not row
+            and sector_name
+            and str(peer.Sector or "").strip().casefold() == sector_name
+            and math.isfinite(peer.EV_EBITDA_x)
+            and peer.EV_EBITDA_x > 0
+        ]
+        if not math.isfinite(company) or company <= 0:
+            continue
+        if len(industry_peers) >= 3:
+            peer_multiple = float(np.median(industry_peers))
+            peer_method = "same-industry passing-company median"
+            confidence = "MEDIUM"
+        elif len(sector_peers) >= 5:
+            peer_multiple = float(np.median(sector_peers))
+            peer_method = "same-sector passing-company median fallback"
+            confidence = "LOW"
+        else:
+            peer_multiple = company
+            peer_method = "company-only conservative peer fallback"
+            confidence = "LOW"
+        base_multiple = (company + peer_multiple) / 2.0
+        if math.isfinite(treasury_yield) and treasury_yield > 0:
+            rate_multiplier = float(np.clip(4.0 / treasury_yield, 0.75, 1.25))
+            rate_adjusted = base_multiple * rate_multiplier
+            final_multiple = 0.40 * company + 0.40 * peer_multiple + 0.20 * rate_adjusted
+            method = f"40% company history + 40% {peer_method} + 20% 4% benchmark-rate adjustment"
+        else:
+            rate_adjusted = min(company, peer_multiple)
+            final_multiple = 0.40 * company + 0.40 * peer_multiple + 0.20 * rate_adjusted
+            method = f"40% company history + 40% {peer_method} + 20% conservative rate-data fallback"
+            confidence = "LOW"
+        row.Exit_Multiple_Company_History = round(company, 3)
+        row.Exit_Multiple_Peer = round(peer_multiple, 3)
+        row.Exit_Multiple_Rate_Adjusted = round(rate_adjusted, 3)
+        row.Exit_Multiple_Final = round(final_multiple, 3)
+        row.Exit_Multiple_Method = method
+        row.Exit_Multiple_Confidence = confidence
+        if math.isfinite(row.EV_B) and math.isfinite(row.EBITDA_B):
+            row.Implied_EBITDA_CAGR_3Y_pct = round(
+                implied_ebitda_cagr(
+                    row.EV_B,
+                    row.EBITDA_B,
+                    final_multiple,
+                    required_return=REVERSE_DCF_REQUIRED_RETURN,
+                )
+                * 100.0,
+                2,
+            )
+            apply_long_term_framework(row)
 
 
 def _specialized_balance(
@@ -3037,14 +4105,17 @@ def _specialized_growth_pct(
 ) -> float:
     if frame.empty:
         return np.nan
-    quarterly = sec.quarterly_series(frame, metric_name)
-    if len(quarterly) >= 8:
+    quarterly = _trailing_quarter_window(sec.quarterly_series(frame, metric_name), 8)
+    if len(quarterly) == 8:
         current = float(quarterly.tail(4).sum())
         previous = float(quarterly.iloc[-8:-4].sum())
         return (current / previous - 1.0) * 100.0 if previous > 0 else np.nan
     annual = sec._annual_facts(frame)
     if len(annual) >= 2:
         selected = annual.tail(2)
+        gap_days = (selected.iloc[1]["end"] - selected.iloc[0]["end"]).days
+        if not 350 <= gap_days <= 380:
+            return np.nan
         sec._mark_rows_used(selected, f"{metric_name}:annual-growth")
         previous = float(selected.iloc[0]["val"])
         current = float(selected.iloc[1]["val"])
@@ -3139,6 +4210,7 @@ def _compose_total_debt(
 def _specialized_total_debt(
     sec: SECDataDistiller,
     frames: Mapping[str, pd.DataFrame],
+    reference_end: Optional[pd.Timestamp] = None,
 ) -> Tuple[float, str, List[str]]:
     def latest(
         name: str,
@@ -3160,11 +4232,12 @@ def _specialized_total_debt(
         period_end = pd.to_datetime(row.get("end"), errors="coerce")
         if pd.isna(period_end):
             return 0.0, "", None, None
-        age_days = (
-            sec.decision_timestamp.normalize() - pd.Timestamp(period_end).normalize()
-        ).days
-        if age_days > fact_age_limit_days(facts):
-            return 0.0, "", None, None
+        if reference_end is None:
+            age_days = (
+                sec.decision_timestamp.normalize() - pd.Timestamp(period_end).normalize()
+            ).days
+            if age_days > fact_age_limit_days(facts):
+                return 0.0, "", None, None
         return (
             float(row["val"]) / 1e9,
             str(row.get("concept") or ""),
@@ -3172,7 +4245,9 @@ def _specialized_total_debt(
             row,
         )
 
-    debt_total, debt_total_concept, debt_period_end, debt_total_row = latest("DebtTotal")
+    debt_total, debt_total_concept, debt_period_end, debt_total_row = latest(
+        "DebtTotal", reference_end
+    )
     debt_current, debt_current_concept, _, debt_current_row = latest("DebtCurrent", debt_period_end)
     short_total, short_total_concept, _, short_total_row = latest("DebtShortTermTotal", debt_period_end)
     other_short, other_short_concept, _, other_short_row = latest("DebtOtherShortTerm", debt_period_end)
@@ -3229,6 +4304,25 @@ def _specialized_total_debt(
         else "missing"
     )
     return total, method, source_concepts
+
+
+def _balance_near_period(
+    sec: SECDataDistiller,
+    frame: pd.DataFrame,
+    target_end: pd.Timestamp,
+    normalized_metric: str,
+    tolerance_days: int = 60,
+) -> float:
+    facts = sec._instant_facts(frame)
+    if facts.empty:
+        return np.nan
+    ends = pd.to_datetime(facts["end"], errors="coerce")
+    aligned = facts[(ends - pd.Timestamp(target_end)).abs() <= pd.Timedelta(days=tolerance_days)]
+    if aligned.empty:
+        return np.nan
+    row = aligned.sort_values(["end", "filed"]).iloc[-1]
+    sec._mark_rows_used(row, f"{normalized_metric}:average-capital-endpoint")
+    return float(row["val"]) / 1e9
 
 
 def _specialized_ppe_capex_proxy(
@@ -3324,7 +4418,13 @@ class ModeCResult:
     Industry_Model_Required_Missing: str = ""
     Industry_Model_Optional_Missing: str = ""
     Decision_State: str = ""
+    Decision_Reason_Code: str = ""
     Decision_Timestamp: str = ""
+    Price_Data_Date: str = ""
+    Latest_SEC_Availability_Date: str = ""
+    Universe_Version: str = ""
+    Git_Commit: str = ""
+    Model_Version: str = "2026-07-decision-semantics-v1"
     Data_Confidence_Score: float = 100.0
     Data_Confidence_Reasons: str = ""
     Evidence_Source_Count: float = 0.0
@@ -3345,17 +4445,29 @@ class ModeCResult:
     Conservative_Real_FCF_to_EV_Yield_pct: float = np.nan
     Maintenance_Real_FCF_Yield_Low_pct: float = np.nan
     Maintenance_Real_FCF_Yield_High_pct: float = np.nan
+    Maintenance_Real_FCF_Yield_Lower_pct: float = np.nan
+    Maintenance_Real_FCF_Yield_Base_pct: float = np.nan
+    Maintenance_Real_FCF_Yield_Upper_pct: float = np.nan
+    FCF_Sensitivity_Spread_pp: float = np.nan
     TTM_OCF_B: float = np.nan
     Dynamic_CapEx_B: float = np.nan
     Maintenance_CapEx_B: float = np.nan
     Maintenance_CapEx_Low_B: float = np.nan
     Maintenance_CapEx_High_B: float = np.nan
+    Maintenance_CapEx_Lower_B: float = np.nan
+    Maintenance_CapEx_Base_B: float = np.nan
+    Maintenance_CapEx_Upper_B: float = np.nan
+    Maintenance_CapEx_Method: str = ""
     Maintenance_CapEx_Confidence: str = ""
     Growth_CapEx_B: float = np.nan
     CapEx_to_DnA_x: float = np.nan
     CapEx_Reinvestment_Method: str = ""
+    Growth_CapEx_Risk_State: str = "NOT_EVALUATED"
+    Growth_CapEx_Risk_Corroboration_Count: int = 0
+    Growth_CapEx_Risk_Reasons: str = ""
     TTM_SBC_B: float = np.nan
     SBC_Economic_Cost_B: float = np.nan
+    SBC_Economic_Cost: float = np.nan
     Net_Buyback_Yield_pct: float = np.nan
     Buyback_Offset_Effective: bool = False
     Per_Share_FCF_CAGR_3Y_pct: float = np.nan
@@ -3364,6 +4476,8 @@ class ModeCResult:
     ICR: float = np.nan
     ICR_Method: str = ""
     Real_Buyback_B: float = np.nan
+    TTM_Gross_Buyback_B: float = np.nan
+    TTM_Stock_Issuance_B: float = np.nan
     Share_Count_Change_pct: float = np.nan
     Share_Count_Change_3Y_pct: float = np.nan
     Share_Split_Factor_1Y: float = 1.0
@@ -3371,7 +4485,23 @@ class ModeCResult:
     Share_Basis_Discontinuity: bool = False
     Dilution_Illusion: bool = False
     Persistent_Dilution: bool = False
+    Ownership_Dilution_Penalty: float = 0.0
+    Capital_Allocation_Penalty: float = 0.0
+    Persistent_Dilution_Hard_Gate: bool = False
+    Dilution_Total_Score_Impact: float = 0.0
+    Dilution_Double_Count_Check: str = "PASS"
+    Net_Dilution_CAGR_3Y_pct: float = np.nan
+    Acquisition_Stock_Consideration_B: float = np.nan
+    Acquisition_Issuance_Attribution_Status: str = "MISSING"
+    Acquisition_Issuance_Reconciliation_Status: str = "NOT_APPLICABLE"
+    Acquisition_Related_Issuance_Flag: bool = False
+    Acquisition_Accretion_Review_Required: bool = False
     ROIC_pct: float = np.nan
+    ROIC_Average_Capital_pct: float = np.nan
+    ROIC_Ending_Capital_pct: float = np.nan
+    ROIC_Capital_Method: str = ""
+    ROIC_Including_Goodwill_pct: float = np.nan
+    ROIC_Excluding_Goodwill_pct: float = np.nan
     ROCE_pct: float = np.nan
     OCF_3Y_Cumulative_B: float = np.nan
     OCF_3Y_Years: float = 0.0
@@ -3390,6 +4520,15 @@ class ModeCResult:
     Historical_Valuation_Total_Years: float = 0.0
     Historical_Valuation_Coverage: float = np.nan
     Historical_Valuation_Status: str = ""
+    Historical_Valuation_Quantile_Used: float = np.nan
+    Historical_Valuation_Quantile_Value: float = np.nan
+    Historical_Valuation_Sample_Quality: str = ""
+    Exit_Multiple_Company_History: float = np.nan
+    Exit_Multiple_Peer: float = np.nan
+    Exit_Multiple_Rate_Adjusted: float = np.nan
+    Exit_Multiple_Final: float = np.nan
+    Exit_Multiple_Method: str = ""
+    Exit_Multiple_Confidence: str = ""
     Point_in_Time_FX_Rate: float = np.nan
     ADR_Ratio: float = np.nan
     Industry_Stress_Extension_Status: str = "NOT_IMPLEMENTED"
@@ -3417,6 +4556,43 @@ class ModeCResult:
     Risk_Penalty: float = np.nan
     Long_Term_Score: float = np.nan
     Long_Term_Eligible: bool = False
+    Raw_Model_Score: float = np.nan
+    Model_Peer_Count: int = 0
+    Within_Model_Percentile: float = np.nan
+    Shrunk_Within_Model_Percentile: float = np.nan
+    Cross_Model_Calibration_Status: str = CROSS_MODEL_CALIBRATION_STATUS
+    Cross_Model_Comparable: bool = False
+    Research_Priority_Rank: float = np.nan
+    Research_Priority_Round: float = np.nan
+    Research_Priority_Method: str = RESEARCH_PRIORITY_METHOD
+    Research_Priority_Version: str = ""
+    Screened: bool = True
+    Model_Eligible: bool = False
+    Global_Research_Queue: bool = False
+    Human_KPI_Review_Required: bool = False
+    Specialized_Stress_Pending: bool = False
+    Specialized_Stress_Failed: bool = False
+    Portfolio_Fit_Pending: bool = False
+    Portfolio_Fit_Status: str = "NOT_APPLICABLE"
+    Portfolio_Fit_Reason: str = ""
+    Portfolio_Fit_AsOf: str = ""
+    Portfolio_Fit_Input_Age_Days: float = np.nan
+    Portfolio_Current_Position_Weight_pct_Total: float = np.nan
+    Portfolio_PreTrade_Active_Sleeve_Weight_pct_Total: float = np.nan
+    Portfolio_PreTrade_Sector_Weight_pct_Total: float = np.nan
+    Portfolio_PreTrade_Economic_Risk_Weight_pct_Total: float = np.nan
+    Portfolio_PostTrade_Position_Weight_pct_Total: float = np.nan
+    Portfolio_PostTrade_Active_Sleeve_Weight_pct_Total: float = np.nan
+    Portfolio_PostTrade_Sector_Weight_pct_Total: float = np.nan
+    Portfolio_PostTrade_Economic_Risk_Weight_pct_Total: float = np.nan
+    ETF_Lookthrough_Weight_pct_Total: float = np.nan
+    Portfolio_ETF_Top10_Overlap: bool = False
+    Portfolio_Correlation_Stress_Status: str = ""
+    Economic_Risk_Bucket: str = ""
+    Portfolio_Fit_Contract_Version: str = PORTFOLIO_FIT_CONTRACT_VERSION
+    Starter_Candidate: bool = False
+    Research_Statuses: str = "SCREENED"
+    Research_Action_State: str = "SCREENED"
     Research_Action: str = ""
     Suggested_Starter_Weight_pct_Total: float = 0.0
     Physical_Check: str = "依產業分類動態產生；非半導體/AI/CSP 不套用 TSMC/ASML/CSP。"
@@ -3425,11 +4601,82 @@ class ModeCResult:
     Short_Data_Age_Days: float = np.nan
     Squeeze_Risk: bool = False
     DSI_Latest: float = np.nan
+    DSI_Status: str = "MISSING"
+    DSI_Score: float = np.nan
+    DSI_Applicability_Reason: str = ""
+    Inventory_to_Revenue_pct: float = np.nan
+    Inventory_to_Assets_pct: float = np.nan
     DSI_QoQ_Change_pct: float = np.nan
     DSI_YoY_Change_pct: float = np.nan
     DSI_2Q_Down: bool = False
     Inventory_Inflection: bool = False
     Inventory_Signal: str = "資料不足或不適用"
+    DSO_Days: float = np.nan
+    DPO_Days: float = np.nan
+    Cash_Conversion_Cycle_Days: float = np.nan
+    DSO_YoY_Change_pct: float = np.nan
+    DPO_YoY_Change_pct: float = np.nan
+    Accounts_Receivable_Growth_pct: float = np.nan
+    Accounts_Payable_Growth_pct: float = np.nan
+    Deferred_Revenue_Growth_pct: float = np.nan
+    TTM_Revenue_Growth_pct: float = np.nan
+    TTM_COGS_Growth_pct: float = np.nan
+    AR_vs_Revenue_Growth_Gap_pp: float = np.nan
+    AP_vs_COGS_Growth_Gap_pp: float = np.nan
+    Working_Capital_Quality_Status: str = "MISSING"
+    Working_Capital_Quality_State: str = "MISSING"
+    Working_Capital_Quality_Coverage: float = 0.0
+    Working_Capital_Risk_Penalty: float = 0.0
+    Working_Capital_Quality_Reasons: str = ""
+    Applicable_Factor_Weight: float = np.nan
+    Available_Factor_Weight: float = np.nan
+    Factor_Coverage: float = np.nan
+    Weight_Renormalized: bool = False
+    Fee_Related_Earnings_B: float = np.nan
+    Management_Fee_Revenue_B: float = np.nan
+    Performance_Fees_B: float = np.nan
+    Realized_Carry_B: float = np.nan
+    AUM_B: float = np.nan
+    Fee_Paying_AUM_B: float = np.nan
+    AUM_Growth_pct: float = np.nan
+    Net_Flows_B: float = np.nan
+    Organic_Net_Flows_pct: float = np.nan
+    Permanent_Capital_pct: float = np.nan
+    Insurance_Assets_pct: float = np.nan
+    Compensation_to_Revenue_pct: float = np.nan
+    OCF_to_Net_Income_x: float = np.nan
+    Net_Debt_to_FRE_or_EBITDA_x: float = np.nan
+    Valuation_Method: str = ""
+    Company_Reported_Combined_Ratio: float = np.nan
+    SEC_Combined_Ratio_Proxy: float = np.nan
+    Combined_Ratio_Reconciliation_Difference_pp: float = np.nan
+    Combined_Ratio_Source_Status: str = "MISSING"
+    Accident_Year_Combined_Ratio: float = np.nan
+    Prior_Year_Reserve_Development_pct: float = np.nan
+    Catastrophe_Loss_Ratio_pct: float = np.nan
+    Premium_Growth_pct: float = np.nan
+    Policy_Count_Growth_pct: float = np.nan
+    Investment_Income_B: float = np.nan
+    Investment_Yield_pct: float = np.nan
+    Equity_to_Assets_pct: float = np.nan
+    Operating_ROE_pct: float = np.nan
+    Price_to_Book_x: float = np.nan
+    P_and_C_Stress_CR_Mild: float = np.nan
+    P_and_C_Stress_CR_Moderate: float = np.nan
+    P_and_C_Stress_CR_Severe: float = np.nan
+    P_and_C_Stress_Underwriting_Income_Mild_B: float = np.nan
+    P_and_C_Stress_Underwriting_Income_Moderate_B: float = np.nan
+    P_and_C_Stress_Underwriting_Income_Severe_B: float = np.nan
+    P_and_C_Stress_PreTax_Income_Moderate_B: float = np.nan
+    P_and_C_Stress_ROE_Moderate_pct: float = np.nan
+    P_and_C_Stress_Equity_to_Assets_Moderate_pct: float = np.nan
+    P_and_C_Stress_Survival_Moderate: bool = False
+    P_and_C_Stress_Status: str = "NOT_APPLICABLE"
+    Specialized_Stress_Status: str = "NOT_APPLICABLE"
+    Specialized_Stress_Scenario: str = ""
+    Specialized_Stress_Reason: str = ""
+    Specialized_Stress_Survival: bool = False
+    Specialized_Stress_Missing_Inputs: str = ""
     Catalysts_30D: str = ""
     Data_Quality_Flags: str = ""
     Verdict: str = ""
@@ -3437,21 +4684,24 @@ class ModeCResult:
     Agent_Tasks: List[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
-        if self.Decision_State:
-            return
-        if self.Status == "Pass":
-            self.Decision_State = "PASS"
-        elif self.Status.startswith("Abstain"):
-            self.Decision_State = "ABSTAIN"
-        elif self.Status.startswith("Error"):
-            self.Decision_State = "ABSTAIN"
-        elif self.Status.startswith("Fail"):
-            self.Decision_State = "FAIL"
+        if not self.Decision_State:
+            if self.Status == "Pass":
+                self.Decision_State = "PASS"
+            elif self.Status.startswith("Abstain"):
+                self.Decision_State = "ABSTAIN"
+            elif self.Status.startswith("Error"):
+                self.Decision_State = "ABSTAIN"
+            elif self.Status.startswith("Fail"):
+                self.Decision_State = "FAIL"
+        if not self.Decision_Reason_Code:
+            self.Decision_Reason_Code = decision_reason_code(
+                self.Status, self.Decision_State
+            )
 
 
 SPECIALIZED_CONCEPTS = {
-    "BANK": {"AOCI", "CreditLossAllowance", "CreditLossProvision", "Deposits", "Loans", "NetInterestIncome", "Tier1Ratio", "Tier1WellCapitalizedMinimum"},
-    "INSURANCE_P_AND_C": {"InsuranceClaims", "InsuranceCombinedExpense", "NetInvestmentIncome", "PolicyholderBenefits", "PremiumsEarned", "PremiumsWritten", "ReserveDevelopment", "UnderwritingExpense"},
+    "BANK": {"AOCI", "CreditLossAllowance", "CreditLossProvision", "Deposits", "Loans", "NetInterestIncome", "RiskWeightedAssets", "Tier1Ratio", "Tier1WellCapitalizedMinimum"},
+    "INSURANCE_P_AND_C": {"InsuranceClaims", "InsuranceCombinedExpense", "InvestedAssets", "NetInvestmentIncome", "PolicyholderBenefits", "PremiumsEarned", "PremiumsWritten", "PretaxIncome", "ReserveDevelopment", "UnderwritingExpense"},
     "INSURANCE_LIFE": {"InsuranceClaims", "InsuranceCombinedExpense", "NetInvestmentIncome", "PolicyholderBenefits", "PremiumsEarned", "PremiumsWritten", "ReserveDevelopment", "UnderwritingExpense"},
     "REIT_EQUITY": {"DnA", "Dividend", "GainOnPropertySale", "IncomeTaxExpenseBenefit", "Interest", "LeaseRevenue", "RealEstateCapEx", "RealEstateImpairment"},
     "REIT_MORTGAGE": {"Dividend", "NetInterestIncome"},
@@ -3459,6 +4709,10 @@ SPECIALIZED_CONCEPTS = {
     "CYCLICAL_MIDCYCLE": {"CapEx", "DnA", "EBIT", "Interest", "OCF", "Revenue", "SBC"},
     "FINANCIAL_LENDER": {"CreditLossAllowance", "Loans", "NetInterestIncome"},
     "FINANCIAL_FEE": {"CreditLossAllowance", "DnA", "EBIT", "Loans", "NetInterestIncome", "OCF", "Revenue"},
+    "ALTERNATIVE_ASSET_MANAGER": {"DnA", "EBIT", "OCF", "Revenue"},
+    "TRADITIONAL_ASSET_MANAGER": {"DnA", "EBIT", "OCF", "Revenue"},
+    "INSURANCE_LINKED_ASSET_MANAGER": {"DnA", "EBIT", "OCF", "Revenue"},
+    "OTHER_FEE_FINANCIAL": {"DnA", "EBIT", "OCF", "Revenue"},
 }
 
 
@@ -3473,6 +4727,7 @@ SPECIALIZED_RECENCY_CONCEPTS = {
         "net_interest_income_growth_pct": ("NetInterestIncome",),
         "aoci_b": ("AOCI",),
         "tier1_ratio_pct": ("Tier1Ratio",),
+        "risk_weighted_assets_b": ("RiskWeightedAssets",),
         "tier1_well_capitalized_min_pct": ("Tier1WellCapitalizedMinimum",),
     },
     "INSURANCE_P_AND_C": {
@@ -3482,6 +4737,10 @@ SPECIALIZED_RECENCY_CONCEPTS = {
         "underwriting_expense_ttm_b": ("UnderwritingExpense",),
         "premium_growth_pct": ("PremiumsEarned",),
         "reserve_development_to_premium_pct": ("ReserveDevelopment",),
+        "net_investment_income_ttm_b": ("NetInvestmentIncome",),
+        "invested_assets_b": ("InvestedAssets",),
+        "investment_yield_pct": ("NetInvestmentIncome", "InvestedAssets"),
+        "pretax_income_ttm_b": ("PretaxIncome",),
         "assets_b": ("Assets",),
         "equity_b": ("Equity",),
         "net_income_ttm_b": ("NetIncome",),
@@ -3546,10 +4805,40 @@ SPECIALIZED_RECENCY_CONCEPTS = {
         "ebit_ttm_b": ("EBIT",),
         "ocf_ttm_b": ("OCF",),
         "net_income_ttm_b": ("NetIncome",),
-        "tangible_equity_b": ("Equity", "Goodwill", "IntangibleAssets"),
-        "assets_b": ("Assets",),
         "ebitda_ttm_b": ("EBIT", "DnA"),
         "revenue_growth_pct": ("Revenue",),
+        "debt_b": ("DebtTotal",),
+        "cash_b": ("Cash",),
+    },
+    "ALTERNATIVE_ASSET_MANAGER": {
+        "revenue_ttm_b": ("Revenue",),
+        "ebit_ttm_b": ("EBIT",),
+        "ocf_ttm_b": ("OCF",),
+        "net_income_ttm_b": ("NetIncome",),
+        "debt_b": ("DebtTotal",),
+        "cash_b": ("Cash",),
+    },
+    "TRADITIONAL_ASSET_MANAGER": {
+        "revenue_ttm_b": ("Revenue",),
+        "ebit_ttm_b": ("EBIT",),
+        "ocf_ttm_b": ("OCF",),
+        "net_income_ttm_b": ("NetIncome",),
+        "debt_b": ("DebtTotal",),
+        "cash_b": ("Cash",),
+    },
+    "INSURANCE_LINKED_ASSET_MANAGER": {
+        "revenue_ttm_b": ("Revenue",),
+        "ebit_ttm_b": ("EBIT",),
+        "ocf_ttm_b": ("OCF",),
+        "net_income_ttm_b": ("NetIncome",),
+        "debt_b": ("DebtTotal",),
+        "cash_b": ("Cash",),
+    },
+    "OTHER_FEE_FINANCIAL": {
+        "revenue_ttm_b": ("Revenue",),
+        "ebit_ttm_b": ("EBIT",),
+        "ocf_ttm_b": ("OCF",),
+        "net_income_ttm_b": ("NetIncome",),
         "debt_b": ("DebtTotal",),
         "cash_b": ("Cash",),
     },
@@ -3558,7 +4847,14 @@ SPECIALIZED_RECENCY_CONCEPTS = {
 
 SPECIALIZED_DISCLOSURE_GAPS = {
     "BANK": ["CET1 exact ratio", "uninsured deposits", "nonperforming-loan ratio"],
-    "INSURANCE_P_AND_C": ["statutory RBC capital", "investment duration / credit buckets"],
+    "INSURANCE_P_AND_C": [
+        "company-reported combined ratio reconciliation",
+        "accident-year combined ratio",
+        "catastrophe loss ratio",
+        "policy count growth",
+        "statutory RBC capital",
+        "investment duration / credit buckets",
+    ],
     "INSURANCE_LIFE": ["statutory RBC capital", "asset-liability duration matching"],
     "REIT_EQUITY": ["same-store NOI", "occupancy", "fixed-rate debt and maturity ladder"],
     "REIT_MORTGAGE": [
@@ -3570,6 +4866,10 @@ SPECIALIZED_DISCLOSURE_GAPS = {
     "CYCLICAL_MIDCYCLE": ["commodity cost curve", "reserve life / replacement economics"],
     "FINANCIAL_LENDER": ["delinquency vintage", "warehouse covenant headroom"],
     "FINANCIAL_FEE": ["AUM or client-asset flows", "regulatory net capital"],
+    "ALTERNATIVE_ASSET_MANAGER": ["fee-related earnings", "fee-paying AUM", "realized carry", "permanent capital", "organic net flows"],
+    "TRADITIONAL_ASSET_MANAGER": ["AUM", "management fee revenue", "organic net flows", "compensation ratio"],
+    "INSURANCE_LINKED_ASSET_MANAGER": ["insurance assets", "fee-paying AUM", "permanent capital", "fee-related earnings"],
+    "OTHER_FEE_FINANCIAL": ["AUM", "management fee revenue", "organic net flows"],
 }
 
 
@@ -3618,6 +4918,18 @@ SPECIALIZED_AGENT_TASKS = {
         "Verify net client flows, fee rates, client concentration and operating leverage",
         "Check regulatory net capital and off-balance-sheet obligations",
         "Separate market appreciation from organic fee-base growth",
+    ],
+    "ALTERNATIVE_ASSET_MANAGER": [
+        "Reconcile fee-related earnings, fee-paying AUM, permanent capital and carry from company filings",
+    ],
+    "TRADITIONAL_ASSET_MANAGER": [
+        "Reconcile AUM, organic net flows, fee rate and compensation ratio from company filings",
+    ],
+    "INSURANCE_LINKED_ASSET_MANAGER": [
+        "Reconcile insurance assets, permanent capital and fee-related earnings from company filings",
+    ],
+    "OTHER_FEE_FINANCIAL": [
+        "Identify the authoritative fee base and company-defined flow KPI before scoring",
     ],
 }
 
@@ -3827,6 +5139,7 @@ def run_specialized_mode_c_pipeline(
         if model_key == "BANK":
             metrics.update(
                 deposits_b=_specialized_balance(sec, frame("Deposits"), "Deposits"),
+                risk_weighted_assets_b=_specialized_balance(sec, frame("RiskWeightedAssets"), "RiskWeightedAssets"),
                 tier1_ratio_pct=_ratio_as_percent(
                     _specialized_scalar(sec, frame("Tier1Ratio"), "Tier1Ratio")
                 ),
@@ -3837,6 +5150,17 @@ def run_specialized_mode_c_pipeline(
                 ),
                 aoci_b=_specialized_balance(sec, frame("AOCI"), "AOCI"),
             )
+            stress_periods = [
+                pd.to_datetime(frame(name)["end"], errors="coerce").max()
+                if not frame(name).empty else pd.NaT
+                for name in (
+                    "RiskWeightedAssets", "Tier1Ratio", "Tier1WellCapitalizedMinimum",
+                    "Assets", "Equity", "Loans", "CreditLossAllowance",
+                )
+            ]
+            if any(pd.isna(end) for end in stress_periods) or len(set(stress_periods)) != 1:
+                metrics["risk_weighted_assets_b"] = np.nan
+                runtime_warnings.append("Bank stress requires same-period RWA, capital ratios and balance-sheet inputs")
 
     if model_key in {"INSURANCE_P_AND_C", "INSURANCE_LIFE"}:
         premiums, _, _ = _specialized_ttm(sec, frame("PremiumsEarned"), "TTM_PremiumsEarned")
@@ -3855,6 +5179,12 @@ def run_specialized_mode_c_pipeline(
         investment_income, _, _ = _specialized_ttm(
             sec, frame("NetInvestmentIncome"), "TTM_NetInvestmentIncome"
         )
+        pretax_income, _, _ = _specialized_ttm(
+            sec, frame("PretaxIncome"), "TTM_PretaxIncome"
+        )
+        invested_assets = _specialized_balance(
+            sec, frame("InvestedAssets"), "InvestedAssets"
+        )
         reserve_development, _, _ = _specialized_ttm(
             sec, frame("ReserveDevelopment"), "TTM_ReserveDevelopment"
         )
@@ -3865,10 +5195,18 @@ def run_specialized_mode_c_pipeline(
             underwriting_expense_ttm_b=underwriting,
             policyholder_benefits_ttm_b=benefits,
             net_investment_income_ttm_b=investment_income,
+            pretax_income_ttm_b=pretax_income,
+            invested_assets_b=invested_assets,
+            investment_yield_pct=safe_div(investment_income, invested_assets) * 100.0,
             premium_growth_pct=_specialized_growth_pct(
                 sec, frame("PremiumsEarned"), "PremiumsEarned"
             ),
             reserve_development_to_premium_pct=safe_div(reserve_development, premiums) * 100.0,
+            company_reported_combined_ratio_pct=np.nan,
+            accident_year_combined_ratio_pct=np.nan,
+            catastrophe_loss_ratio_pct=np.nan,
+            policy_count_growth_pct=np.nan,
+            sec_proxy_reconciled=False,
         )
 
     if model_key == "REIT_EQUITY":
@@ -4001,7 +5339,13 @@ def run_specialized_mode_c_pipeline(
             revenue_growth_pct=revenue_growth,
         )
 
-    if model_key == "FINANCIAL_FEE":
+    if model_key in {
+        "FINANCIAL_FEE",
+        "ALTERNATIVE_ASSET_MANAGER",
+        "TRADITIONAL_ASSET_MANAGER",
+        "INSURANCE_LINKED_ASSET_MANAGER",
+        "OTHER_FEE_FINANCIAL",
+    }:
         revenue, _, _ = _specialized_ttm(sec, frame("Revenue"), "TTM_Revenue")
         ebit, _, _ = _specialized_ttm(sec, frame("EBIT"), "TTM_EBIT")
         ocf, _, _ = _specialized_ttm(sec, frame("OCF"), "TTM_OCF")
@@ -4020,6 +5364,22 @@ def run_specialized_mode_c_pipeline(
                 sec, frame("NetInterestIncome"), "NetInterestIncome"
             ),
         )
+        if model_key != "FINANCIAL_FEE":
+            metrics.update(
+                fee_related_earnings_b=np.nan,
+                management_fee_revenue_b=np.nan,
+                performance_fees_b=np.nan,
+                realized_carry_b=np.nan,
+                aum_b=np.nan,
+                fee_paying_aum_b=np.nan,
+                aum_growth_pct=np.nan,
+                net_flows_b=np.nan,
+                organic_net_flows_pct=np.nan,
+                permanent_capital_pct=np.nan,
+                insurance_assets_pct=np.nan,
+                compensation_expense_b=np.nan,
+                valuation_method="MISSING_COMPANY_DEFINED_KPI",
+            )
 
     auto_lender = bool(
         model_key == "FINANCIAL_FEE"
@@ -4087,6 +5447,10 @@ def run_specialized_mode_c_pipeline(
         extra_missing.append("SEC current shares outstanding")
     evidence_stats = GLOBAL_EVIDENCE_LEDGER.selected_source_stats(ticker)
     confidence = assess_specialized_data_confidence(evidence_stats, evaluation, extra_missing)
+    result_metrics = evaluation.metrics
+    specialized_stress_status = str(
+        result_metrics.get("specialized_stress_status") or "ABSTAIN"
+    ).upper()
 
     source_evidence_ids = GLOBAL_EVIDENCE_LEDGER.selected_source_evidence_ids(ticker)
     model_lineage_ids = [market_cap_evidence_id, enterprise_value_evidence_id, *source_evidence_ids]
@@ -4121,33 +5485,22 @@ def run_specialized_mode_c_pipeline(
         [*source_evidence_ids, industry_score_evidence_id], f"{model_key}:confidence-gate",
     )
 
-    if evaluation.hard_failures:
-        decision_state = "FAIL"
-        status = f"Fail: {evaluation.hard_failures[0]}"
-    elif evaluation.decision == "ABSTAIN" or bool(confidence["abstain"]):
-        decision_state = "ABSTAIN"
-        status = (
-            f"Abstain: {model_key} required evidence incomplete"
-            if evaluation.decision == "ABSTAIN"
-            else f"Abstain: {model_key} data confidence {float(confidence['score']):.0f}"
-        )
-    elif evaluation.decision == "FAIL":
-        decision_state = "FAIL"
-        reason = evaluation.hard_failures[0] if evaluation.hard_failures else f"specialized score {evaluation.score:.1f}<60"
-        status = f"Fail: {reason}"
-    else:
-        decision_state, status = "PASS", "Pass"
+    decision_state, status = determine_specialized_status(
+        model_key, evaluation.decision, evaluation.hard_failures,
+        float(confidence["score"]), bool(confidence["abstain"]), specialized_stress_status,
+    )
     eligible = bool(
         decision_state == "PASS" and is_finite(evaluation.score)
         and evaluation.score >= MIN_LONG_TERM_SCORE
         and float(confidence["score"]) >= MIN_DATA_CONFIDENCE
+        and specialized_stress_status == "PASS"
     )
     if eligible and evaluation.score >= HIGH_PRIORITY_SCORE:
-        verdict = "高優先研究：專用產業模型、資料信心與風險閘門達標"
-        action, starter_weight = "完成專用產業人工覆核後，可考慮 1.5% 總資產起始部位", STARTER_WEIGHT_PCT_TOTAL
+        verdict = "高優先研究：專用產業模型內分數達標，跨模型仍未校準"
+        action, starter_weight = "可進研究佇列；完成公司 KPI、專用壓力與組合適配前不得成為 Starter Candidate", 0.0
     elif eligible and evaluation.score >= SMALL_POSITION_SCORE:
-        verdict = "可考慮小部位：專用模型達標，仍須完成產業揭露覆核"
-        action, starter_weight = "完成專用產業人工覆核後，可考慮 1.0% 總資產起始部位", STARTER_WEIGHT_MIN_PCT_TOTAL
+        verdict = "優先研究：專用模型達標，跨模型仍未校準"
+        action, starter_weight = "可進研究佇列；完成公司 KPI、專用壓力與組合適配前不得成為 Starter Candidate", 0.0
     elif eligible:
         verdict = "專用產業研究候選：尚未達買入分數"
         action, starter_weight = "列入觀察，不建立部位；等待分數達 75 且非標準揭露完成覆核", 0.0
@@ -4159,11 +5512,20 @@ def run_specialized_mode_c_pipeline(
         action, starter_weight = "不進入主動投資研究池", 0.0
     sec._record_derived_from_ids(
         f"{model_key}:Long_Term_Eligible", eligible, "boolean",
-        "specialized model pass, score >= 60 and data confidence >= 70",
+        "specialized model pass, score >= 60, data confidence >= 70 and specialized stress PASS",
         [industry_score_evidence_id, confidence_evidence_id], f"{model_key}:eligibility",
     )
 
-    result_metrics = evaluation.metrics
+    p_and_c_source_status = str(
+        result_metrics.get("combined_ratio_source_status") or "MISSING"
+    ).upper()
+    p_and_c_stress_status = str(
+        result_metrics.get("p_and_c_stress_status") or "NOT_APPLICABLE"
+    ).upper()
+    human_kpi_review_required = bool(
+        model_key == "INSURANCE_P_AND_C"
+        and p_and_c_source_status not in {"COMPANY_REPORTED", "SEC_PROXY_RECONCILED"}
+    )
     interest_coverage = result_metrics.get("interest_coverage_x", result_metrics.get("trough_interest_coverage_x", np.nan))
     ebitda_value = result_metrics.get("current_ebitda_b", result_metrics.get("ebitda_ttm_b"))
     try:
@@ -4176,10 +5538,15 @@ def run_specialized_mode_c_pipeline(
         result_metrics.get("debt_service_method")
         or f"{model_key} specialized coverage"
     )
+
+    def rounded_result_metric(name: str) -> float:
+        value = result_metrics.get(name)
+        return round(float(value), 3) if is_finite(value) else np.nan
+
     return ModeCResult(
         Ticker=ticker,
         Status=status,
-        Scoring_Framework=f"INDUSTRY_SPECIALIZED_{model_key}_V1",
+        Scoring_Framework=f"INDUSTRY_SPECIALIZED_{model_key}_V2",
         Price=round(price, 2),
         Sector=sector,
         Industry=industry,
@@ -4215,9 +5582,9 @@ def run_specialized_mode_c_pipeline(
         TTM_OCF_B=round(float(result_metrics.get("ocf_ttm_b")), 3) if is_finite(result_metrics.get("ocf_ttm_b")) else np.nan,
         Dynamic_CapEx_B=round(float(result_metrics.get("capex_ttm_b")), 3) if is_finite(result_metrics.get("capex_ttm_b")) else np.nan,
         Maintenance_CapEx_B=round(float(result_metrics.get("maintenance_capex_b")), 3) if is_finite(result_metrics.get("maintenance_capex_b")) else np.nan,
-        Industry_Stress_Extension_Status="NOT_IMPLEMENTED",
-        Industry_Stress_Extension_Reason=(
-            f"{model_key} requires a dedicated industry stress extension; generic EBITDA shock is not displayed"
+        Industry_Stress_Extension_Status=f"IMPLEMENTED_{specialized_stress_status}",
+        Industry_Stress_Extension_Reason=str(
+            result_metrics.get("specialized_stress_reason") or ""
         ),
         EBITDA_B=round(float(ebitda_value), 3) if is_finite(ebitda_value) else np.nan,
         ICR=(round(specialized_icr, 2) if math.isfinite(specialized_icr) else specialized_icr),
@@ -4228,6 +5595,123 @@ def run_specialized_mode_c_pipeline(
             else np.nan
         ),
         Long_Term_Eligible=eligible,
+        Human_KPI_Review_Required=human_kpi_review_required,
+        Specialized_Stress_Pending=(
+            model_key != "GENERAL_CORPORATE" and specialized_stress_status != "PASS"
+            and specialized_stress_status != "FAIL"
+        ),
+        Specialized_Stress_Failed=(specialized_stress_status == "FAIL"),
+        Starter_Candidate=False,
+        Fee_Related_Earnings_B=rounded_result_metric("fee_related_earnings_b"),
+        Management_Fee_Revenue_B=rounded_result_metric("management_fee_revenue_b"),
+        Performance_Fees_B=rounded_result_metric("performance_fees_b"),
+        Realized_Carry_B=rounded_result_metric("realized_carry_b"),
+        AUM_B=rounded_result_metric("aum_b"),
+        Fee_Paying_AUM_B=rounded_result_metric("fee_paying_aum_b"),
+        AUM_Growth_pct=rounded_result_metric("aum_growth_pct"),
+        Net_Flows_B=rounded_result_metric("net_flows_b"),
+        Organic_Net_Flows_pct=rounded_result_metric("organic_net_flows_pct"),
+        Permanent_Capital_pct=rounded_result_metric("permanent_capital_pct"),
+        Insurance_Assets_pct=rounded_result_metric("insurance_assets_pct"),
+        Compensation_to_Revenue_pct=rounded_result_metric(
+            "compensation_to_revenue_pct"
+        ),
+        OCF_to_Net_Income_x=rounded_result_metric("ocf_to_net_income_x"),
+        Net_Debt_to_FRE_or_EBITDA_x=rounded_result_metric(
+            "net_debt_to_fre_or_ebitda_x"
+        ),
+        Valuation_Method=str(result_metrics.get("valuation_method") or ""),
+        Company_Reported_Combined_Ratio=(
+            round(float(result_metrics.get("company_reported_combined_ratio_pct")), 3)
+            if is_finite(result_metrics.get("company_reported_combined_ratio_pct"))
+            else np.nan
+        ),
+        SEC_Combined_Ratio_Proxy=(
+            round(float(result_metrics.get("sec_combined_ratio_proxy_pct")), 3)
+            if is_finite(result_metrics.get("sec_combined_ratio_proxy_pct"))
+            else np.nan
+        ),
+        Combined_Ratio_Reconciliation_Difference_pp=(
+            round(float(result_metrics.get("combined_ratio_reconciliation_difference_pp")), 3)
+            if is_finite(result_metrics.get("combined_ratio_reconciliation_difference_pp"))
+            else np.nan
+        ),
+        Combined_Ratio_Source_Status=p_and_c_source_status,
+        Accident_Year_Combined_Ratio=(
+            round(float(result_metrics.get("accident_year_combined_ratio_pct")), 3)
+            if is_finite(result_metrics.get("accident_year_combined_ratio_pct"))
+            else np.nan
+        ),
+        Prior_Year_Reserve_Development_pct=(
+            round(float(result_metrics.get("reserve_development_to_premium_pct")), 3)
+            if is_finite(result_metrics.get("reserve_development_to_premium_pct"))
+            else np.nan
+        ),
+        Catastrophe_Loss_Ratio_pct=(
+            round(float(result_metrics.get("catastrophe_loss_ratio_pct")), 3)
+            if is_finite(result_metrics.get("catastrophe_loss_ratio_pct"))
+            else np.nan
+        ),
+        Premium_Growth_pct=(
+            round(float(result_metrics.get("premium_growth_pct")), 3)
+            if is_finite(result_metrics.get("premium_growth_pct"))
+            else np.nan
+        ),
+        Policy_Count_Growth_pct=(
+            round(float(result_metrics.get("policy_count_growth_pct")), 3)
+            if is_finite(result_metrics.get("policy_count_growth_pct"))
+            else np.nan
+        ),
+        Investment_Income_B=(
+            round(float(result_metrics.get("net_investment_income_ttm_b")), 3)
+            if is_finite(result_metrics.get("net_investment_income_ttm_b"))
+            else np.nan
+        ),
+        Investment_Yield_pct=(
+            round(float(result_metrics.get("investment_yield_pct")), 3)
+            if is_finite(result_metrics.get("investment_yield_pct"))
+            else np.nan
+        ),
+        Equity_to_Assets_pct=(
+            round(float(result_metrics.get("equity_to_assets_pct")), 3)
+            if is_finite(result_metrics.get("equity_to_assets_pct"))
+            else np.nan
+        ),
+        Operating_ROE_pct=(
+            round(float(result_metrics.get("operating_roe_pct")), 3)
+            if is_finite(result_metrics.get("operating_roe_pct"))
+            else np.nan
+        ),
+        Price_to_Book_x=(
+            round(float(result_metrics.get("price_to_book_x")), 3)
+            if is_finite(result_metrics.get("price_to_book_x"))
+            else np.nan
+        ),
+        P_and_C_Stress_CR_Mild=float(result_metrics.get("p_and_c_stress_cr_mild", np.nan)),
+        P_and_C_Stress_CR_Moderate=float(result_metrics.get("p_and_c_stress_cr_moderate", np.nan)),
+        P_and_C_Stress_CR_Severe=float(result_metrics.get("p_and_c_stress_cr_severe", np.nan)),
+        P_and_C_Stress_Underwriting_Income_Mild_B=float(result_metrics.get("p_and_c_stress_underwriting_income_mild_b", np.nan)),
+        P_and_C_Stress_Underwriting_Income_Moderate_B=float(result_metrics.get("p_and_c_stress_underwriting_income_moderate_b", np.nan)),
+        P_and_C_Stress_Underwriting_Income_Severe_B=float(result_metrics.get("p_and_c_stress_underwriting_income_severe_b", np.nan)),
+        P_and_C_Stress_PreTax_Income_Moderate_B=float(result_metrics.get("p_and_c_stress_pretax_income_moderate_b", np.nan)),
+        P_and_C_Stress_ROE_Moderate_pct=float(result_metrics.get("p_and_c_stress_roe_moderate_pct", np.nan)),
+        P_and_C_Stress_Equity_to_Assets_Moderate_pct=float(result_metrics.get("p_and_c_stress_equity_to_assets_moderate_pct", np.nan)),
+        P_and_C_Stress_Survival_Moderate=bool(result_metrics.get("p_and_c_stress_survival_moderate", False)),
+        P_and_C_Stress_Status=p_and_c_stress_status,
+        Specialized_Stress_Status=specialized_stress_status,
+        Specialized_Stress_Scenario=str(
+            result_metrics.get("specialized_stress_scenario") or ""
+        ),
+        Specialized_Stress_Reason=str(
+            result_metrics.get("specialized_stress_reason") or ""
+        ),
+        Specialized_Stress_Survival=bool(
+            result_metrics.get("specialized_stress_survival", False)
+        ),
+        Specialized_Stress_Missing_Inputs="; ".join(
+            str(item)
+            for item in result_metrics.get("specialized_stress_missing_inputs", [])
+        ),
         Research_Action=action,
         Suggested_Starter_Weight_pct_Total=starter_weight,
         Physical_Check=f"使用 {model_key} 專用產業模型；非標準揭露必須人工覆核。",
@@ -4265,7 +5749,7 @@ def _run_mode_c_pipeline_core(
             return ModeCResult(Ticker=ticker, Status=f"Fail: 名單驗證 ({rejection_reason})")
         sector = str(info.get("sector") or "").strip()
         industry = str(info.get("industry") or "").strip()
-        model_route = route_industry_model(sector, industry)
+        model_route = route_industry_model(sector, industry, ticker=ticker)
         if not bool(model_route["supported"]):
             return ModeCResult(
                 Ticker=ticker,
@@ -4362,6 +5846,9 @@ def _run_mode_c_pipeline_core(
         df_gp = sec.fetch_concept(cik, "GrossProfit")
         df_cogs = sec.fetch_concept(cik, "COGS")
         df_inv = sec.fetch_concept(cik, "Inventory")
+        df_ar = sec.fetch_concept(cik, "AccountsReceivable")
+        df_ap = sec.fetch_concept(cik, "AccountsPayable")
+        df_deferred_revenue = sec.fetch_concept(cik, "DeferredRevenue")
         df_debt_total = sec.fetch_concept(cik, "DebtTotal")
         df_debt_current = sec.fetch_concept(cik, "DebtCurrent")
         df_debt_short_total = sec.fetch_concept(cik, "DebtShortTermTotal")
@@ -4370,15 +5857,29 @@ def _run_mode_c_pipeline_core(
         df_debt_finance_lease = sec.fetch_concept(cik, "DebtFinanceLease")
         df_cash = sec.fetch_concept(cik, "Cash")
         df_equity = sec.fetch_concept(cik, "Equity")
+        df_assets = sec.fetch_concept(cik, "Assets")
+        df_goodwill = sec.fetch_concept(cik, "Goodwill")
         df_net_income = sec.fetch_concept(cik, "NetIncome")
         df_buyback = sec.fetch_concept(cik, "Buyback")
         df_issuance = sec.fetch_concept(cik, "StockIssuance")
+        df_acquisition_stock = sec.fetch_concept(
+            cik, "AcquisitionStockConsideration"
+        )
         df_shares = sec.fetch_shares_outstanding(cik)
         if stale_required_fact_names(
             {"SharesOutstanding": df_shares}, decision_timestamp
         ):
             df_shares = pd.DataFrame()
         df_tax = sec.fetch_concept(cik, "IncomeTaxExpenseBenefit") # 補齊：強制抓取稅務標籤以完成勾稽
+        acquisition_stock_input_stale = bool(
+            stale_required_fact_names(
+                {"AcquisitionStockConsideration": df_acquisition_stock},
+                decision_timestamp,
+                max_age_days=450,
+            )
+        )
+        if acquisition_stock_input_stale:
+            df_acquisition_stock = pd.DataFrame()
 
 
         required_facts = {
@@ -4433,6 +5934,11 @@ def _run_mode_c_pipeline_core(
         net_income_ttm, net_income_method, net_income_evidence = sec.ttm_flow(df_net_income, normalized_metric="TTM_NetIncome")
         buyback_ttm, _, buyback_evidence = sec.ttm_flow(df_buyback, signed=False, normalized_metric="TTM_Buyback")
         issuance_ttm, _, issuance_evidence = sec.ttm_flow(df_issuance, signed=False, normalized_metric="TTM_StockIssuance")
+        acquisition_stock_ttm, acquisition_stock_method, acquisition_stock_evidence = sec.ttm_flow(
+            df_acquisition_stock,
+            signed=False,
+            normalized_metric="TTM_AcquisitionStockConsideration",
+        )
         tax_ttm, tax_method, tax_evidence = sec.ttm_flow(df_tax, normalized_metric="TTM_Tax") if not df_tax.empty else (np.nan, "missing", {})
         fcf_stability = calculate_fcf_stability(
             sec, df_ocf, df_capex, df_sbc, df_dna, df_rev, df_net_income
@@ -4696,13 +6202,101 @@ def _run_mode_c_pipeline_core(
                 "21% fallback when reported TTM tax rate is unavailable or distorted by a tax benefit",
             )
         invested_capital = equity + total_debt - cash
-        roic = safe_div(ebit_ttm * (1.0 - effective_tax_rate), invested_capital) * 100 if invested_capital > 0 else np.nan
-        roce = safe_div(ebit_ttm, invested_capital) * 100 if invested_capital > 0 else np.nan
+        ending_roic = (
+            safe_div(ebit_ttm * (1.0 - effective_tax_rate), invested_capital) * 100
+            if invested_capital > 0
+            else np.nan
+        )
+        debt_frames_for_capital = {
+            "DebtTotal": df_debt_total,
+            "DebtCurrent": df_debt_current,
+            "DebtShortTermTotal": df_debt_short_total,
+            "DebtOtherShortTerm": df_debt_other_short,
+            "DebtCommercialPaper": df_debt_commercial_paper,
+            "DebtFinanceLease": df_debt_finance_lease,
+        }
+        equity_facts = sec._instant_facts(df_equity)
+        capital_method = "ENDING_CAPITAL_FALLBACK_ESTIMATED"
+        beginning_invested_capital = np.nan
+        if not equity_facts.empty:
+            ending_period = pd.Timestamp(equity_facts.iloc[-1]["end"])
+            beginning_period = ending_period - pd.Timedelta(days=365)
+            beginning_equity = _balance_near_period(
+                sec, df_equity, beginning_period, "Equity"
+            )
+            beginning_cash = _balance_near_period(
+                sec, df_cash, beginning_period, "Cash"
+            )
+            beginning_debt, _, _ = _specialized_total_debt(
+                sec, debt_frames_for_capital, reference_end=beginning_period
+            )
+            if all(
+                math.isfinite(value)
+                for value in (beginning_equity, beginning_cash, beginning_debt)
+            ):
+                beginning_invested_capital = (
+                    beginning_equity + beginning_debt - beginning_cash
+                )
+        if beginning_invested_capital > 0 and invested_capital > 0:
+            average_invested_capital = (
+                beginning_invested_capital + invested_capital
+            ) / 2.0
+            capital_method = "BEGINNING_ENDING_AVERAGE"
+        else:
+            average_invested_capital = invested_capital
+        roic = (
+            safe_div(
+                ebit_ttm * (1.0 - effective_tax_rate),
+                average_invested_capital,
+            )
+            * 100
+            if average_invested_capital > 0
+            else np.nan
+        )
+        roce = (
+            safe_div(ebit_ttm, average_invested_capital) * 100
+            if average_invested_capital > 0
+            else np.nan
+        )
+        goodwill_current = sec.latest_balance(df_goodwill, "Goodwill")
+        goodwill_prior = (
+            _balance_near_period(sec, df_goodwill, beginning_period, "Goodwill")
+            if not equity_facts.empty
+            else np.nan
+        )
+        average_goodwill = (
+            (goodwill_current + goodwill_prior) / 2.0
+            if math.isfinite(goodwill_current) and math.isfinite(goodwill_prior)
+            else goodwill_current
+            if math.isfinite(goodwill_current)
+            else np.nan
+        )
+        roic_metrics = calculate_roic_capital_metrics(
+            ebit_ttm * (1.0 - effective_tax_rate),
+            beginning_invested_capital,
+            invested_capital,
+            goodwill_prior,
+            goodwill_current,
+        )
+        average_invested_capital = float(
+            roic_metrics["average_invested_capital_b"]
+        )
+        capital_method = str(roic_metrics["capital_method"])
+        ending_roic = float(roic_metrics["ending_roic_pct"])
+        roic = float(roic_metrics["average_roic_pct"])
+        roic_excluding_goodwill = float(
+            roic_metrics["excluding_goodwill_roic_pct"]
+        )
+        roce = (
+            safe_div(ebit_ttm, average_invested_capital) * 100
+            if average_invested_capital > 0
+            else np.nan
+        )
         roic_evidence_id = sec._record_derived_from_ids(
             "ROIC",
             roic,
             "percent",
-            "TTM EBIT * (1 - effective tax rate) / (Equity + Debt - Cash)",
+            "TTM EBIT * (1 - effective tax rate) / average beginning-and-ending invested capital; explicit ending fallback",
             [
                 str(ebit_evidence.get("evidence_id") or ""),
                 effective_tax_rate_evidence_id,
@@ -4711,6 +6305,31 @@ def _run_mode_c_pipeline_core(
                 *cash_evidence_ids,
             ],
             "ROIC:model-input",
+        )
+        sec._record_derived_from_ids(
+            "ROIC_Ending_Capital",
+            ending_roic,
+            "percent",
+            "TTM NOPAT / ending invested capital",
+            [
+                str(ebit_evidence.get("evidence_id") or ""),
+                effective_tax_rate_evidence_id,
+                *GLOBAL_EVIDENCE_LEDGER.selected_evidence_ids(ticker, "Equity"),
+                *debt_evidence_ids,
+                *cash_evidence_ids,
+            ],
+            "ROIC_Ending_Capital:audit",
+        )
+        sec._record_derived_from_ids(
+            "ROIC_Excluding_Goodwill",
+            roic_excluding_goodwill,
+            "percent",
+            "TTM NOPAT / invested capital excluding goodwill on the same average or ending-period basis",
+            [
+                roic_evidence_id,
+                *GLOBAL_EVIDENCE_LEDGER.selected_evidence_ids(ticker, "Goodwill"),
+            ],
+            "ROIC_Excluding_Goodwill:audit",
         )
         sec._record_derived_from_ids(
             "ROCE",
@@ -4744,6 +6363,11 @@ def _run_mode_c_pipeline_core(
         conservative_real_fcf_to_ev_yield = safe_div(conservative_real_fcf, ev) * 100
         real_fcf_yield_low = safe_div(real_fcf_low, mcap) * 100
         real_fcf_yield_high = safe_div(real_fcf_high, mcap) * 100
+        growth_capex_risk = assess_growth_capex_risk(
+            capex_profile,
+            conservative_real_fcf,
+            roic,
+        )
         maintenance_source_ids = [
             str(payload.get("evidence_id") or "")
             for payload in [capex_evidence, dna_evidence, rev_evidence]
@@ -5013,6 +6637,18 @@ def _run_mode_c_pipeline_core(
             and math.isfinite(share_change_3y_pct)
             and share_change_3y_pct > 3.0
         )
+        acquisition_attribution = classify_acquisition_issuance(
+            acquisition_stock_ttm,
+            str(acquisition_stock_evidence.get("evidence_id") or ""),
+            issuance_ttm,
+            str(issuance_evidence.get("evidence_id") or ""),
+        )
+        acquisition_related_issuance = bool(
+            acquisition_attribution["acquisition_related_issuance"]
+        )
+        acquisition_accretion_review_required = bool(
+            persistent_dilution and acquisition_related_issuance
+        )
         net_buyback_yield = safe_div(real_buyback, mcap) * 100 if mcap > 0 else np.nan
         buyback_offset_effective = bool(
             real_buyback > 0
@@ -5028,6 +6664,18 @@ def _run_mode_c_pipeline_core(
             "net_buyback_yield_pct": round(net_buyback_yield, 2) if math.isfinite(net_buyback_yield) else None,
             "buyback_offset_effective": buyback_offset_effective,
             "persistent_dilution_gate": persistent_dilution,
+            "acquisition_stock_consideration_b": (
+                round(acquisition_stock_ttm, 3)
+                if math.isfinite(acquisition_stock_ttm)
+                else None
+            ),
+            "acquisition_issuance_attribution_status": acquisition_attribution[
+                "status"
+            ],
+            "acquisition_issuance_reconciliation_status": acquisition_attribution[
+                "reconciliation_status"
+            ],
+            "acquisition_accretion_review_required": acquisition_accretion_review_required,
             "share_basis_discontinuity": share_basis_discontinuity,
             "per_share_fcf_cagr_3y_pct": (
                 round(float(per_share_growth["fcf_cagr_pct"]), 2)
@@ -5041,7 +6689,7 @@ def _run_mode_c_pipeline_core(
             ),
         }
         capital_allocation_score = calculate_capital_allocation_score(
-            real_buyback,
+            buyback_ttm,
             issuance_ttm,
             np.nan if share_basis_discontinuity else share_change_pct,
             np.nan if share_basis_discontinuity else share_change_3y_pct,
@@ -5150,6 +6798,10 @@ def _run_mode_c_pipeline_core(
             )
 
         flags = []
+        if acquisition_stock_input_stale:
+            flags.append(
+                "併購股票對價 XBRL 期間超過450天：不得用舊交易替目前稀釋歸因"
+            )
         if sbc_external_fallback:
             flags.append("SBC 缺少 SEC point-in-time 證據：暫用市場資料 fallback")
         if debt_external_fallback:
@@ -5170,8 +6822,19 @@ def _run_mode_c_pipeline_core(
             flags.append("權益或投入資本資料不足：ROIC/ROCE 待查")
         if conservative_real_fcf <= 0 < real_fcf:
             flags.append("Growth CapEx split: all-CapEx FCF is negative; inspect CapEx project mix before sizing")
-        if bool(capex_profile.get("growth_capex_trap")):
-            flags.append("Growth CapEx trap: CapEx is far above D&A while revenue is not growing")
+        if real_fcf_yield_low < 0:
+            flags.append("FCF sensitivity warning: lower-bound Maintenance Real FCF Yield is negative")
+        if conservative_real_fcf_yield < 0:
+            flags.append("FCF sensitivity warning: Conservative Real FCF Yield is negative")
+        if real_fcf_yield_high - real_fcf_yield_low > 3.0:
+            flags.append("FCF sensitivity warning: Maintenance FCF yield range exceeds 3 percentage points")
+        if growth_capex_risk["state"] != "CLEAR":
+            reasons = "; ".join(growth_capex_risk["reasons"]) or "no corroborating risk evidence"
+            flags.append(
+                "Growth CapEx "
+                f"{growth_capex_risk['state']}: CapEx is far above D&A while revenue is not growing; "
+                f"{reasons}"
+            )
         rev_q = sec.quarterly_series(df_rev, "Revenue")
         if len(rev_q) >= 8:
             rev_ttm_now = rev_q.tail(4).sum()
@@ -5188,7 +6851,11 @@ def _run_mode_c_pipeline_core(
             )
         if dilution_illusion:
             flags.append("單年稀釋警示：回購未有效降低股數，本項扣分但不單獨排除")
-        if persistent_dilution:
+        if acquisition_accretion_review_required:
+            flags.append(
+                "持續稀釋含直接 XBRL 併購換股證據：需驗證每股 FCF/EPS 增益後再判斷"
+            )
+        elif persistent_dilution:
             flags.append("持續稀釋：近三年流通股數累計增加超過3%，排除")
 
 
@@ -5250,11 +6917,15 @@ def _run_mode_c_pipeline_core(
             ],
             "Historical_Valuation_Coverage:decision-gate",
         )
-        ev_floor = hv["ev_ebitda_floor"]
+        historical_ev_floor = hv["ev_ebitda_floor"]
         pe_floor = hv["pe_floor"]
-        if not math.isfinite(ev_floor) or ev_floor <= 0:
-            ev_floor = max(min(ev_ebitda * 0.60, ev_ebitda), 4.0)
+        ev_floor = downside_multiple_floor(ev_ebitda, historical_ev_floor)
+        if not math.isfinite(historical_ev_floor) or historical_ev_floor <= 0:
             flags.append("歷史 EV/EBITDA 不足：雙殺改用保守 fallback floor")
+        elif historical_ev_floor > ev_ebitda:
+            flags.append("歷史 EV/EBITDA floor 高於現值：壓力倍數限制為不高於當前倍數")
+        if math.isfinite(pe_floor) and pe_floor > 0 and pe > 0:
+            pe_floor = min(pe_floor, pe)
         if not math.isfinite(pe_floor) or pe_floor <= 0:
             pe_floor = np.nan
 
@@ -5312,9 +6983,16 @@ def _run_mode_c_pipeline_core(
             for x in hv.get("ev_ebitda_hist", [])
             if x.get("EV_EBITDA", np.nan) > 0
         ]
-        target_mult = float(np.median(target_multiples)) if target_multiples else np.nan
+        company_target_mult = (
+            float(np.median(target_multiples)) if target_multiples else np.nan
+        )
+        target_mult = company_target_mult
+        target_multiple_method = "COMPANY_HISTORY_MEDIAN_PENDING_PEER_BLEND"
+        target_multiple_confidence = "MEDIUM"
         if not math.isfinite(target_mult) or target_mult <= 0:
             target_mult = max(ev_floor, 6.0)
+            target_multiple_method = "CONSERVATIVE_HISTORY_QUANTILE_FALLBACK_PENDING_PEER_BLEND"
+            target_multiple_confidence = "LOW"
         implied_cagr = implied_ebitda_cagr(
             ev,
             ebitda,
@@ -5388,7 +7066,16 @@ def _run_mode_c_pipeline_core(
 
 
         cogs_q = sec.quarterly_series(df_cogs, "COGS")
-        sec._mark_rows_used(sec._instant_facts(df_inv), "Inventory:DSI")
+        inventory_latest = sec.latest_balance(df_inv, "Inventory")
+        assets_latest = sec.latest_balance(df_assets, "Assets")
+        dsi_applicability = assess_inventory_factor_applicability(
+            sector,
+            industry,
+            inventory_latest,
+            rev_ttm,
+            assets_latest,
+            model_key=model_key,
+        )
         dsi_inputs_stale = stale_required_fact_names(
             {"Inventory": df_inv, "COGS": df_cogs},
             decision_timestamp,
@@ -5398,12 +7085,15 @@ def _run_mode_c_pipeline_core(
                 "DSI 未計分：來源期間超過資料新鮮度上限 "
                 + "/".join(dsi_inputs_stale)
             )
-        dsi = (
-            pd.Series(dtype=float)
-            if dsi_inputs_stale
-            else calc_dsi_series(df_inv, cogs_q, sec=sec)
-        )
+        dsi = pd.Series(dtype=float)
+        if dsi_applicability["status"] == "VALID" and not dsi_inputs_stale:
+            dsi = calc_dsi_series(df_inv, cogs_q, sec=sec)
         dsi_signal = analyze_dsi_signal(dsi)
+        if dsi_applicability["status"] == "NOT_APPLICABLE":
+            dsi_signal["signal"] = "不適用：" + str(dsi_applicability["reason"])
+        elif dsi_inputs_stale or not math.isfinite(float(dsi_signal["score"])):
+            dsi_applicability["status"] = "MISSING"
+            dsi_signal["signal"] = "資料不足：DSI 無可稽核連續季度"
         dsi_latest = float(dsi_signal["latest"])
         dsi_2q_down = bool(dsi_signal["sequential_down"])
         dsi_source_ids = [
@@ -5443,6 +7133,118 @@ def _run_mode_c_pipeline_core(
             "Inventory_Inflection:model-input",
         )
 
+        working_capital_stale_inputs = set(
+            stale_required_fact_names(
+                {
+                    "AccountsReceivable": df_ar,
+                    "AccountsPayable": df_ap,
+                    "DeferredRevenue": df_deferred_revenue,
+                    "COGS": df_cogs,
+                },
+                decision_timestamp,
+            )
+        )
+        ar_series = (
+            pd.Series(dtype=float)
+            if "AccountsReceivable" in working_capital_stale_inputs
+            else sec.balance_series(df_ar, "AccountsReceivable")
+        )
+        ap_series = (
+            pd.Series(dtype=float)
+            if "AccountsPayable" in working_capital_stale_inputs
+            else sec.balance_series(df_ap, "AccountsPayable")
+        )
+        deferred_revenue_series = (
+            pd.Series(dtype=float)
+            if "DeferredRevenue" in working_capital_stale_inputs
+            else sec.balance_series(df_deferred_revenue, "DeferredRevenue")
+        )
+        working_capital = analyze_working_capital_quality(
+            ar_series,
+            ap_series,
+            deferred_revenue_series,
+            rev_q,
+            (
+                pd.Series(dtype=float)
+                if "COGS" in working_capital_stale_inputs
+                else cogs_q
+            ),
+            dsi_latest=dsi_latest,
+        )
+        if (
+            working_capital["status"] == "MISSING"
+            and working_capital_stale_inputs
+        ):
+            working_capital["status"] = "STALE"
+            working_capital["state"] = "STALE"
+        if working_capital_stale_inputs:
+            working_capital["reasons"].append(
+                "stale inputs excluded: "
+                + ", ".join(sorted(working_capital_stale_inputs))
+            )
+        working_capital_source_ids: List[str] = []
+        for metric_name in (
+            "AccountsReceivable",
+            "AccountsPayable",
+            "DeferredRevenue",
+            "Revenue",
+            "COGS",
+            "Inventory",
+        ):
+            working_capital_source_ids.extend(
+                GLOBAL_EVIDENCE_LEDGER.selected_evidence_ids(ticker, metric_name)
+            )
+        working_capital_source_ids = list(
+            dict.fromkeys(working_capital_source_ids)
+        )
+        working_capital_evidence_ids: List[str] = []
+        working_capital_metric_specs = [
+            ("DSO", working_capital["dso_days"], "days", "average accounts receivable / trailing-four-quarter revenue * 365"),
+            ("DPO", working_capital["dpo_days"], "days", "average accounts payable / trailing-four-quarter COGS * 365"),
+            ("Cash_Conversion_Cycle", working_capital["cash_conversion_cycle_days"], "days", "DSO + DSI - DPO"),
+            ("DSO_YoY_Change", working_capital["dso_yoy_change_pct"], "percent", "latest DSO / comparable prior-year DSO - 1"),
+            ("DPO_YoY_Change", working_capital["dpo_yoy_change_pct"], "percent", "latest DPO / comparable prior-year DPO - 1"),
+            ("Accounts_Receivable_Growth", working_capital["accounts_receivable_growth_pct"], "percent", "latest accounts receivable / comparable prior-year balance - 1"),
+            ("Accounts_Payable_Growth", working_capital["accounts_payable_growth_pct"], "percent", "latest accounts payable / comparable prior-year balance - 1"),
+            ("Deferred_Revenue_Growth", working_capital["deferred_revenue_growth_pct"], "percent", "latest deferred revenue / comparable prior-year balance - 1"),
+            ("TTM_Revenue_Growth", working_capital["ttm_revenue_growth_pct"], "percent", "latest four-quarter revenue / prior four-quarter revenue - 1"),
+            ("TTM_COGS_Growth", working_capital["ttm_cogs_growth_pct"], "percent", "latest four-quarter COGS / prior four-quarter COGS - 1"),
+            ("AR_vs_Revenue_Growth_Gap", working_capital["ar_vs_revenue_growth_gap_pp"], "percentage_points", "accounts receivable growth minus TTM revenue growth"),
+            ("AP_vs_COGS_Growth_Gap", working_capital["ap_vs_cogs_growth_gap_pp"], "percentage_points", "accounts payable growth minus TTM COGS growth"),
+            ("Working_Capital_Quality_Coverage", working_capital["coverage"], "ratio", "available AR and AP growth comparisons / 2"),
+        ]
+        for metric_name, metric_value, metric_unit, metric_formula in working_capital_metric_specs:
+            if not math.isfinite(float(metric_value)):
+                continue
+            working_capital_evidence_ids.append(
+                sec._record_derived_from_ids(
+                    metric_name,
+                    metric_value,
+                    metric_unit,
+                    metric_formula,
+                    working_capital_source_ids,
+                    f"{metric_name}:working-capital-diagnostic",
+                )
+            )
+        working_capital_state_evidence_id = sec._record_derived_from_ids(
+            "Working_Capital_Quality_State",
+            working_capital["state"],
+            "state",
+            "AR/revenue and AP/COGS growth-gap diagnostics; deferred revenue is informational only",
+            working_capital_source_ids,
+            "Working_Capital_Quality_State:model-input",
+        )
+        working_capital_evidence_ids.append(working_capital_state_evidence_id)
+        if working_capital["state"] in {"WATCH", "HIGH_RISK"}:
+            flags.append(
+                "營運資金品質 "
+                + str(working_capital["state"])
+                + "："
+                + "; ".join(working_capital["reasons"])
+            )
+        elif working_capital["state"] == "STALE":
+            flags.append("營運資金品質未評估：AR/AP/COGS 來源過舊")
+
 
         catalysts = get_upcoming_earnings(ticker, info, now=decision_timestamp)
         if not catalysts:
@@ -5455,6 +7257,21 @@ def _run_mode_c_pipeline_core(
             implied_cagr_pct=implied_cagr,
             real_fcf_yield_pct=real_fcf_yield,
         )
+        agent_tasks.extend(
+            maintenance_fcf_research_warnings(
+                real_fcf_yield_low,
+                conservative_real_fcf_yield,
+                real_fcf_yield_high - real_fcf_yield_low,
+            )
+        )
+        if working_capital["state"] in {"WATCH", "HIGH_RISK"}:
+            agent_tasks.append(
+                "Reconcile AR/AP growth gaps to the cash-flow statement and test whether OCF improvement reverses without working-capital support"
+            )
+        if acquisition_accretion_review_required:
+            agent_tasks.append(
+                "Reconcile acquisition stock consideration to share issuance and verify post-deal per-share FCF/EPS accretion before clearing dilution"
+            )
 
         evidence_stats = GLOBAL_EVIDENCE_LEDGER.selected_source_stats(ticker)
         ttm_methods = {
@@ -5481,6 +7298,7 @@ def _run_mode_c_pipeline_core(
             debt_fully_cash_covered=cash >= total_debt,
             tax_rate_sec_evidence_available=reported_tax_rate_usable,
             interest_cash_proxy_used=interest_cash_proxy_used,
+            roic_average_capital_available=(capital_method == "BEGINNING_ENDING_AVERAGE"),
         )
         data_confidence_evidence_id = sec._record_derived_from_ids(
             "Data_Confidence_Score",
@@ -5491,31 +7309,21 @@ def _run_mode_c_pipeline_core(
             "Data_Confidence_Score:decision-gate",
         )
 
-        # 先排除財務結構明顯不適合長期持有的公司；其餘交給多因子框架排序。
-        status = "Pass"
-        if gm_diag.startswith("資料不足"):
-            status = "Fail: 季度毛利資料不足"
-        elif math.isfinite(icr) and icr < 1.0:
-            status = "Fail: ICR < 1.0，財務韌性不足"
-        elif real_fcf <= 0:
-            status = "Fail: Real FCF 非正值"
-        elif bool(capex_profile.get("growth_capex_trap")):
-            status = "Fail: Growth CapEx far above D&A without revenue growth"
-        elif fcf_stability["ocf_3y_years"] >= 3 and fcf_stability["ocf_3y_cumulative_b"] <= 0:
-            status = "Fail: 近三年累計 OCF 非正值"
-        elif (
-            minimum_positive_fcf_years(fcf_stability["years_available"]) > 0
-            and fcf_stability["positive_years"]
-            < minimum_positive_fcf_years(fcf_stability["years_available"])
-        ):
-            status = "Fail: 可得連續年度 Real FCF 正值比例不足 60%"
-        elif persistent_dilution:
-            status = "Fail: 近三年股數持續明顯稀釋"
-        elif "雙重惡化" in gm_diag:
-            status = "Fail: 營收與毛利同步惡化"
-        if capex_profile.get("confidence") == "LOW":
-            status = "Abstain: Maintenance CapEx estimate confidence is LOW"
-        elif status == "Pass" and bool(confidence["abstain"]):
+        # 已確認且不依賴 Maintenance CapEx 的硬失敗優先於資料不足。
+        status = determine_general_corporate_status(
+            gm_diagnosis=gm_diag,
+            icr=icr,
+            real_fcf_b=real_fcf,
+            growth_capex_hard_fail=bool(growth_capex_risk["hard_fail"]),
+            ocf_3y_years=fcf_stability["ocf_3y_years"],
+            ocf_3y_cumulative_b=fcf_stability["ocf_3y_cumulative_b"],
+            fcf_years_available=fcf_stability["years_available"],
+            fcf_positive_years=fcf_stability["positive_years"],
+            acquisition_accretion_review_required=acquisition_accretion_review_required,
+            persistent_dilution=persistent_dilution,
+            maintenance_capex_confidence=str(capex_profile.get("confidence") or ""),
+        )
+        if status == "Pass" and bool(confidence["abstain"]):
             status = f"Abstain: Data confidence {float(confidence['score']):.0f}<{MIN_DATA_CONFIDENCE:.0f}"
         decision_state = "PASS" if status == "Pass" else "ABSTAIN" if status.startswith("Abstain") else "FAIL"
 
@@ -5552,17 +7360,31 @@ def _run_mode_c_pipeline_core(
             Conservative_Real_FCF_to_EV_Yield_pct=round(conservative_real_fcf_to_ev_yield, 2),
             Maintenance_Real_FCF_Yield_Low_pct=round(real_fcf_yield_low, 2),
             Maintenance_Real_FCF_Yield_High_pct=round(real_fcf_yield_high, 2),
+            Maintenance_Real_FCF_Yield_Lower_pct=round(real_fcf_yield_low, 2),
+            Maintenance_Real_FCF_Yield_Base_pct=round(real_fcf_yield, 2),
+            Maintenance_Real_FCF_Yield_Upper_pct=round(real_fcf_yield_high, 2),
+            FCF_Sensitivity_Spread_pp=round(real_fcf_yield_high - real_fcf_yield_low, 2),
             TTM_OCF_B=round(ocf_ttm, 3),
             Dynamic_CapEx_B=round(dynamic_capex, 3),
             Maintenance_CapEx_B=round(maintenance_capex, 3),
             Maintenance_CapEx_Low_B=round(maintenance_capex_low, 3),
             Maintenance_CapEx_High_B=round(maintenance_capex_high, 3),
+            Maintenance_CapEx_Lower_B=round(maintenance_capex_low, 3),
+            Maintenance_CapEx_Base_B=round(maintenance_capex, 3),
+            Maintenance_CapEx_Upper_B=round(maintenance_capex_high, 3),
+            Maintenance_CapEx_Method=str(capex_profile["method"]),
             Maintenance_CapEx_Confidence=str(capex_profile["confidence"]),
             Growth_CapEx_B=round(growth_capex, 3),
             CapEx_to_DnA_x=round(float(capex_profile["capex_to_dna"]), 2) if math.isfinite(float(capex_profile["capex_to_dna"])) else np.nan,
             CapEx_Reinvestment_Method=str(capex_profile["method"]),
+            Growth_CapEx_Risk_State=str(growth_capex_risk["state"]),
+            Growth_CapEx_Risk_Corroboration_Count=int(
+                growth_capex_risk["corroboration_count"]
+            ),
+            Growth_CapEx_Risk_Reasons="; ".join(growth_capex_risk["reasons"]),
             TTM_SBC_B=round(sbc_ttm, 3),
             SBC_Economic_Cost_B=round(sbc_ttm, 3),
+            SBC_Economic_Cost=round(sbc_ttm, 3),
             Net_Buyback_Yield_pct=round(net_buyback_yield, 2) if math.isfinite(net_buyback_yield) else np.nan,
             Buyback_Offset_Effective=buyback_offset_effective,
             SBC_Attribution_JSON=json.dumps(sbc_attribution, ensure_ascii=False, sort_keys=True),
@@ -5579,14 +7401,49 @@ def _run_mode_c_pipeline_core(
             ICR=round(icr, 2),
             ICR_Method=coverage_mode,
             Real_Buyback_B=round(real_buyback, 3),
+            TTM_Gross_Buyback_B=(
+                round(buyback_ttm, 3) if math.isfinite(buyback_ttm) else np.nan
+            ),
+            TTM_Stock_Issuance_B=(
+                round(issuance_ttm, 3) if math.isfinite(issuance_ttm) else np.nan
+            ),
             Share_Count_Change_pct=round(share_change_pct, 2) if math.isfinite(share_change_pct) else np.nan,
             Share_Count_Change_3Y_pct=round(share_change_3y_pct, 2) if math.isfinite(share_change_3y_pct) else np.nan,
+            Net_Dilution_CAGR_3Y_pct=(
+                round(((1.0 + share_change_3y_pct / 100.0) ** (1.0 / 3.0) - 1.0) * 100.0, 2)
+                if math.isfinite(share_change_3y_pct) and share_change_3y_pct > -100.0
+                else np.nan
+            ),
+            Acquisition_Stock_Consideration_B=(
+                round(acquisition_stock_ttm, 3)
+                if math.isfinite(acquisition_stock_ttm)
+                else np.nan
+            ),
+            Acquisition_Issuance_Attribution_Status=str(
+                acquisition_attribution["status"]
+            ),
+            Acquisition_Issuance_Reconciliation_Status=str(
+                acquisition_attribution["reconciliation_status"]
+            ),
+            Acquisition_Related_Issuance_Flag=acquisition_related_issuance,
+            Acquisition_Accretion_Review_Required=acquisition_accretion_review_required,
             Share_Split_Factor_1Y=float(sec.share_split_factors.get("1y", 1.0)),
             Share_Split_Factor_3Y=float(sec.share_split_factors.get("3y", 1.0)),
             Share_Basis_Discontinuity=share_basis_discontinuity,
             Dilution_Illusion=dilution_illusion,
             Persistent_Dilution=persistent_dilution,
             ROIC_pct=round(roic, 2) if math.isfinite(roic) else np.nan,
+            ROIC_Average_Capital_pct=round(roic, 2) if math.isfinite(roic) else np.nan,
+            ROIC_Ending_Capital_pct=(
+                round(ending_roic, 2) if math.isfinite(ending_roic) else np.nan
+            ),
+            ROIC_Capital_Method=capital_method,
+            ROIC_Including_Goodwill_pct=round(roic, 2) if math.isfinite(roic) else np.nan,
+            ROIC_Excluding_Goodwill_pct=(
+                round(roic_excluding_goodwill, 2)
+                if math.isfinite(roic_excluding_goodwill)
+                else np.nan
+            ),
             ROCE_pct=round(roce, 2) if math.isfinite(roce) else np.nan,
             OCF_3Y_Cumulative_B=round(fcf_stability["ocf_3y_cumulative_b"], 3) if math.isfinite(fcf_stability["ocf_3y_cumulative_b"]) else np.nan,
             OCF_3Y_Years=fcf_stability["ocf_3y_years"],
@@ -5605,6 +7462,25 @@ def _run_mode_c_pipeline_core(
             Historical_Valuation_Total_Years=float(hv["total_years"]),
             Historical_Valuation_Coverage=round(float(hv["coverage"]), 3),
             Historical_Valuation_Status=str(hv["coverage_status"]),
+            Historical_Valuation_Quantile_Used=(
+                float(hv["quantile_used"])
+                if math.isfinite(float(hv["quantile_used"]))
+                else np.nan
+            ),
+            Historical_Valuation_Quantile_Value=(
+                round(float(hv["quantile_value"]), 3)
+                if math.isfinite(float(hv["quantile_value"]))
+                else np.nan
+            ),
+            Historical_Valuation_Sample_Quality=str(hv["sample_quality"]),
+            Exit_Multiple_Company_History=(
+                round(company_target_mult, 3)
+                if math.isfinite(company_target_mult)
+                else np.nan
+            ),
+            Exit_Multiple_Final=round(target_mult, 3),
+            Exit_Multiple_Method=target_multiple_method,
+            Exit_Multiple_Confidence=target_multiple_confidence,
             Industry_Stress_Extension_Status="IMPLEMENTED",
             Industry_Stress_Extension_Reason="General corporate EBITDA -15%/-30% stress with debt-service and cash-flow survival gates",
             EBITDA_Drawdown_15_pct=round(dd15, 1),
@@ -5628,12 +7504,104 @@ def _run_mode_c_pipeline_core(
             Short_Data_Age_Days=round(short_age_days, 1) if math.isfinite(short_age_days) else np.nan,
             Squeeze_Risk=squeeze,
             DSI_Latest=round(dsi_latest, 1) if math.isfinite(dsi_latest) else np.nan,
+            DSI_Status=str(dsi_applicability["status"]),
+            DSI_Score=(
+                round(float(dsi_signal["score"]), 2)
+                if math.isfinite(float(dsi_signal["score"]))
+                else np.nan
+            ),
+            DSI_Applicability_Reason=str(dsi_applicability["reason"]),
+            Inventory_to_Revenue_pct=(
+                round(float(dsi_applicability["inventory_to_revenue_pct"]), 3)
+                if math.isfinite(float(dsi_applicability["inventory_to_revenue_pct"]))
+                else np.nan
+            ),
+            Inventory_to_Assets_pct=(
+                round(float(dsi_applicability["inventory_to_assets_pct"]), 3)
+                if math.isfinite(float(dsi_applicability["inventory_to_assets_pct"]))
+                else np.nan
+            ),
             DSI_QoQ_Change_pct=round(float(dsi_signal["qoq_change_pct"]), 2) if math.isfinite(float(dsi_signal["qoq_change_pct"])) else np.nan,
             DSI_YoY_Change_pct=round(float(dsi_signal["yoy_change_pct"]), 2) if math.isfinite(float(dsi_signal["yoy_change_pct"])) else np.nan,
             DSI_2Q_Down=dsi_2q_down,
             Inventory_Inflection=bool(dsi_signal["inflection"]),
             Inventory_Signal=str(dsi_signal["signal"]),
-            Operating_Inflection_Score=float(dsi_signal["score"]),
+            DSO_Days=(
+                round(float(working_capital["dso_days"]), 2)
+                if math.isfinite(float(working_capital["dso_days"]))
+                else np.nan
+            ),
+            DPO_Days=(
+                round(float(working_capital["dpo_days"]), 2)
+                if math.isfinite(float(working_capital["dpo_days"]))
+                else np.nan
+            ),
+            Cash_Conversion_Cycle_Days=(
+                round(float(working_capital["cash_conversion_cycle_days"]), 2)
+                if math.isfinite(float(working_capital["cash_conversion_cycle_days"]))
+                else np.nan
+            ),
+            DSO_YoY_Change_pct=(
+                round(float(working_capital["dso_yoy_change_pct"]), 2)
+                if math.isfinite(float(working_capital["dso_yoy_change_pct"]))
+                else np.nan
+            ),
+            DPO_YoY_Change_pct=(
+                round(float(working_capital["dpo_yoy_change_pct"]), 2)
+                if math.isfinite(float(working_capital["dpo_yoy_change_pct"]))
+                else np.nan
+            ),
+            Accounts_Receivable_Growth_pct=(
+                round(float(working_capital["accounts_receivable_growth_pct"]), 2)
+                if math.isfinite(float(working_capital["accounts_receivable_growth_pct"]))
+                else np.nan
+            ),
+            Accounts_Payable_Growth_pct=(
+                round(float(working_capital["accounts_payable_growth_pct"]), 2)
+                if math.isfinite(float(working_capital["accounts_payable_growth_pct"]))
+                else np.nan
+            ),
+            Deferred_Revenue_Growth_pct=(
+                round(float(working_capital["deferred_revenue_growth_pct"]), 2)
+                if math.isfinite(float(working_capital["deferred_revenue_growth_pct"]))
+                else np.nan
+            ),
+            TTM_Revenue_Growth_pct=(
+                round(float(working_capital["ttm_revenue_growth_pct"]), 2)
+                if math.isfinite(float(working_capital["ttm_revenue_growth_pct"]))
+                else np.nan
+            ),
+            TTM_COGS_Growth_pct=(
+                round(float(working_capital["ttm_cogs_growth_pct"]), 2)
+                if math.isfinite(float(working_capital["ttm_cogs_growth_pct"]))
+                else np.nan
+            ),
+            AR_vs_Revenue_Growth_Gap_pp=(
+                round(float(working_capital["ar_vs_revenue_growth_gap_pp"]), 2)
+                if math.isfinite(float(working_capital["ar_vs_revenue_growth_gap_pp"]))
+                else np.nan
+            ),
+            AP_vs_COGS_Growth_Gap_pp=(
+                round(float(working_capital["ap_vs_cogs_growth_gap_pp"]), 2)
+                if math.isfinite(float(working_capital["ap_vs_cogs_growth_gap_pp"]))
+                else np.nan
+            ),
+            Working_Capital_Quality_Status=str(working_capital["status"]),
+            Working_Capital_Quality_State=str(working_capital["state"]),
+            Working_Capital_Quality_Coverage=round(
+                float(working_capital["coverage"]), 3
+            ),
+            Working_Capital_Risk_Penalty=float(
+                working_capital["risk_penalty"]
+            ),
+            Working_Capital_Quality_Reasons="; ".join(
+                str(reason) for reason in working_capital["reasons"]
+            ),
+            Operating_Inflection_Score=(
+                float(dsi_signal["score"])
+                if math.isfinite(float(dsi_signal["score"]))
+                else np.nan
+            ),
             Catalysts_30D="; ".join(catalysts),
             Data_Quality_Flags="; ".join(flags) if flags else "OK",
             Verdict="",
@@ -5663,6 +7631,7 @@ def _run_mode_c_pipeline_core(
                 stress_fcf_30_evidence_id,
                 stress_survival_30_evidence_id,
                 inventory_inflection_evidence_id,
+                *working_capital_evidence_ids,
                 share_change_1y_evidence_id,
                 share_change_3y_evidence_id,
                 per_share_fcf_evidence_id,
@@ -5676,7 +7645,7 @@ def _run_mode_c_pipeline_core(
                 ("Quality_Score", result.Quality_Score, "ICR, FCF quality, margin trend, ROIC and cash-flow stability"),
                 ("Expectations_Score", result.Expectations_Score, "market-implied EBITDA CAGR versus dynamic tolerance"),
                 ("Operating_Inflection_Score", result.Operating_Inflection_Score, "seasonally confirmed DSI inflection state"),
-                ("Risk_Penalty", result.Risk_Penalty, "stress loss, dilution, valuation and operating-risk penalties"),
+                ("Risk_Penalty", result.Risk_Penalty, "stress loss, dilution, valuation, inventory and working-capital risk penalties"),
             ]:
                 component_score_ids.append(
                     sec._record_derived_from_ids(
@@ -5783,7 +7752,7 @@ def run_mode_c_pipeline(
                 ],
             )
         )
-    return result
+    return enforce_decision_semantics(result)
 
 
 # ===============================================================================
@@ -5863,7 +7832,12 @@ def render_stock_report(r: ModeCResult) -> str:
     lines.append(f"| 品質分數 | {r.Quality_Score:.2f} |")
     lines.append(f"| 市場預期分數 | {r.Expectations_Score:.2f} |")
     lines.append(f"| 營運拐點分數 | {r.Operating_Inflection_Score:.2f} |")
-    lines.append(f"| 資本配置分數 | {r.Capital_Allocation_Score:.2f} |")
+    capital_allocation_display = (
+        f"{r.Capital_Allocation_Score:.2f}"
+        if math.isfinite(r.Capital_Allocation_Score)
+        else "N/A"
+    )
+    lines.append(f"| 資本配置分數 | {capital_allocation_display} |")
     lines.append(f"| 風險扣分 | -{r.Risk_Penalty:.2f} |")
     lines.append(f"| Real FCF Yield (maintenance CapEx) | {r.Real_FCF_Yield_pct:.2f}% |")
     lines.append(f"| Conservative FCF Yield (all CapEx) | {r.Conservative_Real_FCF_Yield_pct if math.isfinite(r.Conservative_Real_FCF_Yield_pct) else 'N/A'}% |")
@@ -5884,8 +7858,19 @@ def render_stock_report(r: ModeCResult) -> str:
     lines.append(f"- EBITDA -30% 壓力情境：{r.EBITDA_Drawdown_30_pct:.1f}%")
     lines.append(f"- 財務存續壓力：ICR={r.Stress_ICR_30x:.2f}x；壓力 Real FCF={r.Stress_Real_FCF_30_B:.3f}B；通過={r.Stress_Survival_30}")
     lines.append(f"- 存貨訊號：{r.Inventory_Signal}；DSI QoQ={r.DSI_QoQ_Change_pct if math.isfinite(r.DSI_QoQ_Change_pct) else 'N/A'}%；YoY={r.DSI_YoY_Change_pct if math.isfinite(r.DSI_YoY_Change_pct) else 'N/A'}%")
+    lines.append(
+        f"- 營運資金品質：{r.Working_Capital_Quality_State}；DSO={r.DSO_Days if math.isfinite(r.DSO_Days) else 'N/A'}天；"
+        f"DPO={r.DPO_Days if math.isfinite(r.DPO_Days) else 'N/A'}天；CCC={r.Cash_Conversion_Cycle_Days if math.isfinite(r.Cash_Conversion_Cycle_Days) else 'N/A'}天；"
+        f"扣分={r.Working_Capital_Risk_Penalty:.1f}"
+    )
     lines.append(f"- 毛利診斷：{r.GM_Diagnosis}")
     lines.append(f"- 股數變化：1Y={r.Share_Count_Change_pct if math.isfinite(r.Share_Count_Change_pct) else 'N/A'}%；3Y={r.Share_Count_Change_3Y_pct if math.isfinite(r.Share_Count_Change_3Y_pct) else 'N/A'}%；單年警示={r.Dilution_Illusion}；持續稀釋={r.Persistent_Dilution}")
+    lines.append(
+        f"- 併購換股歸因：{r.Acquisition_Issuance_Attribution_Status}；"
+        f"發行對帳={r.Acquisition_Issuance_Reconciliation_Status}；"
+        f"TTM 股票對價={r.Acquisition_Stock_Consideration_B if math.isfinite(r.Acquisition_Stock_Consideration_B) else 'N/A'}B；"
+        f"增益性覆核={r.Acquisition_Accretion_Review_Required}"
+    )
     lines.append(f"- 加碼紀律：至少等一次財報，確認 thesis、Real FCF、股數與估值未惡化後才可加碼")
     lines.append(f"- 強制檢討：分數跌破60、Real FCF轉負、ICR<3、30%壓力未通過、連兩季營收與毛利惡化、明顯稀釋或 thesis 被證偽")
     lines.append(f"- 軋空風險：{r.Squeeze_Risk}；資料年齡={r.Short_Data_Age_Days if math.isfinite(r.Short_Data_Age_Days) else 'N/A'}天（只作風險旗標）")
@@ -6029,9 +8014,19 @@ def send_email_report(markdown: str, csv_path: str, receiver_email: str) -> None
 # ==============================================================================
 # 主程式：長期價值多因子研究漏斗（分數優先、最多 12 檔）
 # ==============================================================================
+def require_sec_contact_email() -> str:
+    """Return the configured SEC contact email without a personal fallback."""
+    user_email = str(os.environ.get("USER_EMAIL") or "").strip()
+    if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", user_email):
+        raise RuntimeError(
+            "缺少有效的 USER_EMAIL；請設定 SEC API 聯絡信箱後再執行 Mode C。"
+        )
+    return user_email
+
+
 def main() -> None:
     GLOBAL_EVIDENCE_LEDGER.reset()
-    user_email = os.environ.get("USER_EMAIL") or "a7924177@gmail.com"
+    user_email = require_sec_contact_email()
     input_file = os.environ.get("QUALIFIED_UNIVERSE", QUALIFIED_UNIVERSE)
     if not os.path.exists(input_file):
         raise FileNotFoundError(f"找不到 {input_file}，請準備欄位 Ticker, CIK 的初選清單。")
@@ -6094,15 +8089,54 @@ def main() -> None:
             if completed % 25 == 0 or completed == len(futures):
                 logger.info("Mode C 深篩進度 %d/%d", completed, len(futures))
     results = [result for result in results if result is not None]
+    universe_path = Path(QUALIFIED_UNIVERSE)
+    universe_version = (
+        hashlib.sha256(universe_path.read_bytes()).hexdigest()[:16]
+        if universe_path.exists()
+        else "UNKNOWN"
+    )
+    git_commit = os.environ.get("GITHUB_SHA", "LOCAL_WORKTREE")
+    selected_evidence = GLOBAL_EVIDENCE_LEDGER.rows(selected_only=True)
+    latest_sec_by_ticker: Dict[str, str] = {}
+    for evidence in selected_evidence:
+        evidence_ticker = str(evidence.get("ticker") or "").upper()
+        available_at = str(evidence.get("available_to_model_at") or "")
+        if evidence_ticker and available_at:
+            latest_sec_by_ticker[evidence_ticker] = max(
+                latest_sec_by_ticker.get(evidence_ticker, ""), available_at
+            )
     for result in results:
         if not result.Decision_Timestamp:
             result.Decision_Timestamp = run_decision_timestamp.isoformat()
+        close = get_cached_series(result.Ticker, "Close")
+        if close is not None and not close.empty:
+            result.Price_Data_Date = pd.Timestamp(close.index[-1]).date().isoformat()
+        result.Latest_SEC_Availability_Date = latest_sec_by_ticker.get(
+            result.Ticker.upper(), "UNKNOWN"
+        )
+        result.Universe_Version = universe_version
+        result.Git_Commit = git_commit
 
+    calibrate_exit_multiples(results)
     shortlist = select_diversified_shortlist(results)
+    portfolio_inputs, portfolio_input_error = load_portfolio_fit_inputs(
+        os.environ.get("MODE_C_PORTFOLIO_FIT_FILE")
+    )
+    apply_portfolio_fit_contract(
+        results,
+        portfolio_inputs,
+        run_decision_timestamp,
+        input_error=portfolio_input_error,
+    )
+    if portfolio_input_error:
+        logger.info(
+            "Portfolio fit remains pending where applicable: %s",
+            portfolio_input_error,
+        )
     eligible_count = sum(1 for r in results if r.Long_Term_Eligible)
     sector_policy = "no hard sector count cap" if MAX_PER_SECTOR <= 0 else f"max {MAX_PER_SECTOR} names per sector"
     logger.info(
-        f"長期價值篩選完成：合格 {eligible_count} 檔，分數優先研究名單 {len(shortlist)} 檔；"
+        f"長期價值篩選完成：合格 {eligible_count} 檔，Global Research Queue {len(shortlist)} 檔；"
         f"{sector_policy}。"
     )
 
@@ -6125,6 +8159,11 @@ def main() -> None:
         shortlist_df["_shortlist_order"] = shortlist_df["Ticker"].map(shortlist_order)
         shortlist_df = shortlist_df.sort_values("_shortlist_order").drop(columns="_shortlist_order")
     shortlist_df.to_csv(OUTPUT_SHORTLIST_CSV, index=False, encoding="utf-8-sig")
+    pd.DataFrame(shortlist_by_model(rows)).to_csv(
+        OUTPUT_SHORTLIST_BY_MODEL_CSV,
+        index=False,
+        encoding="utf-8-sig",
+    )
 
     report = "# Mode C 長期價值研究名單（QQQ 40% + VOO 30% + 最多 30% 主動選股）\n\n"
     report += f"清算時間：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"

@@ -293,15 +293,28 @@ class HunterRuntimeTests(unittest.TestCase):
         self.assertEqual(hunter.MIN_MCAP_B, 5.0)
 
     def test_gross_margin_only_hard_fails_when_nonpositive(self):
-        self.assertTrue(
-            self._evaluate(grossMargins=0.0)["Status"].startswith(
-                "Drop: 毛利率低於最低底線"
+        for margin in (0.0, -0.10, -1.50):
+            self.assertTrue(
+                self._evaluate(grossMargins=margin)["Status"].startswith(
+                    "Drop: 毛利率低於最低底線"
+                )
             )
-        )
         peer_check = self._evaluate(grossMargins=0.10)
         self.assertTrue(peer_check["Status"].startswith("PeerCheck:"))
         self.assertEqual(peer_check["GrossMarginRule"], "等待同業中位數")
         self.assertEqual(self._evaluate(grossMargins=0.25)["Status"], "Pass")
+
+    def test_missing_industry_cannot_become_a_general_corporate_candidate(self):
+        for value in (None, float("nan"), hunter.pd.NA, "nan", "<NA>"):
+            with self.subTest(value=value):
+                self.assertTrue(self._evaluate(industry=value)["Status"].startswith("Review:"))
+
+    def test_reit_industry_overrides_financial_sector_in_initial_screen(self):
+        result = self._evaluate(
+            sector="Financial Services", industry="REIT - Mortgage", bookValue=-1.0,
+        )
+        self.assertEqual(result["IndustryModelKey"], "REIT_MORTGAGE")
+        self.assertTrue(result["Status"].startswith("Drop:"))
 
     def test_missing_yahoo_fundamentals_defer_to_sec_instead_of_disappearing(self):
         deferred = self._evaluate(
@@ -314,8 +327,13 @@ class HunterRuntimeTests(unittest.TestCase):
         self.assertEqual(deferred["Status"], "Pass")
         self.assertTrue(deferred["RoutedToSECForMissingYahoo"])
         self.assertIn("defer to SEC", deferred["FirstLayerWarnings"])
+        single_negative = self._evaluate(ebitda=-1)
+        self.assertEqual(single_negative["Status"], "Pass")
+        self.assertTrue(single_negative["RoutedToSECForMissingYahoo"])
         self.assertTrue(
-            self._evaluate(ebitda=-1)["Status"].startswith("Drop: EBITDA 非正值")
+            self._evaluate(ebitda=-1, operatingCashflow=-1)["Status"].startswith(
+                "Drop: Yahoo OCF 與 EBITDA 同時非正值"
+            )
         )
 
     def test_debt_to_ebitda_is_graded_and_net_cash_is_recorded(self):
@@ -338,6 +356,10 @@ class HunterRuntimeTests(unittest.TestCase):
                 "Drop: 淨負債/EBITDA>5.0"
             )
         )
+        gross_only = self._evaluate(totalDebt=5_600_000_000, totalCash=None)
+        self.assertEqual(gross_only["Status"], "Pass")
+        self.assertTrue(gross_only["LeverageWarning"])
+        self.assertIn("defer net leverage to SEC", gross_only["FirstLayerWarnings"])
 
     def test_peer_margin_rule_uses_industry_median_with_sample_guard(self):
         rows = [
