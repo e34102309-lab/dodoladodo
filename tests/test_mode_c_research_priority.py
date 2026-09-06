@@ -1,12 +1,15 @@
 import math
 import unittest
 
+import pandas as pd
+
 from mode_c_research_priority import (
     RESEARCH_PRIORITY_METHOD,
     annotate_research_priorities,
     global_research_queue,
     research_priority_order,
     shrunk_percentile,
+    starter_candidate_gate,
 )
 
 
@@ -27,6 +30,33 @@ def row(ticker, model, raw_score, *, eligible=True, confidence=80.0):
 
 
 class ResearchPriorityTests(unittest.TestCase):
+    def test_starter_requires_explicit_portfolio_pass_and_known_risk_flags(self):
+        candidate = row("GEN", "GENERAL_CORPORATE", 80.0)
+        annotate_research_priorities([candidate])
+        candidate.update(Portfolio_Fit_Status="PASS", Portfolio_Fit_Pending=False)
+        self.assertTrue(starter_candidate_gate(candidate))
+        candidate.pop("Portfolio_Fit_Status")
+        self.assertFalse(starter_candidate_gate(candidate))
+        candidate["Portfolio_Fit_Status"] = "PASS"
+        for flag in ("Human_KPI_Review_Required", "Specialized_Stress_Pending", "Specialized_Stress_Failed", "Portfolio_Fit_Pending"):
+            for unknown in (None, math.nan, pd.NA, "unknown"):
+                with self.subTest(flag=flag, unknown=unknown):
+                    corrupted = {**candidate, flag: unknown}
+                    self.assertFalse(starter_candidate_gate(corrupted))
+
+    def test_contradictory_or_unknown_eligibility_cannot_enter_queue(self):
+        for changes in (
+            {"Long_Term_Eligible": math.nan}, {"Long_Term_Eligible": pd.NA},
+            {"Decision_State": "FAIL"}, {"Decision_State": "ABSTAIN"},
+            {"Model_Supported": math.nan}, {"Long_Term_Score": 101.0},
+        ):
+            with self.subTest(changes=changes):
+                candidate = {**row("GEN", "GENERAL_CORPORATE", 80.0), **changes}
+                annotate_research_priorities([candidate])
+                self.assertFalse(candidate["Model_Eligible"])
+                self.assertFalse(candidate["Global_Research_Queue"])
+                self.assertFalse(candidate["Starter_Candidate"])
+
     def test_raw_scores_are_ranked_only_inside_their_own_model(self):
         rows = [
             row("GEN1", "GENERAL_CORPORATE", 80.0),

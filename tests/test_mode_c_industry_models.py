@@ -25,6 +25,7 @@ class IndustryModelTests(unittest.TestCase):
                 "loans_b": 60,
                 "credit_loss_allowance_b": 1,
                 "tier1_ratio_pct": 13,
+                "risk_weighted_assets_b": 60,
                 "tier1_well_capitalized_min_pct": 8,
                 "net_interest_income_growth_pct": 5,
                 "market_cap_b": 12,
@@ -219,6 +220,18 @@ class IndustryModelTests(unittest.TestCase):
         stressed = calculate_specialized_stress("REIT_MORTGAGE", mortgage_reit)
         self.assertEqual(stressed["specialized_stress_status"], "FAIL")
         self.assertFalse(stressed["specialized_stress_survival"])
+
+    def test_bank_stress_uses_rwa_instead_of_total_assets(self):
+        bank = self.healthy_samples()["BANK"]
+        bank.update(tier1_ratio_pct=9.0, risk_weighted_assets_b=20.0)
+        result = calculate_specialized_stress("BANK", bank)
+        loss = (60.0 * 0.03 - 1.0) * 0.79
+        self.assertAlmostEqual(result["bank_stress_tier1_ratio_pct"], 9.0 - loss / 20.0 * 100.0)
+        self.assertEqual(result["specialized_stress_status"], "FAIL")
+        self.assertGreater(9.0 - loss / 100.0 * 100.0, 8.0)
+        for rwa in (None, math.nan, 0.0, -1.0):
+            bank["risk_weighted_assets_b"] = rwa
+            self.assertEqual(calculate_specialized_stress("BANK", bank)["specialized_stress_status"], "ABSTAIN")
 
     def test_missing_required_metric_abstains_instead_of_neutral_scoring(self):
         bank = self.healthy_samples()["BANK"]

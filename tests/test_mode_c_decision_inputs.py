@@ -140,6 +140,29 @@ class DecisionInputContractTests(unittest.TestCase):
             )
         )
 
+    def test_calibration_contract_rejects_nonfinite_scores_and_returns(self):
+        for column in ("Raw_Model_Score", "Forward_Return_pct", "Benchmark_Return_pct", "Forward_Excess_Return_pct"):
+            for value in (float("inf"), float("-inf"), float("nan")):
+                with self.subTest(column=column, value=value):
+                    frame = self._calibration_frame()
+                    frame.loc[0, column] = value
+                    result = audit_calibration_input(
+                        frame, "2025-01-01", minimum_observations=4,
+                        minimum_observations_per_model=2, minimum_decision_years=2,
+                    )
+                    self.assertFalse(result["eligible_for_model_fitting"])
+                    self.assertTrue(any("non-finite" in reason for reason in result["reasons"]))
+
+    def test_nullable_calibration_flags_fail_closed(self):
+        frame = self._calibration_frame()
+        frame["Transaction_Costs_Included"] = pd.Series([pd.NA] * 4, dtype="boolean")
+        result = audit_calibration_input(
+            frame, "2025-01-01", minimum_observations=4,
+            minimum_observations_per_model=2, minimum_decision_years=2,
+        )
+        self.assertFalse(result["eligible_for_model_fitting"])
+        self.assertTrue(any("transaction costs" in reason for reason in result["reasons"]))
+
     def _portfolio_exposure(self):
         return {
             "Ticker": "TEST",
@@ -199,6 +222,30 @@ class DecisionInputContractTests(unittest.TestCase):
         result = self._evaluate(None)
         self.assertEqual(result["status"], "PENDING_INPUT")
         self.assertTrue(result["pending"])
+
+    def test_portfolio_fit_rejects_same_day_future_input_using_utc(self):
+        exposure = self._portfolio_exposure()
+        exposure["AsOf"] = "2026-01-10T08:01:00+08:00"
+        self.assertEqual(self._evaluate(exposure)["status"], "INVALID")
+        exposure["AsOf"] = "2026-01-10T08:00:00+08:00"
+        self.assertEqual(self._evaluate(exposure)["status"], "PASS")
+
+    def test_portfolio_fit_requires_explicit_overlap_and_risk_bucket(self):
+        for column, values in {
+            "ETF_Top10_Overlap": [None, pd.NA, float("nan"), "", "unknown", 2],
+            "Economic_Risk_Bucket": [None, pd.NA, float("nan"), ""],
+        }.items():
+            for value in values:
+                with self.subTest(column=column, value=value):
+                    exposure = self._portfolio_exposure()
+                    exposure[column] = value
+                    result = self._evaluate(exposure)
+                    self.assertEqual(result["status"], "INVALID")
+                    self.assertTrue(result["pending"])
+        for value in (False, 0, 0.0, "false", "No"):
+            exposure = self._portfolio_exposure()
+            exposure["ETF_Top10_Overlap"] = value
+            self.assertEqual(self._evaluate(exposure)["status"], "PASS")
 
 
 if __name__ == "__main__":

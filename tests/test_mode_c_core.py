@@ -13,8 +13,11 @@ from AQR_ModeC_Agent_V12 import (
     _specialized_average_balance,
     _specialized_balance_growth_pct,
     _specialized_ebitda_history,
+    _specialized_growth_pct,
     _specialized_ppe_capex_proxy,
     _specialized_total_debt,
+    _trailing_quarter_window,
+    _ttm_flow_growth_pct,
     analyze_dsi_signal,
     analyze_working_capital_quality,
     annual_values_by_year,
@@ -33,11 +36,13 @@ from AQR_ModeC_Agent_V12 import (
     calculate_roic_capital_metrics,
     calibrate_exit_multiples,
     classify_acquisition_issuance,
+    classify_three_quarter_trend,
     common_equity_rejection_reason,
     composite_score_for_result,
     dynamic_implied_cagr_limit,
     downside_multiple_floor,
     determine_general_corporate_status,
+    determine_specialized_status,
     estimate_maintenance_capex_amount,
     estimate_maintenance_capex_profile,
     maintenance_fcf_research_warnings,
@@ -106,6 +111,13 @@ class ModeCCoreTests(unittest.TestCase):
         )
         self.assertTrue(status.startswith("Abstain: acquisition-related"))
 
+    def test_specialized_stress_failure_precedes_unrelated_missing_evidence(self):
+        state, status = determine_specialized_status("BANK", "ABSTAIN", [], 40.0, True, "FAIL")
+        self.assertEqual(state, "FAIL")
+        self.assertIn("stress survival failed", status)
+        state, _ = determine_specialized_status("BANK", "PASS", [], 90.0, False, "ABSTAIN")
+        self.assertEqual(state, "ABSTAIN")
+
     def test_ttm_flow_without_quarters_or_annual_fact_returns_missing_not_zero(self):
         sec = SECDataDistiller(
             "research@example.com",
@@ -133,6 +145,135 @@ class ModeCCoreTests(unittest.TestCase):
         self.assertTrue(math.isnan(value))
         self.assertEqual(method, "missing")
         self.assertEqual(details, {})
+
+    def test_quarter_windows_reject_gaps_and_missing_latest_but_accept_53_week_year(self):
+        dates = pd.to_datetime([
+            "2023-12-30", "2024-03-30", "2024-06-29", "2024-09-28",
+            "2025-01-04", "2025-04-05", "2025-07-05", "2025-10-04",
+        ])
+        values = pd.Series([100.0] * 4 + [110.0] * 4, index=dates)
+        self.assertEqual(len(_trailing_quarter_window(values, 8)), 8)
+        self.assertAlmostEqual(_ttm_flow_growth_pct(values), 10.0)
+        gapped = values.copy()
+        gapped.index = dates[:4].append(dates[4:] + pd.Timedelta(days=365))
+        self.assertTrue(math.isnan(_ttm_flow_growth_pct(gapped)))
+        missing_latest = values.copy()
+        missing_latest.iloc[-1] = float("nan")
+        self.assertTrue(_trailing_quarter_window(missing_latest, 3).empty)
+
+    def test_ttm_fallback_requires_four_consecutive_latest_quarters(self):
+        sec = SECDataDistiller("research@example.com")
+        frame = SECDataDistiller._clean_facts(pd.DataFrame([{
+            "start": "2025-01-01", "end": "2025-03-31", "filed": "2025-04-15",
+            "val": 100.0, "form": "10-Q", "fp": "Q1", "fy": 2025,
+        }]))
+        for dates, valid in [
+            (["2024-06-30", "2024-09-30", "2024-12-31", "2025-03-31"], True),
+            (["2023-12-31", "2024-09-30", "2024-12-31", "2025-03-31"], False),
+            (["2024-03-31", "2024-06-30", "2024-09-30", "2024-12-31"], False),
+        ]:
+            with self.subTest(dates=dates):
+                quarters = pd.Series([100.0] * 4, index=pd.to_datetime(dates))
+                with patch.object(sec, "quarterly_series", return_value=quarters):
+                    value, method, _ = sec.ttm_flow(frame, normalized_metric="Fixture")
+                if valid:
+                    self.assertAlmostEqual(value, 400.0 / 1e9)
+                    self.assertIn("consecutive", method)
+                else:
+                    self.assertTrue(math.isnan(value))
+                    self.assertEqual(method, "missing")
+
+    def test_ytd_arithmetic_requires_matching_fiscal_periods(self):
+        rows = []
+        for end, fp, value in [
+            ("2024-03-31", "Q1", 100.0), ("2024-06-30", "Q2", 220.0),
+            ("2024-09-30", "Q3", 360.0), ("2024-12-31", "FY", 520.0),
+            ("2025-03-31", "Q1", 180.0),
+        ]:
+            rows.append({
+                "start": end[:4] + "-01-01", "end": end,
+                "filed": pd.Timestamp(end) + pd.Timedelta(days=30), "val": value,
+                "form": "10-K" if fp == "FY" else "10-Q", "fp": fp, "fy": int(end[:4]),
+            })
+        sec = SECDataDistiller("research@example.com")
+        valid = SECDataDistiller._clean_facts(pd.DataFrame(rows))
+        value, method, _ = sec.ttm_flow(valid, normalized_metric="Fixture")
+        self.assertAlmostEqual(value, 600.0 / 1e9)
+        self.assertIn("YTD", method)
+        self.assertEqual(sec.quarterly_series(valid).tolist(), [100, 120, 140, 160, 180])
+        valid["fy"] = valid["fy"].astype(float)
+        value, method, _ = sec.ttm_flow(valid, normalized_metric="Fixture")
+        self.assertAlmostEqual(value, 600.0 / 1e9)
+        self.assertIn("YTD", method)
+
+        # A comparative period can carry the filing's fiscal-year label.
+        rows[0].update(start="2023-01-01", end="2023-03-31")
+        misaligned = SECDataDistiller._clean_facts(pd.DataFrame(rows))
+        quarters = sec.quarterly_series(misaligned)
+        self.assertNotIn(pd.Timestamp("2024-06-30"), quarters.index)
+        value, method, _ = sec.ttm_flow(misaligned, normalized_metric="Fixture")
+        self.assertAlmostEqual(value, 520.0 / 1e9)
+        self.assertTrue(method.startswith("fallback annual:"))
+
+    def test_margin_trend_requires_three_matching_recent_quarters(self):
+        for dates in [
+            ["2024-03-31", "2024-09-30", "2024-12-31"],
+            ["2024-06-30", "2024-09-30", "2024-12-31"],
+        ]:
+            revenue = pd.Series([100.0] * 3, index=pd.to_datetime(dates))
+            gross_profit = pd.Series([50.0, 40.0, 30.0], index=revenue.index)
+            label, metrics = classify_three_quarter_trend(revenue, gross_profit)
+            self.assertEqual(bool(metrics), dates[0] == "2024-06-30")
+        gross_profit.loc[pd.Timestamp("2025-03-31")] = float("nan")
+        label, metrics = classify_three_quarter_trend(revenue, gross_profit)
+        self.assertTrue(label.startswith("資料不足"))
+        self.assertEqual(metrics, {})
+
+    def test_inventory_signal_cannot_treat_gaps_as_consecutive_declines(self):
+        dsi = pd.Series([120, 110, 100, 90, 80], index=pd.to_datetime([
+            "2023-12-31", "2024-03-31", "2024-12-31", "2025-03-31", "2025-06-30",
+        ]))
+        result = analyze_dsi_signal(dsi)
+        self.assertTrue(result["sequential_down"])
+        self.assertFalse(result["inflection"])
+        self.assertTrue(math.isnan(result["yoy_change_pct"]))
+        dsi = dsi.drop(pd.Timestamp("2025-03-31"))
+        result = analyze_dsi_signal(dsi)
+        self.assertFalse(result["sequential_down"])
+        self.assertTrue(math.isnan(result["score"]))
+
+    def test_balance_days_do_not_reuse_prior_quarter_as_current(self):
+        dates = pd.date_range("2024-03-31", periods=8, freq="QE")
+        flows = pd.Series([100.0] * 8, index=dates)
+        balances = pd.Series([50.0, 60.0], index=pd.to_datetime(["2024-09-30", "2025-09-30"]))
+        inventory = pd.DataFrame({"end": balances.index, "val": balances.values})
+        dsi = calc_dsi_series(inventory, flows)
+        self.assertNotIn(pd.Timestamp("2025-12-31"), dsi.index)
+        self.assertTrue(math.isnan(analyze_dsi_signal(dsi)["latest"]))
+        result = analyze_working_capital_quality(balances, balances, balances, flows, flows)
+        self.assertEqual(result["status"], "MISSING")
+        self.assertTrue(math.isnan(result["dso_days"]))
+        self.assertTrue(math.isnan(result["dpo_days"]))
+
+        inventory = pd.DataFrame({
+            "end": pd.to_datetime(["2024-06-30", "2025-06-30"]), "val": [80.0, 100.0],
+        })
+        gapped_flows = pd.Series([100.0] * 4, index=pd.to_datetime([
+            "2024-03-31", "2024-12-31", "2025-03-31", "2025-06-30",
+        ]))
+        self.assertTrue(calc_dsi_series(inventory, gapped_flows).empty)
+
+    def test_working_capital_growth_does_not_bridge_missing_quarters(self):
+        dates = pd.to_datetime([
+            "2023-03-31", "2023-06-30", "2023-09-30", "2023-12-31",
+            "2025-03-31", "2025-06-30", "2025-09-30", "2025-12-31",
+        ])
+        balances = pd.Series([50.0, 100.0], index=pd.to_datetime(["2024-12-31", "2025-12-31"]))
+        flows = pd.Series([100.0] * 8, index=dates)
+        result = analyze_working_capital_quality(balances, balances, balances, flows, flows)
+        self.assertEqual(result["status"], "MISSING")
+        self.assertEqual(result["risk_penalty"], 0.0)
+        self.assertTrue(math.isnan(result["ttm_revenue_growth_pct"]))
 
     def test_per_share_growth_uses_positive_comparable_annual_endpoints(self):
         class FakeSec:
@@ -833,6 +974,45 @@ class ModeCCoreTests(unittest.TestCase):
         self.assertEqual(route_industry_model("Real Estate", "REIT - Retail")["route"], "REIT")
         self.assertEqual(route_industry_model("Energy", "Oil & Gas E&P")["route"], "CYCLICAL_MIDCYCLE")
         self.assertTrue(route_industry_model("Technology", "Software - Infrastructure")["supported"])
+        for value in (float("nan"), pd.NA, "nan", "<NA>"):
+            self.assertFalse(route_industry_model("Technology", value)["supported"])
+        self.assertEqual(
+            route_industry_model("Financial Services", "REIT - Mortgage")["model_key"],
+            "REIT_MORTGAGE",
+        )
+
+    def test_annual_flow_requires_full_year_even_when_filing_says_fy(self):
+        sec = SECDataDistiller("research@example.com")
+        for start in (None, "2025-07-01", "2025-10-01", "2024-01-01"):
+            with self.subTest(start=start):
+                frame = SECDataDistiller._clean_facts(pd.DataFrame([{
+                    "start": start, "end": "2025-12-31", "val": 100.0,
+                    "form": "10-K", "fp": "FY", "fy": 2025, "filed": "2026-02-01",
+                }]))
+                self.assertTrue(sec._annual_facts(frame).empty)
+                value, method, _ = sec.ttm_flow(frame)
+                self.assertTrue(math.isnan(value))
+                self.assertEqual(method, "missing")
+
+    def test_specialized_growth_requires_adjacent_annual_or_quarterly_windows(self):
+        sec = SECDataDistiller("research@example.com")
+        for prior_year, expected in ((2024, 20.0), (2023, math.nan)):
+            frame = SECDataDistiller._clean_facts(pd.DataFrame([
+                {"start": f"{year}-01-01", "end": f"{year}-12-31", "val": value,
+                 "form": "10-K", "fp": "FY", "fy": year, "filed": f"{year + 1}-02-01"}
+                for year, value in ((prior_year, 100.0), (2025, 120.0))
+            ]))
+            growth = _specialized_growth_pct(sec, frame, "Revenue")
+            if math.isfinite(expected):
+                self.assertAlmostEqual(growth, expected)
+            else:
+                self.assertTrue(math.isnan(growth))
+        quarters = pd.Series([20.0] * 4 + [40.0] * 4, index=pd.to_datetime([
+            "2023-03-31", "2023-06-30", "2023-09-30", "2023-12-31",
+            "2025-03-31", "2025-06-30", "2025-09-30", "2025-12-31",
+        ]))
+        with patch.object(sec, "quarterly_series", return_value=quarters):
+            self.assertTrue(math.isnan(_specialized_growth_pct(sec, frame, "Revenue")))
 
     def test_low_point_in_time_coverage_causes_abstain(self):
         confidence = assess_data_confidence(
@@ -997,6 +1177,25 @@ class ModeCCoreTests(unittest.TestCase):
         self.assertAlmostEqual(estimate_maintenance_capex_amount(100.0, 60.0, 0.20), 68.0)
         self.assertAlmostEqual(estimate_maintenance_capex_amount(100.0, 60.0, -0.05), 92.0)
 
+    def test_maintenance_capex_does_not_infer_growth_from_gapped_quarters(self):
+        quarters = pd.Series([20.0] * 4 + [25.0] * 4, index=pd.to_datetime([
+            "2023-03-31", "2023-06-30", "2023-09-30", "2023-12-31",
+            "2025-03-31", "2025-06-30", "2025-09-30", "2025-12-31",
+        ]))
+        sec = SECDataDistiller("research@example.com")
+        with patch.object(sec, "quarterly_series", return_value=quarters), patch(
+            "AQR_ModeC_Agent_V12.annual_values_by_year",
+            side_effect=lambda sec, frame, metric: (
+                {2023: 50e9, 2024: 55e9, 2025: 60e9}
+                if metric == "DnA" else {2024: 100e9, 2025: 90e9}
+            ),
+        ):
+            profile = estimate_maintenance_capex_profile(
+                sec, pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), 100.0, 60.0
+            )
+        self.assertAlmostEqual(profile["revenue_growth_pct"], -10.0)
+        self.assertAlmostEqual(profile["maintenance_capex_b"], 92.0)
+
     def test_maintenance_capex_profile_exposes_range_and_confidence(self):
         class FakeSec:
             @staticmethod
@@ -1083,6 +1282,10 @@ class ModeCCoreTests(unittest.TestCase):
         fallback = calculate_roic_capital_metrics(20.0, math.nan, 300.0)
         self.assertEqual(fallback["capital_method"], "ENDING_CAPITAL_FALLBACK_ESTIMATED")
         self.assertAlmostEqual(fallback["average_roic_pct"], fallback["ending_roic_pct"])
+        missing_goodwill = calculate_roic_capital_metrics(20.0, 100.0, 300.0, math.nan, 60.0)
+        self.assertTrue(math.isnan(missing_goodwill["excluding_goodwill_roic_pct"]))
+        ending_only = calculate_roic_capital_metrics(20.0, math.nan, 300.0, 20.0, 60.0)
+        self.assertAlmostEqual(ending_only["excluding_goodwill_roic_pct"], 20.0 / 240.0 * 100.0)
 
     def test_maintenance_fcf_risk_cases_become_manual_research_tasks(self):
         warnings = maintenance_fcf_research_warnings(-0.1, -1.2, 4.1)
@@ -1304,6 +1507,20 @@ class ModeCCoreTests(unittest.TestCase):
         self.assertEqual(result["ocf_3y_years"], 1.0)
         self.assertEqual(result["ocf_3y_cumulative_b"], 1.0)
 
+    def test_missing_latest_annual_sbc_does_not_promote_older_fcf_history(self):
+        history = {year: 1e9 for year in range(2019, 2026)}
+        old_sbc = {year: 0.1e9 for year in range(2019, 2025)}
+        sec = SECDataDistiller("research@example.com")
+        inputs = [history, history, old_sbc, history, history, history]
+        with patch("AQR_ModeC_Agent_V12.annual_values_by_year", side_effect=inputs):
+            stability = calculate_fcf_stability(sec, *[pd.DataFrame()] * 6)
+        self.assertEqual(stability["years_available"], 0.0)
+        self.assertTrue(math.isnan(stability["real_fcf_to_net_income"]))
+        with patch("AQR_ModeC_Agent_V12.annual_values_by_year", side_effect=inputs):
+            growth = calculate_per_share_growth_3y(sec, *[pd.DataFrame()] * 7)
+        self.assertEqual(growth["years"], 0.0)
+        self.assertTrue(math.isnan(growth["fcf_cagr_pct"]))
+
     def test_short_interest_age_is_explicit(self):
         now = pd.Timestamp("2026-07-10", tz="UTC")
         observed = pd.Timestamp("2026-06-30", tz="UTC").timestamp()
@@ -1504,6 +1721,15 @@ class ModeCCoreTests(unittest.TestCase):
         issuance = apply_long_term_framework(issuance)
         self.assertEqual(issuance.Ownership_Dilution_Penalty, 0.0)
         self.assertEqual(issuance.Capital_Allocation_Penalty, 20.0)
+        self.assertEqual(issuance.Dilution_Total_Score_Impact, 1.05)
+        issuance.DSI_Status = "NOT_APPLICABLE"
+        issuance = apply_long_term_framework(issuance)
+        self.assertEqual(issuance.Available_Factor_Weight, 95.0)
+        self.assertEqual(issuance.Dilution_Total_Score_Impact, round(20.0 * 5.0 / 95.0, 2))
+        issuance.DSI_Status = "VALID"
+        issuance.DSI_Score = 50.0
+        issuance = apply_long_term_framework(issuance)
+        self.assertEqual(issuance.Available_Factor_Weight, 100.0)
         self.assertEqual(issuance.Dilution_Total_Score_Impact, 1.0)
 
         persistent = self._good_candidate(ticker="DILUTE")

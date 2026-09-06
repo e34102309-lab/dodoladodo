@@ -400,6 +400,48 @@ def _validate_financial_formulas(screen: pd.DataFrame) -> None:
             raise ValidationError(f"{ticker} SBC economic cost differs from TTM SBC")
 
 
+def _validate_bank_stress_formulas(screen: pd.DataFrame) -> None:
+    for _, row in screen.iterrows():
+        if str(row.get("Industry_Model_Key", "")).upper() != "BANK":
+            continue
+        status = str(row.get("Specialized_Stress_Status", "")).upper()
+        if status not in {"PASS", "FAIL"}:
+            continue
+        ticker = str(row.get("Ticker", ""))
+        try:
+            raw = row.get("Industry_Model_Metrics_JSON", "")
+            metrics = raw if isinstance(raw, dict) else json.loads(raw)
+            names = (
+                "assets_b", "tangible_equity_b", "loans_b", "credit_loss_allowance_b",
+                "risk_weighted_assets_b", "tier1_ratio_pct", "tier1_well_capitalized_min_pct",
+                "bank_stress_after_tax_capital_loss_b", "bank_stress_tier1_ratio_pct",
+                "bank_stress_risk_weighted_assets_b",
+            )
+            values = {name: _number(metrics.get(name)) for name in names}
+        except (TypeError, ValueError, AttributeError) as exc:
+            raise ValidationError(f"bank stress metrics are invalid: {ticker}") from exc
+        if any(not math.isfinite(value) for value in values.values()) or values["risk_weighted_assets_b"] <= 0:
+            raise ValidationError(f"bank stress lacks finite inputs or positive RWA: {ticker}")
+        rwa = values["risk_weighted_assets_b"]
+        loss = max(max(values["loans_b"], 0.0) * 0.03 - max(values["credit_loss_allowance_b"], 0.0), 0.0) * 0.79
+        tier1 = values["tier1_ratio_pct"] - loss / rwa * 100.0
+        stressed_equity = values["tangible_equity_b"] - loss
+        stressed_assets = values["assets_b"] - loss
+        expected_survival = (
+            stressed_equity > 0 and stressed_assets > 0
+            and stressed_equity / stressed_assets * 100.0 >= 3.0
+            and tier1 >= values["tier1_well_capitalized_min_pct"]
+        )
+        reconciled = (
+            math.isclose(values["bank_stress_risk_weighted_assets_b"], rwa, abs_tol=1e-6)
+            and math.isclose(values["bank_stress_after_tax_capital_loss_b"], loss, abs_tol=1e-6)
+            and math.isclose(values["bank_stress_tier1_ratio_pct"], tier1, abs_tol=0.011)
+            and (status == "PASS") == expected_survival
+        )
+        if not reconciled:
+            raise ValidationError(f"bank stress does not reconcile to RWA and capital loss: {ticker}")
+
+
 def build_zero_classification_report(screen: pd.DataFrame) -> Dict[str, Any]:
     records: list[Dict[str, Any]] = []
     null_status_counts = {status: 0 for status in NULL_STATUSES}
@@ -905,6 +947,7 @@ def _validate_screen(
         | portfolio_input_age.lt(0.0)
         | portfolio_input_age.gt(MAX_PORTFOLIO_INPUT_AGE_DAYS)
         | calculated_portfolio_age.isna()
+        | portfolio_as_of.gt(decision_for_portfolio)
         | (portfolio_input_age - calculated_portfolio_age).abs().gt(0.011)
         | portfolio_current_position.lt(0.0)
         | portfolio_pre_sleeve.lt(0.0)
@@ -1208,6 +1251,7 @@ def _validate_screen(
     if inconsistent_specialized_stress.any():
         bad = screen.loc[inconsistent_specialized_stress, "Ticker"].tolist()
         raise ValidationError(f"specialized stress status/survival mismatch: {bad}")
+    _validate_bank_stress_formulas(screen)
 
     dsi_status = screen["DSI_Status"].fillna("MISSING").astype(str).str.upper()
     if not set(dsi_status).issubset({"VALID", "MISSING", "NOT_APPLICABLE", "ABSTAIN", "STALE"}):
@@ -1343,8 +1387,10 @@ def _validate_screen(
         screen["Dilution_Total_Score_Impact"], errors="coerce"
     ).fillna(0.0)
     duplicate_dilution = ownership_penalty.gt(0) & capital_penalty.gt(0)
+    capital_effective_weight = 5.0 / available_weight.where(available_weight.gt(0))
     invalid_dilution_total = (
-        total_dilution_impact - (ownership_penalty + capital_penalty * 0.05)
+        total_dilution_impact
+        - (ownership_penalty + capital_penalty * capital_effective_weight.fillna(0.0))
     ).abs() > 0.011
     if duplicate_dilution.any() or invalid_dilution_total.any():
         bad = screen.loc[duplicate_dilution | invalid_dilution_total, "Ticker"].tolist()

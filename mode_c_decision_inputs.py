@@ -7,8 +7,8 @@ from typing import Any, Mapping
 import pandas as pd
 
 
-CALIBRATION_INPUT_CONTRACT_VERSION = "2026-08-pit-calibration-input-v2"
-PORTFOLIO_FIT_CONTRACT_VERSION = "2026-08-portfolio-fit-input-v2"
+CALIBRATION_INPUT_CONTRACT_VERSION = "2026-09-pit-calibration-input-v3"
+PORTFOLIO_FIT_CONTRACT_VERSION = "2026-09-portfolio-fit-input-v3"
 
 CALIBRATION_REQUIRED_COLUMNS = frozenset(
     {
@@ -55,12 +55,21 @@ def _finite(value: Any) -> float | None:
     return parsed if math.isfinite(parsed) else None
 
 
+def _text(value: Any) -> str:
+    return "" if value is None or pd.isna(value) else str(value).strip()
+
+
+def _boolean(value: Any) -> bool | None:
+    token = _text(value).lower()
+    if token in {"true", "1", "1.0", "yes", "y"}:
+        return True
+    if token in {"false", "0", "0.0", "no", "n"}:
+        return False
+    return None
+
+
 def _truthy(value: Any) -> bool:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, (int, float)) and not pd.isna(value):
-        return float(value) == 1.0
-    return str(value or "").strip().lower() in {"true", "1", "yes", "y"}
+    return _boolean(value) is True
 
 
 def _timestamp(value: Any) -> pd.Timestamp:
@@ -104,17 +113,11 @@ def audit_calibration_input(
     membership = pd.to_datetime(work["Universe_Membership_AsOf"], utc=True, errors="coerce")
     forward_end = pd.to_datetime(work["Forward_Return_End"], utc=True, errors="coerce")
     as_of = pd.to_datetime(calibration_as_of, utc=True, errors="coerce")
-    raw_score = pd.to_numeric(work["Raw_Model_Score"], errors="coerce")
-    forward_return = pd.to_numeric(work["Forward_Return_pct"], errors="coerce")
-    benchmark_return = pd.to_numeric(
-        work["Benchmark_Return_pct"], errors="coerce"
-    )
-    excess_return = pd.to_numeric(
-        work["Forward_Excess_Return_pct"], errors="coerce"
-    )
-    horizon_days = pd.to_numeric(
-        work["Forward_Return_Horizon_Days"], errors="coerce"
-    )
+    raw_score = work["Raw_Model_Score"].map(_finite).astype(float)
+    forward_return = work["Forward_Return_pct"].map(_finite).astype(float)
+    benchmark_return = work["Benchmark_Return_pct"].map(_finite).astype(float)
+    excess_return = work["Forward_Excess_Return_pct"].map(_finite).astype(float)
+    horizon_days = work["Forward_Return_Horizon_Days"].map(_finite).astype(float)
     benchmark_ids = (
         work["Benchmark_Id"].fillna("").astype(str).str.strip().str.upper()
     )
@@ -307,7 +310,7 @@ def evaluate_portfolio_fit(
     if pd.isna(decision) or pd.isna(as_of):
         return {**pending, "status": "INVALID", "reason": "portfolio-fit as-of timestamp is invalid"}
     age_days = (decision.normalize() - as_of.normalize()).days
-    if age_days < 0:
+    if as_of > decision:
         return {**pending, "status": "INVALID", "reason": "portfolio-fit input is dated after the decision timestamp"}
     if age_days > maximum_input_age_days:
         return {
@@ -331,8 +334,12 @@ def evaluate_portfolio_fit(
         return {**pending, "status": "INVALID", "reason": "proposed starter weight is not positive"}
     if score is None or any(value is None or value < 0 for value in values.values()):
         return {**pending, "status": "INVALID", "reason": "portfolio-fit exposure values are missing, negative or non-finite"}
-    if not str(exposure.get("Economic_Risk_Bucket") or "").strip():
+    economic_risk_bucket = _text(exposure.get("Economic_Risk_Bucket"))
+    if not economic_risk_bucket:
         return {**pending, "status": "INVALID", "reason": "economic risk bucket is blank"}
+    etf_top10_overlap = _boolean(exposure.get("ETF_Top10_Overlap"))
+    if etf_top10_overlap is None:
+        return {**pending, "status": "INVALID", "reason": "ETF top-10 overlap must be explicitly true or false"}
 
     pre_trade_issuer_exposure = (
         float(values["current_position"]) + float(values["etf_lookthrough"])
@@ -350,12 +357,10 @@ def evaluate_portfolio_fit(
         failures.append("active sector weight exceeds limit")
     if post_economic_risk > economic_risk_limit_pct_total:
         failures.append("economic risk bucket exceeds limit")
-    if _truthy(exposure.get("ETF_Top10_Overlap")) and score < etf_top10_min_score:
+    if etf_top10_overlap and score < etf_top10_min_score:
         failures.append("ETF top-10 overlap requires the higher score threshold")
 
-    correlation_status = str(
-        exposure.get("Correlation_Stress_Status") or ""
-    ).strip().upper()
+    correlation_status = _text(exposure.get("Correlation_Stress_Status")).upper()
     if failures:
         status = "FAIL"
         pending_flag = False
@@ -385,9 +390,9 @@ def evaluate_portfolio_fit(
         "post_trade_sector_weight_pct_total": post_sector,
         "post_trade_economic_risk_weight_pct_total": post_economic_risk,
         "etf_lookthrough_weight_pct_total": float(values["etf_lookthrough"]),
-        "etf_top10_overlap": _truthy(exposure.get("ETF_Top10_Overlap")),
+        "etf_top10_overlap": etf_top10_overlap,
         "correlation_stress_status": correlation_status,
-        "economic_risk_bucket": str(exposure.get("Economic_Risk_Bucket") or "").strip(),
+        "economic_risk_bucket": economic_risk_bucket,
     }
 
 

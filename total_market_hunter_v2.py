@@ -61,7 +61,7 @@ MIN_INSTITUTIONAL_OWN = 0.40
 # excluding otherwise valid businesses during the very first screening stage.
 DEFAULT_REQUIRE_INSTITUTIONAL_OWNERSHIP = False
 DEFAULT_ENABLE_PPE_FILTER = False
-HUNTER_POLICY_VERSION = "2026-07-industry-models-v7"
+HUNTER_POLICY_VERSION = "2026-09-industry-models-v8"
 
 SUPPORTED_EQUITY_EXCHANGES = {"NMS", "NYQ", "NGM", "NCM", "ASE", "PCX"}
 SUPPORTED_SEC_EXCHANGES = {"NASDAQ", "NYSE", "NYSE AMERICAN"}
@@ -1017,9 +1017,11 @@ def first_number(mapping: dict, *keys: str) -> Optional[float]:
 
 def first_text(mapping: dict, *keys: str) -> str:
     for key in keys:
-        value = str(mapping.get(key) or "").strip()
-        if value:
-            return value
+        value = mapping.get(key)
+        if isinstance(value, str) and value.strip().lower() not in {
+            "", "nan", "none", "null", "n/a", "<na>", "nat",
+        }:
+            return value.strip()
     return ""
 
 
@@ -1251,7 +1253,7 @@ def evaluate_candidate(
         first_layer_warnings.append("Yahoo OCF is non-positive; require SEC corroboration")
 
     gross_margin = first_number(merged, "grossMargins", "grossMargin")
-    if gross_margin is None or not 0 <= gross_margin <= 1:
+    if gross_margin is None or gross_margin > 1:
         gross_margin = None
         first_layer_warnings.append("Yahoo gross margin missing; defer to SEC")
     elif gross_margin <= config.min_gross_margin_floor:

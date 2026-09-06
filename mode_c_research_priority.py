@@ -6,7 +6,7 @@ from dataclasses import asdict, is_dataclass
 from typing import Any, Iterable, Mapping, MutableMapping, Sequence
 
 
-RESEARCH_PRIORITY_VERSION = "2026-08-coverage-first-round-robin-v2"
+RESEARCH_PRIORITY_VERSION = "2026-09-coverage-first-round-robin-v3"
 CROSS_MODEL_CALIBRATION_STATUS = "UNCALIBRATED"
 RESEARCH_PRIORITY_METHOD = "COVERAGE_FIRST_MODEL_ROUND_ROBIN_V2"
 SHRINKAGE_PRIOR_COUNT = 20.0
@@ -34,10 +34,21 @@ def _finite(value: Any) -> bool:
         return False
 
 
-def _truthy(value: Any) -> bool:
+def _boolean(value: Any) -> bool | None:
     if isinstance(value, str):
-        return value.strip().lower() in {"1", "true", "yes", "y"}
-    return bool(value)
+        token = value.strip().lower()
+        if token in {"1", "true", "yes", "y"}:
+            return True
+        if token in {"0", "false", "no", "n"}:
+            return False
+        return None
+    if _finite(value) and float(value) in (0.0, 1.0):
+        return float(value) == 1.0
+    return None
+
+
+def _truthy(value: Any) -> bool:
+    return _boolean(value) is True
 
 
 def _confidence_score(row: Any) -> float:
@@ -184,19 +195,15 @@ def starter_candidate_gate(row: Any) -> bool:
     portfolio_status = str(
         _get(row, "Portfolio_Fit_Status", "") or ""
     ).upper()
-    portfolio_cleared = (
-        portfolio_status == "PASS"
-        if portfolio_status
-        else not _truthy(_get(row, "Portfolio_Fit_Pending", False))
-    )
+    portfolio_cleared = portfolio_status == "PASS"
     return bool(
         _truthy(_get(row, "Model_Eligible", False))
         and _finite(raw)
         and raw >= 75.0
-        and not _truthy(_get(row, "Human_KPI_Review_Required", False))
-        and not _truthy(_get(row, "Specialized_Stress_Pending", False))
-        and not _truthy(_get(row, "Specialized_Stress_Failed", False))
-        and not _truthy(_get(row, "Portfolio_Fit_Pending", False))
+        and _boolean(_get(row, "Human_KPI_Review_Required")) is False
+        and _boolean(_get(row, "Specialized_Stress_Pending")) is False
+        and _boolean(_get(row, "Specialized_Stress_Failed")) is False
+        and _boolean(_get(row, "Portfolio_Fit_Pending")) is False
         and portfolio_cleared
         and (not specialized or _truthy(_get(row, "Cross_Model_Comparable", False)))
     )
@@ -254,12 +261,17 @@ def annotate_research_priorities(
         _set(row, "Research_Priority_Method", RESEARCH_PRIORITY_METHOD)
         _set(row, "Research_Priority_Version", RESEARCH_PRIORITY_VERSION)
         _set(row, "Screened", True)
-        _set(row, "Model_Eligible", _truthy(_get(row, "Long_Term_Eligible", False)))
+        _set(row, "Model_Eligible", bool(
+            _truthy(_get(row, "Long_Term_Eligible", False))
+            and str(_get(row, "Decision_State", "")).strip().upper() == "PASS"
+            and _truthy(_get(row, "Model_Supported", False))
+            and _finite(raw) and 0.0 <= raw <= 100.0
+        ))
         _set(row, "Global_Research_Queue", False)
         _set(row, "Human_KPI_Review_Required", _human_review_required(row))
         _set(row, "Specialized_Stress_Pending", _specialized_stress_pending(row))
         _set(row, "Specialized_Stress_Failed", _specialized_stress_failed(row))
-        portfolio_pending = _truthy(_get(row, "Long_Term_Eligible", False))
+        portfolio_pending = _truthy(_get(row, "Model_Eligible", False))
         _set(row, "Portfolio_Fit_Pending", portfolio_pending)
         _set(
             row,

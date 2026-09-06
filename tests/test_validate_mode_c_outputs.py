@@ -8,16 +8,40 @@ import pandas as pd
 from mode_c_decision_inputs import PORTFOLIO_FIT_CONTRACT_VERSION
 from mode_c_evidence import EVIDENCE_COLUMNS
 from mode_c_metric_contract import annotate_dataframe
+from mode_c_industry_models import calculate_specialized_stress
 from mode_c_research_priority import annotate_research_priorities
 from validate_mode_c_outputs import (
     ValidationError,
     _validate_financial_formulas,
+    _validate_bank_stress_formulas,
     build_zero_classification_report,
     validate_outputs,
 )
 
 
 class ModeCOutputValidationTests(unittest.TestCase):
+    def test_bank_stress_validator_rejects_total_assets_denominator(self):
+        inputs = {
+            "assets_b": 100.0, "tangible_equity_b": 8.0, "loans_b": 60.0,
+            "credit_loss_allowance_b": 1.0, "risk_weighted_assets_b": 20.0,
+            "tier1_ratio_pct": 13.0, "tier1_well_capitalized_min_pct": 8.0,
+        }
+        metrics = {**inputs, **calculate_specialized_stress("BANK", inputs)}
+        row = {
+            "Ticker": "BANKTEST", "Industry_Model_Key": "BANK",
+            "Specialized_Stress_Status": metrics["specialized_stress_status"],
+            "Industry_Model_Metrics_JSON": json.dumps(metrics),
+        }
+        _validate_bank_stress_formulas(pd.DataFrame([row]))
+        metrics["bank_stress_tier1_ratio_pct"] = 13.0 - metrics["bank_stress_after_tax_capital_loss_b"] / 100.0 * 100.0
+        row["Industry_Model_Metrics_JSON"] = json.dumps(metrics)
+        with self.assertRaisesRegex(ValidationError, "bank stress"):
+            _validate_bank_stress_formulas(pd.DataFrame([row]))
+        metrics.pop("risk_weighted_assets_b")
+        row["Industry_Model_Metrics_JSON"] = json.dumps(metrics)
+        with self.assertRaisesRegex(ValidationError, "positive RWA"):
+            _validate_bank_stress_formulas(pd.DataFrame([row]))
+
     def _write_valid_outputs(self, directory: Path) -> tuple[Path, Path, Path]:
         screen = pd.DataFrame(
             [
@@ -208,11 +232,18 @@ class ModeCOutputValidationTests(unittest.TestCase):
             screen.to_csv(paths[1], index=False, encoding="utf-8-sig")
             validate_outputs(*paths)
 
-            screen.loc[0, "Portfolio_PostTrade_Sector_Weight_pct_Total"] = 7.0
-            screen.to_csv(paths[0], index=False, encoding="utf-8-sig")
-            screen.to_csv(paths[1], index=False, encoding="utf-8-sig")
-            with self.assertRaisesRegex(ValidationError, "portfolio fit"):
-                validate_outputs(*paths)
+            for corruptions in [
+                {"Portfolio_PostTrade_Sector_Weight_pct_Total": 7.0},
+                {"Portfolio_Fit_AsOf": "2026-01-02T23:59:59", "Portfolio_Fit_Input_Age_Days": 0.0},
+            ]:
+                with self.subTest(corruptions=corruptions):
+                    corrupted = screen.copy()
+                    for column, value in corruptions.items():
+                        corrupted[column] = value
+                    corrupted.to_csv(paths[0], index=False, encoding="utf-8-sig")
+                    corrupted.to_csv(paths[1], index=False, encoding="utf-8-sig")
+                    with self.assertRaisesRegex(ValidationError, "portfolio fit"):
+                        validate_outputs(*paths)
 
     def test_future_evidence_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -265,6 +296,21 @@ class ModeCOutputValidationTests(unittest.TestCase):
             screen.to_csv(paths[0], index=False, encoding="utf-8-sig")
             screen.to_csv(paths[1], index=False, encoding="utf-8-sig")
             with self.assertRaisesRegex(ValidationError, "net-cash ICR method"):
+                validate_outputs(*paths)
+
+    def test_dilution_attribution_uses_effective_factor_weight(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = self._write_valid_outputs(Path(tmp))
+            screen = pd.read_csv(paths[0], encoding="utf-8-sig")
+            screen["Capital_Allocation_Penalty"] = 20.0
+            screen["Dilution_Total_Score_Impact"] = round(20.0 * 5.0 / 95.0, 2)
+            for path in paths[:2]:
+                screen.to_csv(path, index=False, encoding="utf-8-sig")
+            validate_outputs(*paths)
+            screen["Dilution_Total_Score_Impact"] = 1.0
+            for path in paths[:2]:
+                screen.to_csv(path, index=False, encoding="utf-8-sig")
+            with self.assertRaisesRegex(ValidationError, "dilution attribution"):
                 validate_outputs(*paths)
 
     def test_fcf_amounts_and_yields_must_recompute_from_inputs(self):

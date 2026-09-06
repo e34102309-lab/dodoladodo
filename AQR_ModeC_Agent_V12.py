@@ -38,7 +38,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 
 import numpy as np
@@ -602,6 +602,7 @@ class SECDataDistiller:
                 "ProvisionForLoanLossesExpensed",
             ],
             "Tier1Ratio": ["TierOneRiskBasedCapitalToRiskWeightedAssets"],
+            "RiskWeightedAssets": ["RiskWeightedAssets"],
             "Tier1WellCapitalizedMinimum": [
                 "TierOneRiskBasedCapitalRequiredToBeWellCapitalizedToRiskWeightedAssets"
             ],
@@ -1025,12 +1026,7 @@ class SECDataDistiller:
         d = df.copy()
         is_annual_form = d["form"].astype(str).str.upper().isin(ANNUAL_FILING_FORMS)
         is_annual_duration = d["duration_days"].between(330, 380, inclusive="both")
-        annual = d[
-            is_annual_form
-            & (is_annual_duration | d["fp"].astype(str).str.upper().eq("FY"))
-        ]
-        if annual.empty:
-            annual = d[is_annual_form]
+        annual = d[is_annual_form & is_annual_duration]
         if annual.empty:
             return annual
         annual = annual.copy()
@@ -1144,17 +1140,23 @@ class SECDataDistiller:
             return None
         fp = str(fp).upper()
         expected = {"Q1": 90, "Q2": 180, "Q3": 270, "FY": 365}.get(fp)
-        d = df[(df["fy"].astype(str) == str(fy)) & (df["fp"].astype(str).str.upper() == fp)].copy()
+        fiscal_year = pd.to_numeric(fy, errors="coerce")
+        if pd.isna(fiscal_year) or not math.isfinite(fiscal_year) or fiscal_year % 1:
+            return None
+        d = df[(pd.to_numeric(df["fy"], errors="coerce") == fiscal_year) & (df["fp"].astype(str).str.upper() == fp)].copy()
         if d.empty:
             return None
         if expected:
-            d["score"] = (d["duration_days"].fillna(expected) - expected).abs()
+            d = d[d["duration_days"].notna()].copy()
+            d["score"] = (d["duration_days"] - expected).abs()
             if fp == "Q2":
                 d = d[d["duration_days"].fillna(180).between(140, 220, inclusive="both")]
             elif fp == "Q3":
                 d = d[d["duration_days"].fillna(270).between(230, 310, inclusive="both")]
             elif fp == "Q1":
                 d = d[d["duration_days"].fillna(90).between(60, 130, inclusive="both")]
+            elif fp == "FY":
+                d = d[d["duration_days"].between(330, 380, inclusive="both")]
         if d.empty:
             return None
         # SEC facts include comparative periods from later filings. Restricting to
@@ -1217,9 +1219,25 @@ class SECDataDistiller:
             latest_q = latest_q_candidates.iloc[-1]
             fy, fp = latest_q.get("fy"), str(latest_q.get("fp", "")).upper()
             latest_ytd = self._select_ytd(d, fy, fp)
-            prior_ytd = self._select_ytd(d, int(fy) - 1 if str(fy).isdigit() else fy, fp)
+            prior_ytd = self._select_ytd(d, pd.to_numeric(fy, errors="coerce") - 1, fp)
             annual_before = annual[annual["end"] < latest_q["end"]]
-            if latest_ytd is not None and prior_ytd is not None and not annual_before.empty:
+            annual_row = annual_before.iloc[-1] if not annual_before.empty else None
+            aligned_ytd = False
+            if latest_ytd is not None and prior_ytd is not None and annual_row is not None:
+                starts = [
+                    pd.to_datetime(row.get("start"), errors="coerce")
+                    for row in (annual_row, latest_ytd, prior_ytd)
+                ]
+                aligned_ytd = (
+                    all(pd.notna(start) for start in starts)
+                    and starts[1] == pd.Timestamp(annual_row["end"]) + pd.Timedelta(days=1)
+                    and starts[2] == starts[0]
+                    and latest_ytd["end"] == latest_10q_end
+                    and prior_ytd["end"] <= annual_row["end"]
+                    and 350 <= (latest_ytd["end"] - prior_ytd["end"]).days <= 380
+                    and abs(latest_ytd["duration_days"] - prior_ytd["duration_days"]) <= 7
+                )
+            if aligned_ytd:
                 ann = float(annual_before.iloc[-1]["val"])
                 ly = float(latest_ytd["val"])
                 py = float(prior_ytd["val"])
@@ -1245,9 +1263,11 @@ class SECDataDistiller:
                 }
 
 
-        qs = self.quarterly_series(df, normalized_metric)
-        if len(qs) >= 4:
-            ttm = float(qs.tail(4).sum()) / 1e9
+        qs = _trailing_quarter_window(
+            self.quarterly_series(df, normalized_metric), 4, anchor_end=d["end"].max()
+        )
+        if len(qs) == 4:
+            ttm = float(qs.sum()) / 1e9
             result = ttm if signed else abs(ttm)
             source_ids = qs.attrs.get("source_evidence_ids", [])
             source_frame = (
@@ -1259,11 +1279,11 @@ class SECDataDistiller:
                 normalized_metric,
                 result,
                 "USD_B",
-                "sum(last 4 derived quarters)",
+                "sum(latest 4 consecutive derived quarters)",
                 [source_frame],
                 f"{normalized_metric}:ttm-fallback",
             )
-            return result, "TTM=fallback sum(last 4 derived quarters)", {
+            return result, "TTM=fallback sum(latest 4 consecutive derived quarters)", {
                 "q4sum": ttm,
                 "evidence_id": evidence_id,
             }
@@ -1299,6 +1319,17 @@ class SECDataDistiller:
         years = sorted([y for y in d["fy"].dropna().unique() if str(y).replace(".", "").isdigit()])
         out: List[Tuple[pd.Timestamp, float]] = []
         source_ids = set()
+
+        def adjacent_ytd(later, earlier) -> bool:
+            if later is None or earlier is None:
+                return False
+            start = pd.to_datetime(later.get("start"), errors="coerce")
+            prior_start = pd.to_datetime(earlier.get("start"), errors="coerce")
+            return bool(
+                pd.notna(start) and start == prior_start
+                and 60 <= (later["end"] - earlier["end"]).days <= 130
+            )
+
         for fy in years:
             q1 = self._select_ytd(d, fy, "Q1")
             q2 = self._select_ytd(d, fy, "Q2")
@@ -1311,14 +1342,17 @@ class SECDataDistiller:
             if q1 is not None:
                 q_vals.append((pd.Timestamp(q1["end"]), float(q1["val"])))
                 source_ids.update(self._mark_rows_used(q1, f"{normalized_metric}:quarterly-series"))
-            if q2 is not None and q1 is not None:
+            if adjacent_ytd(q2, q1):
                 q_vals.append((pd.Timestamp(q2["end"]), float(q2["val"]) - float(q1["val"])))
+                source_ids.update(self._mark_rows_used(q1, f"{normalized_metric}:quarterly-series"))
                 source_ids.update(self._mark_rows_used(q2, f"{normalized_metric}:quarterly-series"))
-            if q3 is not None and q2 is not None:
+            if adjacent_ytd(q3, q2):
                 q_vals.append((pd.Timestamp(q3["end"]), float(q3["val"]) - float(q2["val"])))
+                source_ids.update(self._mark_rows_used(q2, f"{normalized_metric}:quarterly-series"))
                 source_ids.update(self._mark_rows_used(q3, f"{normalized_metric}:quarterly-series"))
-            if fyv is not None and q3 is not None:
+            if adjacent_ytd(fyv, q3):
                 q_vals.append((pd.Timestamp(fyv["end"]), float(fyv["val"]) - float(q3["val"])))
+                source_ids.update(self._mark_rows_used(q3, f"{normalized_metric}:quarterly-series"))
                 source_ids.update(self._mark_rows_used(fyv, f"{normalized_metric}:quarterly-series"))
             for end, val in q_vals:
                 if math.isfinite(val):
@@ -1328,6 +1362,7 @@ class SECDataDistiller:
         s = pd.Series({end: val for end, val in out}).sort_index()
         s = s[~s.index.duplicated(keep="last")]
         s.attrs["source_evidence_ids"] = sorted(source_ids)
+        s.attrs["latest_reported_end"] = d["end"].max()
         return s
 
 
@@ -1670,8 +1705,8 @@ def estimate_maintenance_capex_profile(
             dna_anchor = max(dna_anchor, recent_dna / 1e9)
 
     revenue_growth = np.nan
-    rev_q = sec.quarterly_series(df_rev, "Revenue")
-    if len(rev_q) >= 8:
+    rev_q = _trailing_quarter_window(sec.quarterly_series(df_rev, "Revenue"), 8)
+    if len(rev_q) == 8:
         rev_now = float(rev_q.tail(4).sum())
         rev_prev = float(rev_q.iloc[-8:-4].sum())
         revenue_growth = safe_div(rev_now, rev_prev) - 1.0 if rev_prev > 0 else np.nan
@@ -1751,9 +1786,13 @@ def calculate_fcf_stability(
     net_income = annual_values_by_year(sec, df_net_income, "NetIncome")
     # A missing SBC fact is unknown, not zero. Restrict maintenance-FCF history
     # to consecutive years with a complete OCF/CapEx/SBC/revenue/income chain.
-    years = _trailing_consecutive_years(
-        set(ocf) & set(capex) & set(sbc) & set(revenue) & set(net_income),
-        5,
+    complete_years = set(ocf) & set(capex) & set(sbc) & set(revenue) & set(net_income)
+    latest_reported_year = max(
+        set(ocf) | set(capex) | set(sbc) | set(revenue) | set(net_income), default=None,
+    )
+    years = (
+        _trailing_consecutive_years(complete_years, 5)
+        if latest_reported_year in complete_years else []
     )
     real_fcf_values: List[float] = []
     margins: List[float] = []
@@ -1807,9 +1846,9 @@ def calculate_per_share_growth_3y(
     complete_years = sorted(set(ocf) & set(capex) & set(sbc) & set(revenue) & set(net_income))
     if not complete_years:
         return {"fcf_cagr_pct": np.nan, "eps_cagr_pct": np.nan, "years": 0.0}
-    latest_year = complete_years[-1]
+    latest_year = max(set(ocf) | set(capex) | set(sbc) | set(revenue) | set(net_income))
     base_year = latest_year - 3
-    if base_year not in complete_years:
+    if latest_year not in complete_years or base_year not in complete_years:
         return {"fcf_cagr_pct": np.nan, "eps_cagr_pct": np.nan, "years": 0.0}
 
     share_facts = sec._instant_facts(df_shares)
@@ -1936,6 +1975,8 @@ def downside_multiple_floor(
 
 
 def classify_three_quarter_trend(rev_q: pd.Series, gp_q: pd.Series) -> Tuple[str, dict]:
+    rev_q = _trailing_quarter_window(rev_q, 3)
+    gp_q = _trailing_quarter_window(gp_q, 3)
     common = pd.concat([rev_q.rename("revenue"), gp_q.rename("gross_profit")], axis=1, join="inner").dropna()
     common = common[common["revenue"] > 0].tail(3)
     if len(common) < 3:
@@ -1967,6 +2008,7 @@ def calc_dsi_series(
     cogs_q: pd.Series,
     sec: Optional[SECDataDistiller] = None,
 ) -> pd.Series:
+    cogs_q = _clean_financial_series(cogs_q)
     if inv_df.empty or cogs_q.empty or len(cogs_q) < 4:
         return pd.Series(dtype=float)
     inventory_facts = SECDataDistiller._instant_facts(inv_df)
@@ -1977,7 +2019,7 @@ def calc_dsi_series(
     selected_rows = []
     for end in cogs_q.index[-8:]:
         current_candidates = inventory_facts[
-            pd.to_datetime(inventory_facts["end"], errors="coerce") <= end
+            pd.to_datetime(inventory_facts["end"], errors="coerce") == end
         ]
         if current_candidates.empty:
             continue
@@ -1993,10 +2035,13 @@ def calc_dsi_series(
         if prior_candidates.empty:
             continue
         prior_row = prior_candidates.iloc[-1]
-        last4 = cogs_q[cogs_q.index <= end].tail(4)
+        last4 = _trailing_quarter_window(cogs_q, 4, anchor_end=end)
         if len(last4) < 4 or last4.sum() <= 0:
             continue
-        average_inventory = (float(prior_row["val"]) + float(current_row["val"])) / 2.0
+        balances = [float(prior_row["val"]), float(current_row["val"])]
+        if any(not math.isfinite(value) or value < 0 for value in balances):
+            continue
+        average_inventory = sum(balances) / 2.0
         out[pd.Timestamp(end)] = average_inventory / float(last4.sum()) * 365
         selected_rows.extend([prior_row, current_row])
     if sec is not None and selected_rows:
@@ -2009,7 +2054,9 @@ def calc_dsi_series(
         if dedup_columns:
             selected = selected.drop_duplicates(subset=dedup_columns)
         sec._mark_rows_used(selected, "Inventory:DSI-average-balance")
-    return pd.Series(out).sort_index()
+    result = pd.Series(out, dtype=float).sort_index()
+    result.attrs["latest_reported_end"] = cogs_q.attrs.get("latest_reported_end")
+    return result
 
 
 def _clean_financial_series(series: pd.Series) -> pd.Series:
@@ -2020,7 +2067,36 @@ def _clean_financial_series(series: pd.Series) -> pd.Series:
     clean = pd.Series(values.to_numpy(dtype=float), index=dates)
     clean = clean[~clean.index.isna() & np.isfinite(clean.to_numpy())]
     clean = clean.sort_index()
-    return clean[~clean.index.duplicated(keep="last")]
+    clean = clean[~clean.index.duplicated(keep="last")]
+    clean.attrs.update(series.attrs)
+    latest = dates.max()
+    source_latest = pd.to_datetime(series.attrs.get("latest_reported_end"), errors="coerce")
+    if pd.notna(source_latest) and (pd.isna(latest) or source_latest > latest):
+        latest = source_latest
+    clean.attrs["latest_reported_end"] = latest
+    return clean
+
+
+def _trailing_quarter_window(
+    series: pd.Series, count: int, anchor_end: Any = None,
+) -> pd.Series:
+    """Reject gaps and missing latest periods instead of promoting older observations."""
+    clean = _clean_financial_series(series)
+    if clean.empty:
+        return pd.Series(dtype=float)
+    anchor = pd.to_datetime(
+        anchor_end if anchor_end is not None else clean.attrs.get("latest_reported_end"),
+        errors="coerce",
+    )
+    window = clean[clean.index <= anchor].tail(count) if pd.notna(anchor) else clean.iloc[:0]
+    if len(window) != count or window.index[-1] != anchor:
+        return pd.Series(dtype=float)
+    gaps = window.index.to_series().diff().dt.days.iloc[1:]
+    annual_gaps = window.index.to_series().diff(4).dt.days.iloc[4:]
+    if not gaps.between(60, 130).all() or not annual_gaps.between(350, 380).all():
+        return pd.Series(dtype=float)
+    window.attrs["latest_reported_end"] = anchor
+    return window
 
 
 def _balance_pair_at_or_before(
@@ -2035,6 +2111,8 @@ def _balance_pair_at_or_before(
     if eligible.empty:
         return np.nan, np.nan
     current_end = pd.Timestamp(eligible.index[-1])
+    if current_end != anchor:
+        return np.nan, np.nan
     current = float(eligible.iloc[-1])
     age_days = (current_end - eligible.index).days
     prior = eligible[(age_days >= 300) & (age_days <= 450)]
@@ -2051,8 +2129,8 @@ def _balance_growth_pct(balance_series: pd.Series, anchor_end: Any) -> float:
 
 
 def _ttm_flow_growth_pct(flow_q: pd.Series) -> float:
-    clean = _clean_financial_series(flow_q)
-    if len(clean) < 8:
+    clean = _trailing_quarter_window(flow_q, 8)
+    if len(clean) != 8:
         return np.nan
     current = float(clean.tail(4).sum())
     prior = float(clean.iloc[-8:-4].sum())
@@ -2072,7 +2150,7 @@ def _balance_days_series(
     values: Dict[pd.Timestamp, float] = {}
     for end in flows.index[-8:]:
         current, prior = _balance_pair_at_or_before(balances, end)
-        trailing_four = flows[flows.index <= end].tail(4)
+        trailing_four = _trailing_quarter_window(flows, 4, anchor_end=end)
         denominator = float(trailing_four.sum()) if len(trailing_four) == 4 else np.nan
         if (
             not math.isfinite(current)
@@ -2084,7 +2162,9 @@ def _balance_days_series(
         ):
             continue
         values[pd.Timestamp(end)] = ((current + prior) / 2.0) / denominator * 365.0
-    return pd.Series(values, dtype=float).sort_index()
+    result = pd.Series(values, dtype=float).sort_index()
+    result.attrs["latest_reported_end"] = flows.attrs.get("latest_reported_end")
+    return result
 
 
 def _latest_yoy_change_pct(series: pd.Series) -> float:
@@ -2108,15 +2188,15 @@ def analyze_working_capital_quality(
     """Diagnose recent OCF working-capital support without treating missing as zero."""
     revenue = _clean_financial_series(revenue_q)
     cogs = _clean_financial_series(cogs_q)
-    revenue_anchor = revenue.index[-1] if not revenue.empty else pd.NaT
-    cogs_anchor = cogs.index[-1] if not cogs.empty else pd.NaT
+    revenue_anchor = revenue.attrs.get("latest_reported_end", pd.NaT)
+    cogs_anchor = cogs.attrs.get("latest_reported_end", pd.NaT)
 
     dso_series = _balance_days_series(accounts_receivable, revenue)
     dpo_series = _balance_days_series(accounts_payable, cogs)
-    dso = float(dso_series.iloc[-1]) if not dso_series.empty else np.nan
-    dpo = float(dpo_series.iloc[-1]) if not dpo_series.empty else np.nan
-    dso_yoy = _latest_yoy_change_pct(dso_series)
-    dpo_yoy = _latest_yoy_change_pct(dpo_series)
+    dso = float(dso_series.get(revenue_anchor, np.nan))
+    dpo = float(dpo_series.get(cogs_anchor, np.nan))
+    dso_yoy = _latest_yoy_change_pct(dso_series) if math.isfinite(dso) else np.nan
+    dpo_yoy = _latest_yoy_change_pct(dpo_series) if math.isfinite(dpo) else np.nan
 
     ar_growth = _balance_growth_pct(accounts_receivable, revenue_anchor)
     ap_growth = _balance_growth_pct(accounts_payable, cogs_anchor)
@@ -2189,7 +2269,8 @@ def analyze_working_capital_quality(
     )
     ccc = (
         dso + float(dsi_latest) - dpo
-        if all(math.isfinite(value) for value in (dso, dpo, dsi_latest))
+        if revenue_anchor == cogs_anchor
+        and all(math.isfinite(value) for value in (dso, dpo, dsi_latest))
         else np.nan
     )
     return {
@@ -2250,7 +2331,7 @@ def classify_acquisition_issuance(
 
 
 def analyze_dsi_signal(dsi: pd.Series) -> Dict[str, float | str | bool]:
-    clean = pd.to_numeric(dsi, errors="coerce").dropna().sort_index()
+    clean = _trailing_quarter_window(dsi, 1)
     if clean.empty:
         return {
             "latest": np.nan,
@@ -2263,15 +2344,20 @@ def analyze_dsi_signal(dsi: pd.Series) -> Dict[str, float | str | bool]:
             "score": np.nan,
         }
     latest = float(clean.iloc[-1])
-    qoq_change = safe_div(latest, float(clean.iloc[-2])) - 1.0 if len(clean) >= 2 else np.nan
-    yoy_change = safe_div(latest, float(clean.iloc[-5])) - 1.0 if len(clean) >= 5 else np.nan
-    sequential_down = bool(len(clean) >= 3 and clean.iloc[-1] < clean.iloc[-2] < clean.iloc[-3])
-    sequential_up = bool(len(clean) >= 3 and clean.iloc[-1] > clean.iloc[-2] > clean.iloc[-3])
+    two = _trailing_quarter_window(dsi, 2)
+    three = _trailing_quarter_window(dsi, 3)
+    five = _trailing_quarter_window(dsi, 5)
+    qoq_change = safe_div(latest, float(two.iloc[0])) - 1.0 if len(two) == 2 else np.nan
+    yoy_change = safe_div(latest, float(five.iloc[0])) - 1.0 if len(five) == 5 else np.nan
+    sequential_down = bool(len(three) == 3 and three.iloc[-1] < three.iloc[-2] < three.iloc[-3])
+    sequential_up = bool(len(three) == 3 and three.iloc[-1] > three.iloc[-2] > three.iloc[-3])
     seasonally_confirmed_down = math.isfinite(yoy_change) and yoy_change <= -0.05
     seasonally_confirmed_up = math.isfinite(yoy_change) and yoy_change >= 0.05
     inflection = bool(sequential_down and seasonally_confirmed_down)
     deterioration = bool(sequential_up and seasonally_confirmed_up)
-    if inflection:
+    if len(three) < 3:
+        signal, score = "資料不足：DSI 無可稽核連續三季", np.nan
+    elif inflection:
         signal, score = "去庫存改善（連兩季下降且季節性確認）", 80.0
     elif deterioration:
         signal, score = "庫存惡化（連兩季上升且季節性確認）", 20.0
@@ -2373,6 +2459,28 @@ def determine_general_corporate_status(
     if required_positive_fcf_years > 0 and fcf_positive_years < required_positive_fcf_years:
         return "Fail: 可得連續年度 Real FCF 正值比例不足 60%"
     return "Pass"
+
+
+def determine_specialized_status(
+    model_key: str, model_decision: str, hard_failures: Sequence[str],
+    confidence_score: float, confidence_abstain: bool, stress_status: str,
+) -> Tuple[str, str]:
+    if hard_failures:
+        return "FAIL", f"Fail: {hard_failures[0]}"
+    if stress_status == "FAIL":
+        return "FAIL", f"Fail: {model_key} specialized stress survival failed"
+    if model_decision == "ABSTAIN" or confidence_abstain:
+        reason = (
+            f"{model_key} required evidence incomplete"
+            if model_decision == "ABSTAIN"
+            else f"{model_key} data confidence {confidence_score:.0f}"
+        )
+        return "ABSTAIN", f"Abstain: {reason}"
+    if model_decision == "FAIL":
+        return "FAIL", f"Fail: {model_key} specialized score below threshold"
+    if stress_status != "PASS":
+        return "ABSTAIN", f"Abstain: {model_key} specialized stress evidence incomplete"
+    return "PASS", "Pass"
 
 
 def assess_inventory_factor_applicability(
@@ -2581,10 +2689,10 @@ def historical_valuation(
     if debt_component_frames:
         debt_inputs.update(debt_component_frames)
     debt_history = {
-        name: sec._annual_facts(frame, latest_filed=False)
+        name: sec._instant_facts(frame, latest_filed=False)
         for name, frame in debt_inputs.items()
     }
-    cash_a = sec._annual_facts(df_cash, latest_filed=False)
+    cash_a = sec._instant_facts(df_cash, latest_filed=False)
     shares_facts = sec._instant_facts(df_shares, latest_filed=False)
     long_term_only = {
         "LongTermDebt",
@@ -3378,13 +3486,14 @@ def calculate_roic_capital_metrics(
         method = "ENDING_CAPITAL_FALLBACK_ESTIMATED"
     ending_roic = safe_div(nopat_b, ending) * 100.0 if ending > 0 else np.nan
     average_roic = safe_div(nopat_b, average) * 100.0 if average > 0 else np.nan
-    goodwill_values = [
-        value
-        for value in (beginning_goodwill_b, ending_goodwill_b)
-        if math.isfinite(value)
-    ]
+    goodwill_values = (
+        [beginning_goodwill_b, ending_goodwill_b]
+        if method == "BEGINNING_ENDING_AVERAGE" else [ending_goodwill_b]
+    )
     average_goodwill = (
-        float(np.mean(goodwill_values)) if goodwill_values else np.nan
+        float(np.mean(goodwill_values))
+        if all(math.isfinite(value) and value >= 0 for value in goodwill_values)
+        else np.nan
     )
     ex_goodwill_capital = (
         average - average_goodwill
@@ -3620,7 +3729,7 @@ def apply_long_term_framework(r: "ModeCResult") -> "ModeCResult":
     r.Persistent_Dilution_Hard_Gate = bool(r.Persistent_Dilution)
     r.Dilution_Total_Score_Impact = round(
         r.Ownership_Dilution_Penalty
-        + r.Capital_Allocation_Penalty * 0.05,
+        + r.Capital_Allocation_Penalty * safe_div(5.0, r.Available_Factor_Weight, 0.0),
         2,
     )
     r.Dilution_Double_Count_Check = "PASS"
@@ -3996,14 +4105,17 @@ def _specialized_growth_pct(
 ) -> float:
     if frame.empty:
         return np.nan
-    quarterly = sec.quarterly_series(frame, metric_name)
-    if len(quarterly) >= 8:
+    quarterly = _trailing_quarter_window(sec.quarterly_series(frame, metric_name), 8)
+    if len(quarterly) == 8:
         current = float(quarterly.tail(4).sum())
         previous = float(quarterly.iloc[-8:-4].sum())
         return (current / previous - 1.0) * 100.0 if previous > 0 else np.nan
     annual = sec._annual_facts(frame)
     if len(annual) >= 2:
         selected = annual.tail(2)
+        gap_days = (selected.iloc[1]["end"] - selected.iloc[0]["end"]).days
+        if not 350 <= gap_days <= 380:
+            return np.nan
         sec._mark_rows_used(selected, f"{metric_name}:annual-growth")
         previous = float(selected.iloc[0]["val"])
         current = float(selected.iloc[1]["val"])
@@ -4588,7 +4700,7 @@ class ModeCResult:
 
 
 SPECIALIZED_CONCEPTS = {
-    "BANK": {"AOCI", "CreditLossAllowance", "CreditLossProvision", "Deposits", "Loans", "NetInterestIncome", "Tier1Ratio", "Tier1WellCapitalizedMinimum"},
+    "BANK": {"AOCI", "CreditLossAllowance", "CreditLossProvision", "Deposits", "Loans", "NetInterestIncome", "RiskWeightedAssets", "Tier1Ratio", "Tier1WellCapitalizedMinimum"},
     "INSURANCE_P_AND_C": {"InsuranceClaims", "InsuranceCombinedExpense", "InvestedAssets", "NetInvestmentIncome", "PolicyholderBenefits", "PremiumsEarned", "PremiumsWritten", "PretaxIncome", "ReserveDevelopment", "UnderwritingExpense"},
     "INSURANCE_LIFE": {"InsuranceClaims", "InsuranceCombinedExpense", "NetInvestmentIncome", "PolicyholderBenefits", "PremiumsEarned", "PremiumsWritten", "ReserveDevelopment", "UnderwritingExpense"},
     "REIT_EQUITY": {"DnA", "Dividend", "GainOnPropertySale", "IncomeTaxExpenseBenefit", "Interest", "LeaseRevenue", "RealEstateCapEx", "RealEstateImpairment"},
@@ -4615,6 +4727,7 @@ SPECIALIZED_RECENCY_CONCEPTS = {
         "net_interest_income_growth_pct": ("NetInterestIncome",),
         "aoci_b": ("AOCI",),
         "tier1_ratio_pct": ("Tier1Ratio",),
+        "risk_weighted_assets_b": ("RiskWeightedAssets",),
         "tier1_well_capitalized_min_pct": ("Tier1WellCapitalizedMinimum",),
     },
     "INSURANCE_P_AND_C": {
@@ -5026,6 +5139,7 @@ def run_specialized_mode_c_pipeline(
         if model_key == "BANK":
             metrics.update(
                 deposits_b=_specialized_balance(sec, frame("Deposits"), "Deposits"),
+                risk_weighted_assets_b=_specialized_balance(sec, frame("RiskWeightedAssets"), "RiskWeightedAssets"),
                 tier1_ratio_pct=_ratio_as_percent(
                     _specialized_scalar(sec, frame("Tier1Ratio"), "Tier1Ratio")
                 ),
@@ -5036,6 +5150,17 @@ def run_specialized_mode_c_pipeline(
                 ),
                 aoci_b=_specialized_balance(sec, frame("AOCI"), "AOCI"),
             )
+            stress_periods = [
+                pd.to_datetime(frame(name)["end"], errors="coerce").max()
+                if not frame(name).empty else pd.NaT
+                for name in (
+                    "RiskWeightedAssets", "Tier1Ratio", "Tier1WellCapitalizedMinimum",
+                    "Assets", "Equity", "Loans", "CreditLossAllowance",
+                )
+            ]
+            if any(pd.isna(end) for end in stress_periods) or len(set(stress_periods)) != 1:
+                metrics["risk_weighted_assets_b"] = np.nan
+                runtime_warnings.append("Bank stress requires same-period RWA, capital ratios and balance-sheet inputs")
 
     if model_key in {"INSURANCE_P_AND_C", "INSURANCE_LIFE"}:
         premiums, _, _ = _specialized_ttm(sec, frame("PremiumsEarned"), "TTM_PremiumsEarned")
@@ -5360,28 +5485,10 @@ def run_specialized_mode_c_pipeline(
         [*source_evidence_ids, industry_score_evidence_id], f"{model_key}:confidence-gate",
     )
 
-    if evaluation.hard_failures:
-        decision_state = "FAIL"
-        status = f"Fail: {evaluation.hard_failures[0]}"
-    elif evaluation.decision == "ABSTAIN" or bool(confidence["abstain"]):
-        decision_state = "ABSTAIN"
-        status = (
-            f"Abstain: {model_key} required evidence incomplete"
-            if evaluation.decision == "ABSTAIN"
-            else f"Abstain: {model_key} data confidence {float(confidence['score']):.0f}"
-        )
-    elif evaluation.decision == "FAIL":
-        decision_state = "FAIL"
-        reason = evaluation.hard_failures[0] if evaluation.hard_failures else f"specialized score {evaluation.score:.1f}<60"
-        status = f"Fail: {reason}"
-    elif specialized_stress_status == "FAIL":
-        decision_state = "FAIL"
-        status = f"Fail: {model_key} specialized stress survival failed"
-    elif specialized_stress_status != "PASS":
-        decision_state = "ABSTAIN"
-        status = f"Abstain: {model_key} specialized stress evidence incomplete"
-    else:
-        decision_state, status = "PASS", "Pass"
+    decision_state, status = determine_specialized_status(
+        model_key, evaluation.decision, evaluation.hard_failures,
+        float(confidence["score"]), bool(confidence["abstain"]), specialized_stress_status,
+    )
     eligible = bool(
         decision_state == "PASS" and is_finite(evaluation.score)
         and evaluation.score >= MIN_LONG_TERM_SCORE
@@ -6217,7 +6324,7 @@ def _run_mode_c_pipeline_core(
             "ROIC_Excluding_Goodwill",
             roic_excluding_goodwill,
             "percent",
-            "TTM NOPAT / average invested capital excluding reported goodwill",
+            "TTM NOPAT / invested capital excluding goodwill on the same average or ending-period basis",
             [
                 roic_evidence_id,
                 *GLOBAL_EVIDENCE_LEDGER.selected_evidence_ids(ticker, "Goodwill"),

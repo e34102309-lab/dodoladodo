@@ -1249,6 +1249,7 @@ def calculate_specialized_stress(
     if key == "BANK":
         required = [
             "assets_b",
+            "risk_weighted_assets_b",
             "tangible_equity_b",
             "loans_b",
             "credit_loss_allowance_b",
@@ -1256,14 +1257,17 @@ def calculate_specialized_stress(
             "tier1_well_capitalized_min_pct",
         ]
         missing = _missing_numeric_inputs(raw, required)
+        if _finite(raw.get("risk_weighted_assets_b")) and _number(raw.get("risk_weighted_assets_b")) <= 0:
+            missing.append("positive_risk_weighted_assets_b")
         if missing:
             return _stress_result(
                 key,
                 "3% cumulative loan loss after existing allowance",
                 missing,
-                reason="bank capital stress requires reported loans, allowance and Tier 1 capital",
+                reason="bank capital stress requires reported loans, allowance, Tier 1 ratios and positive same-period RWA",
             )
         assets = _number(raw.get("assets_b"))
+        risk_weighted_assets = _number(raw.get("risk_weighted_assets_b"))
         equity = _number(raw.get("tangible_equity_b"))
         loans = _number(raw.get("loans_b"))
         allowance = max(_number(raw.get("credit_loss_allowance_b")), 0.0)
@@ -1275,7 +1279,7 @@ def calculate_specialized_stress(
         stressed_equity = equity - after_tax_loss
         stressed_assets = assets - after_tax_loss
         stressed_tangible_ratio = _safe_div(stressed_equity, stressed_assets) * 100.0
-        stressed_tier1 = tier1 - _safe_div(after_tax_loss, assets) * 100.0
+        stressed_tier1 = tier1 - _safe_div(after_tax_loss, risk_weighted_assets) * 100.0
         survives = bool(
             stressed_equity > 0.0
             and stressed_tangible_ratio >= 3.0
@@ -1286,7 +1290,8 @@ def calculate_specialized_stress(
             "3% cumulative loan loss after existing allowance",
             [],
             survives,
-            reason="survival requires Tier 1 above the reported minimum and tangible equity/assets >=3%",
+            reason="survival requires Tier 1 above the reported minimum using fixed reported RWA, and tangible equity/assets >=3%; tax benefit remains a scenario assumption",
+            bank_stress_risk_weighted_assets_b=risk_weighted_assets,
             bank_stress_gross_credit_loss_b=gross_credit_loss,
             bank_stress_incremental_pretax_loss_b=incremental_pretax_loss,
             bank_stress_after_tax_capital_loss_b=after_tax_loss,

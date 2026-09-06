@@ -15,11 +15,18 @@ ASSET_MANAGER_SUBTYPE_BY_TICKER = {
 }
 
 
+def _classification_text(value: object) -> str:
+    if not isinstance(value, str):
+        return ""
+    text = value.strip().lower()
+    return "" if text in {"nan", "none", "null", "n/a", "<na>", "nat"} else text
+
+
 def route_industry_model(
     sector: str, industry: str, ticker: str = ""
 ) -> Dict[str, object]:
-    sector_text = str(sector or "").strip().lower()
-    industry_text = str(industry or "").strip().lower()
+    sector_text = _classification_text(sector)
+    industry_text = _classification_text(industry)
     blob = f"{sector_text} {industry_text}"
     if not sector_text or not industry_text:
         return {
@@ -56,10 +63,22 @@ def route_industry_model(
             "supported": True,
             "reason": "Dedicated underwriting, claims, capital and reserve-development model",
         }
+    # A specific REIT industry takes precedence over a broad financial sector.
+    if "reit" in industry_text or "real estate investment trust" in industry_text:
+        return {
+            "route": "REIT",
+            "model_key": "REIT_MORTGAGE" if "mortgage" in industry_text else "REIT_EQUITY",
+            "supported": True,
+            "reason": (
+                "Mortgage-REIT book capital, leverage, income and dividend-coverage model"
+                if "mortgage" in industry_text
+                else "Nareit FFO/EBITDAre proxy, AFFO coverage, leverage and lease-growth model"
+            ),
+        }
     if sector_text in {"financial services", "financials"}:
         if "asset management" in industry_text:
             model_key = ASSET_MANAGER_SUBTYPE_BY_TICKER.get(
-                str(ticker or "").upper(),
+                _classification_text(ticker).upper(),
                 "ALTERNATIVE_ASSET_MANAGER"
                 if any(token in industry_text for token in ("alternative", "private equity", "private credit"))
                 else "TRADITIONAL_ASSET_MANAGER"
@@ -91,17 +110,6 @@ def route_industry_model(
                 else "Fee-financial margin, cash conversion, tangible capital and balance-sheet model"
             )
         return {"route": route, "model_key": model_key, "supported": True, "reason": reason}
-    if "reit" in industry_text or "real estate investment trust" in industry_text:
-        return {
-            "route": "REIT",
-            "model_key": "REIT_MORTGAGE" if "mortgage" in industry_text else "REIT_EQUITY",
-            "supported": True,
-            "reason": (
-                "Mortgage-REIT book capital, leverage, income and dividend-coverage model"
-                if "mortgage" in industry_text
-                else "Nareit FFO/EBITDAre proxy, AFFO coverage, leverage and lease-growth model"
-            ),
-        }
     if sector_text == "utilities" and any(
         token in industry_text
         for token in ["independent power", "renewable", "power producer"]

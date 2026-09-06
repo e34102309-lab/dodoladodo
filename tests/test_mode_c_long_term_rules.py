@@ -131,7 +131,12 @@ class ModeCLongTermRuleTests(unittest.TestCase):
         self.assertIn("if not sbc_metric_evidence_id", self.mode_c)
         self.assertIn("cannot be treated as zero", self.mode_c)
         self.assertIn('("OCF", "CapEx", "DnA", "Revenue", "SBC")', self.mode_c)
-        self.assertIn('evaluation.decision == "ABSTAIN"', self.mode_c)
+        self.assertIn("determine_specialized_status(", self.mode_c)
+        self.assertIn(
+            'if model_decision == "ABSTAIN" or confidence_abstain:',
+            self.mode_c,
+            "The specialized decision helper must preserve its explicit ABSTAIN gate",
+        )
 
     def test_specialized_recency_contract_only_references_fetched_concepts(self):
         tree = ast.parse(self.mode_c)
