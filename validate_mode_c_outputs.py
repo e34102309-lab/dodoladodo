@@ -25,6 +25,7 @@ from mode_c_research_priority import (
     research_priority_order,
     shrunk_percentile,
 )
+from mode_c_routing import route_industry_model
 
 
 DEFAULT_SCREEN = "mode_c_screen.csv"
@@ -215,6 +216,66 @@ def _as_bool(value: Any, field: str) -> bool:
 
 def _bool_series(series: pd.Series, field: str) -> pd.Series:
     return series.map(lambda value: _as_bool(value, field))
+
+
+def _validate_route_transitions(screen: pd.DataFrame) -> None:
+    specialized_keys = (
+        screen["Industry_Model_Key"].fillna("").astype(str).str.upper()
+    )
+    initial_keys = (
+        screen["Initial_Industry_Model_Key"].fillna("").astype(str).str.upper()
+    )
+    route_refined = _bool_series(
+        screen["Model_Route_Refined"],
+        "Model_Route_Refined",
+    )
+    route_reasons = screen["Model_Route_Reason"].fillna("").astype(str).str.strip()
+    comparable_initial = ~initial_keys.isin({"", "UNSPECIFIED"})
+    route_changed = comparable_initial & (initial_keys != specialized_keys)
+
+    valid_lender_refinement = (
+        route_refined
+        & (initial_keys == "FINANCIAL_FEE")
+        & (specialized_keys == "FINANCIAL_LENDER")
+        & route_reasons.str.contains("SEC balance-sheet refinement", regex=False)
+    )
+
+    # A monthly universe can legitimately predate a routing-policy update. Accept
+    # that transition only when the final route can be reproduced exactly by the
+    # shared router from the output's current ticker, sector and industry.
+    valid_router_refresh = pd.Series(False, index=screen.index, dtype=bool)
+    routing_columns = {"Ticker", "Sector", "Industry", "Model_Route"}
+    if routing_columns.issubset(screen.columns):
+        for index in screen.index[route_changed & route_refined]:
+            expected = route_industry_model(
+                screen.at[index, "Sector"],
+                screen.at[index, "Industry"],
+                ticker=screen.at[index, "Ticker"],
+            )
+            actual_route = screen.at[index, "Model_Route"]
+            actual_route_text = (
+                "" if pd.isna(actual_route) else str(actual_route).strip().upper()
+            )
+            valid_router_refresh.at[index] = bool(expected.get("supported")) and all(
+                (
+                    str(expected.get("model_key") or "").upper()
+                    == specialized_keys.at[index],
+                    str(expected.get("route") or "").upper()
+                    == actual_route_text,
+                    str(expected.get("reason") or "").strip()
+                    == route_reasons.at[index],
+                )
+            )
+
+    valid_route_change = valid_lender_refinement | valid_router_refresh
+    invalid_route_change = route_changed & ~valid_route_change
+    invalid_refinement_flag = route_refined & ~route_changed
+    if invalid_route_change.any() or invalid_refinement_flag.any():
+        bad = screen.loc[
+            invalid_route_change | invalid_refinement_flag,
+            "Ticker",
+        ].tolist()
+        raise ValidationError(f"unaudited industry-model route change: {bad}")
 
 
 def _number(value: Any) -> float:
@@ -1164,30 +1225,10 @@ def _validate_screen(
     specialized_decisions = (
         screen["Industry_Model_Decision"].fillna("").astype(str).str.upper()
     )
+    _validate_route_transitions(screen)
     specialized_keys = (
         screen["Industry_Model_Key"].fillna("").astype(str).str.upper()
     )
-    initial_keys = (
-        screen["Initial_Industry_Model_Key"].fillna("").astype(str).str.upper()
-    )
-    route_refined = _bool_series(
-        screen["Model_Route_Refined"],
-        "Model_Route_Refined",
-    )
-    route_reasons = screen["Model_Route_Reason"].fillna("").astype(str)
-    comparable_initial = ~initial_keys.isin({"", "UNSPECIFIED"})
-    route_changed = comparable_initial & (initial_keys != specialized_keys)
-    valid_lender_refinement = (
-        route_refined
-        & (initial_keys == "FINANCIAL_FEE")
-        & (specialized_keys == "FINANCIAL_LENDER")
-        & route_reasons.str.contains("SEC balance-sheet refinement", regex=False)
-    )
-    invalid_route_change = route_changed & ~valid_lender_refinement
-    invalid_refinement_flag = route_refined & ~route_changed
-    if invalid_route_change.any() or invalid_refinement_flag.any():
-        bad = screen.loc[invalid_route_change | invalid_refinement_flag, "Ticker"].tolist()
-        raise ValidationError(f"unaudited industry-model route change: {bad}")
 
     security_classes = (
         screen["Input_Security_Class"].fillna("").astype(str).str.upper()

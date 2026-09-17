@@ -10,16 +10,73 @@ from mode_c_evidence import EVIDENCE_COLUMNS
 from mode_c_metric_contract import annotate_dataframe
 from mode_c_industry_models import calculate_specialized_stress
 from mode_c_research_priority import annotate_research_priorities
+from mode_c_routing import route_industry_model
 from validate_mode_c_outputs import (
     ValidationError,
     _validate_financial_formulas,
     _validate_bank_stress_formulas,
+    _validate_route_transitions,
     build_zero_classification_report,
     validate_outputs,
 )
 
 
 class ModeCOutputValidationTests(unittest.TestCase):
+    def test_current_router_refresh_allows_stale_asset_manager_universe_rows(self):
+        tickers = [
+            "BLK", "BX", "KKR", "BN", "BAM", "APO", "STT", "AMP",
+            "ARES", "RJF", "NTRS", "TROW", "PFG", "TPG", "OWL", "BEN",
+            "CG", "CRBG", "IVZ", "ARCC", "EQH", "SEIC", "AMG", "VCTR",
+            "PDI", "BXSL", "OBDC", "MAIN",
+        ]
+        rows = []
+        for ticker in tickers:
+            expected = route_industry_model(
+                "Financial Services",
+                "Asset Management",
+                ticker=ticker,
+            )
+            rows.append(
+                {
+                    "Ticker": ticker,
+                    "Sector": "Financial Services",
+                    "Industry": "Asset Management",
+                    "Initial_Industry_Model_Key": "FINANCIAL_FEE",
+                    "Industry_Model_Key": expected["model_key"],
+                    "Model_Route": expected["route"],
+                    "Model_Route_Refined": True,
+                    "Model_Route_Reason": expected["reason"],
+                }
+            )
+
+        self.assertEqual(rows[1]["Industry_Model_Key"], "ALTERNATIVE_ASSET_MANAGER")
+        self.assertEqual(rows[4]["Industry_Model_Key"], "INSURANCE_LINKED_ASSET_MANAGER")
+        self.assertEqual(rows[22]["Industry_Model_Key"], "TRADITIONAL_ASSET_MANAGER")
+        self.assertEqual(rows[0]["Industry_Model_Key"], "OTHER_FEE_FINANCIAL")
+        _validate_route_transitions(pd.DataFrame(rows))
+
+        rows[0]["Model_Route_Reason"] = "silent route change"
+        with self.assertRaisesRegex(ValidationError, "unaudited industry-model"):
+            _validate_route_transitions(pd.DataFrame(rows))
+
+    def test_sec_balance_sheet_lender_refinement_stays_allowed(self):
+        _validate_route_transitions(
+            pd.DataFrame(
+                [
+                    {
+                        "Ticker": "LENDER",
+                        "Initial_Industry_Model_Key": "FINANCIAL_FEE",
+                        "Industry_Model_Key": "FINANCIAL_LENDER",
+                        "Model_Route_Refined": True,
+                        "Model_Route_Reason": (
+                            "SEC balance-sheet refinement from FINANCIAL_FEE: "
+                            "loans/assets >=20% with a reported credit-loss allowance"
+                        ),
+                    }
+                ]
+            )
+        )
+
     def test_bank_stress_validator_rejects_total_assets_denominator(self):
         inputs = {
             "assets_b": 100.0, "tangible_equity_b": 8.0, "loans_b": 60.0,

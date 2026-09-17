@@ -1,6 +1,6 @@
 # dodoladodo 專案帳號交接文件
 
-> 最後更新：2026-09-06（Asia/Taipei）
+> 最後更新：2026-09-17（Asia/Taipei）
 > 用途：更換 Codex／GitHub 帳號後，讓新的 AI 工作階段能從本文件直接接手。
 > 本文件記錄的是工程狀態與研究流程，不是投資建議，也不代表策略已經通過無偏回測。
 
@@ -14,8 +14,8 @@
 6. 2026-09-06 已抓取遠端 `main` 至 `5736083`，保留其最新月度 `qualified_universe.csv`，再以非 force push 完成整合；舊 tip `52ff824` 的截斷檔案修復亦已包含。
 7. 完整策略說明：`CURRENT_STRATEGY_LOGIC_FOR_AI_REVIEW.md`；本輪逐段紀錄：`STRATEGY_FIVE_STAGE_AUDIT.md`。
 8. 自動排程：每週四美股盤後跑 Mode C；每月 1 日另重抓全市場第一層 universe。
-9. 2026-09-06 五段工程驗證：整合最新 `main` 後完整 suite 215/215 通過；離線 fixture validator 的 `invalid_zero = 0`。詳見第 9 節。
-10. GitHub Actions 最近確認的週排程於 2026-08-20 成功完成；本機未重跑高成本全市場流程。
+9. 2026-09-17 工程驗證：完整 suite 217/217 通過；離線 fixture validator 的 `invalid_zero = 0`。詳見第 9 節。
+10. 2026-09-17 GitHub Actions 在 `Validate Research Artifacts` 因舊 universe 的資產管理路由版本差異失敗；修正已納入 `main`，下一次排程會使用新 validator。本機未重跑高成本全市場流程。
 
 新帳號接手後，先執行：
 
@@ -194,6 +194,13 @@ TTM 流量不可把單季乘四。優先使用：
 - 銀行壓力的 Tier 1 分母修正為 RWA，並由 validator 獨立勾稽；固定 RWA、3% 貸損與 21% 稅盾仍只是研究假設，不是監管壓測。
 - 策略修正已提交為 `1fcbd6e`，並由 `a7a0c1a` 合併至 `main`；沒有執行高成本即時市場抓取。
 
+### 5.12 2026-09-17 舊 universe 路由版本稽核修正（已納入 main）
+
+- 故障原因：每週深篩讀到較早月份的 `qualified_universe.csv`，其中資產管理公司仍是 `FINANCIAL_FEE`；最新共用 router 已分成四種 asset-manager model，舊 validator 卻只允許 SEC 的 fee-to-lender refinement，因而誤報 28 檔 `unaudited industry-model route change`。
+- 修正：validator 重新用輸出 ticker、sector、industry 呼叫共用 router；只有 `model_key`、`route` 與完整 reason 全部等於深篩輸出時才接受路由版本更新。缺欄位、靜默改 key、route 不符或 reason 被竄改仍失敗。
+- 回歸測試完整覆蓋故障清單的 28 檔與四種資產管理 subtype，並保留既有 SEC `FINANCIAL_FEE -> FINANCIAL_LENDER` 路徑。
+- 驗證：validator module 18/18、完整 suite 217/217、離線 fixture 通過且 `invalid_zero = 0`；未執行全市場抓取。
+
 ## 6. Dashboard 與主要輸出
 
 主要輸出：
@@ -277,10 +284,10 @@ git diff --stat HEAD origin/codex/metric-integrity-audit-v2
 
 ## 9. 上次驗證結果
 
-2026-09-06 最近一次工程驗證結果：
+2026-09-17 最近一次工程驗證結果：
 
 - Python compile：七個本輪生產模組已通過 `py_compile`。
-- 單元測試：修正一項過期的 specialized decision 原始碼斷言後，整合遠端最新 `main` 再完整執行 215 項，全部通過，約 4.0 秒。
+- 單元測試：完整執行 217 項全部通過，約 4.1 秒；validator 聚焦模組 18/18 通過。
 - Fixture pipeline：5 檔，3 PASS、1 FAIL、1 ABSTAIN、3 eligible；KNSL fixture 因 P&C 壓力存活失敗退出 eligible。
 - Zero audit：`true_zero = 5`、`invalid_zero = 0`、`missing = 151`、`not_applicable = 347`；缺值與不適用分開保留，不以 0 補值。
 - Dashboard 離線重建成功。
@@ -290,7 +297,7 @@ git diff --stat HEAD origin/codex/metric-integrity-audit-v2
 
 ```powershell
 & 'D:\dobird\.venv\Scripts\python.exe' -m unittest discover -s tests -q
-& 'D:\dobird\.venv\Scripts\python.exe' mode_c_fixture_pipeline.py --output-dir fixture_output_five_stage_20260904
+& 'D:\dobird\.venv\Scripts\python.exe' mode_c_fixture_pipeline.py --output-dir fixture_output_route_fix_20260917
 ```
 
 只有在確實需要更新市場資料時，才執行全市場 hunter 或完整 Mode C 網路流程。
@@ -330,10 +337,10 @@ D:\使用者\DoBird\Favorites\Documents\股票\dodoladodo-work
 4. .github/workflows/alpha_hunt.yml
 
 Repository 是 e34102309-lab/dodoladodo。五段策略提交 1fcbd6e 已由 merge commit
-a7a0c1a 整合至 main，並保留 5736083 的最新月度 universe；215 項單元測試
-在整合後全數通過，離線 fixture 亦已通過。策略來源分支是
-codex/metric-integrity-audit-v2。先看 git status、log、diff 確認真實狀態；
-未經授權不要再推送。
+a7a0c1a 整合至 main，並保留 5736083 的最新月度 universe。2026-09-17 的舊
+universe 路由版本 validator 修正也已納入 main；217 項單元測試與離線 fixture
+均已通過。策略來源分支是 codex/metric-integrity-audit-v2。先看 git status、
+log、diff 確認真實狀態；未經授權不要再推送。
 
 這是一套美股長期價值研究漏斗，不是自動交易器。請維持 SEC point-in-time
 證據、禁止單季乘四、FAIL/ABSTAIN/N/A 分流、產業專用模型、同模型 percentile

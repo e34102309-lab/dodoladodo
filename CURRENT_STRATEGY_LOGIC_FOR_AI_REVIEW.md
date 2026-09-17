@@ -1,6 +1,6 @@
 # 股票篩選策略完整邏輯（供外部 AI 審查）
 
-> 策略版本：`1fcbd6e`，已於 2026-09-06 透過 merge commit `a7a0c1a` 整合至 `main`。五段檢查紀錄見 `STRATEGY_FIVE_STAGE_AUDIT.md`。
+> GitHub `main` 策略基準為 `1fcbd6e`，已於 2026-09-06 透過 merge commit `a7a0c1a` 整合；本文件另納入 2026-09-17 的舊 universe 路由版本稽核修正。五段檢查紀錄見 `STRATEGY_FIVE_STAGE_AUDIT.md`。
 > 本文件描述「程式目前真的會做什麼」，不是理想藍圖，也不是投資建議。
 > 金額若無特別註明，以十億美元（USD B）處理；百分比欄位以程式輸出的百分點表示。
 
@@ -183,6 +183,8 @@ ADS/ADR 模糊時會用 SEC 年報 cover page 的 `Security12bTitle` 與 `Tradin
 sector／industry 只接受有效文字；空白、NaN、`None`、`null`、`N/A` 或 `<NA>` 不得因字串轉換而被誤認為一般企業。
 
 `FINANCIAL_FEE` 若 SEC 顯示 loans/assets `>= 20%` 且存在信用損失準備，可透明改路由為 `FINANCIAL_LENDER`。輸出保留初始模型、最終模型與改路由原因。
+
+每週深篩可能讀到較早月份、由舊 routing policy 產生的 universe。若初始模型與最新共用 router 不同，validator 只在 ticker、sector、industry 重新運算後的 `model_key`、`route` 與完整 reason 全部等於深篩輸出時接受該版本更新；缺欄位、靜默改 key 或竄改原因仍直接失敗。SEC balance-sheet 的 `FINANCIAL_FEE` 至 `FINANCIAL_LENDER` refinement 另依上述明示條件稽核。
 
 ## 6. Mode C 共通前置閘門
 
