@@ -15,8 +15,8 @@ from mode_c_metric_contract import (
     DISPLAY_METRICS,
     METRIC_CONTRACT_VERSION,
     METRIC_STATUSES,
-    MODEL_APPLICABLE_METRICS,
     NULL_STATUSES,
+    applicable_metrics,
 )
 from mode_c_research_priority import (
     CROSS_MODEL_CALIBRATION_STATUS,
@@ -325,7 +325,7 @@ def _validate_metric_contract(screen: pd.DataFrame) -> None:
             raise ValidationError(
                 f"{ticker} metric metadata is incomplete: {', '.join(missing_entries[:5])}"
             )
-        applicable = MODEL_APPLICABLE_METRICS.get(model_key, frozenset())
+        applicable = applicable_metrics(model_key)
         for metric in DISPLAY_METRICS:
             meta = metadata[metric]
             if not isinstance(meta, dict):

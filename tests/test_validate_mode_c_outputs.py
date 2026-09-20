@@ -15,6 +15,7 @@ from validate_mode_c_outputs import (
     ValidationError,
     _validate_financial_formulas,
     _validate_bank_stress_formulas,
+    _validate_metric_contract,
     _validate_route_transitions,
     build_zero_classification_report,
     validate_outputs,
@@ -22,6 +23,31 @@ from validate_mode_c_outputs import (
 
 
 class ModeCOutputValidationTests(unittest.TestCase):
+    def test_asset_manager_subtype_common_metrics_pass_contract_validation(self):
+        screen = annotate_dataframe(
+            pd.DataFrame(
+                [
+                    {
+                        "Ticker": "BLK",
+                        "Status": "Pass",
+                        "Decision_State": "PASS",
+                        "Decision_Timestamp": "2026-09-17T00:00:00",
+                        "Scoring_Framework": "INDUSTRY_SPECIALIZED_OTHER_FEE_FINANCIAL_V2",
+                        "Industry_Model_Key": "OTHER_FEE_FINANCIAL",
+                        "Industry_Model_Decision": "PASS",
+                        "Industry_Model_Score": 78.0,
+                        "Industry_Model_Coverage": 85.0,
+                        "Long_Term_Score": 78.0,
+                        "Data_Confidence_Score": 88.0,
+                        "MarketCap_B": 100.0,
+                    }
+                ]
+            ),
+            [],
+        )
+
+        _validate_metric_contract(screen)
+
     def test_current_router_refresh_allows_stale_asset_manager_universe_rows(self):
         tickers = [
             "BLK", "BX", "KKR", "BN", "BAM", "APO", "STT", "AMP",

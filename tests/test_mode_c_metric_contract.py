@@ -1,7 +1,11 @@
 import json
 import unittest
 
-from mode_c_metric_contract import annotate_rows
+from mode_c_industry_models import SPECIALIZED_MODEL_KEYS
+from mode_c_metric_contract import (
+    MODEL_APPLICABLE_METRICS,
+    annotate_rows,
+)
 
 
 DECISION_AT = "2026-07-16T00:00:00"
@@ -33,6 +37,50 @@ def evidence(ticker, metric, evidence_id):
 
 
 class ModeCMetricContractTests(unittest.TestCase):
+    def test_every_registered_specialized_model_has_an_explicit_metric_contract(self):
+        self.assertEqual(
+            set(MODEL_APPLICABLE_METRICS),
+            {"GENERAL_CORPORATE", *SPECIALIZED_MODEL_KEYS},
+        )
+
+    def test_asset_manager_subtypes_keep_common_specialized_metrics(self):
+        routes = {
+            "BX": "ALTERNATIVE_ASSET_MANAGER",
+            "VCTR": "TRADITIONAL_ASSET_MANAGER",
+            "BAM": "INSURANCE_LINKED_ASSET_MANAGER",
+            "BLK": "OTHER_FEE_FINANCIAL",
+        }
+        for ticker, model_key in routes.items():
+            with self.subTest(ticker=ticker, model_key=model_key):
+                annotated = annotate_rows(
+                    [
+                        row(
+                            ticker,
+                            Scoring_Framework=f"INDUSTRY_SPECIALIZED_{model_key}_V2",
+                            Industry_Model_Key=model_key,
+                            Industry_Model_Decision="PASS",
+                            Industry_Model_Score=78.0,
+                            Industry_Model_Coverage=85.0,
+                            Long_Term_Score=78.0,
+                            Data_Confidence_Score=88.0,
+                            MarketCap_B=100.0,
+                        )
+                    ],
+                    [],
+                )[0]
+                metadata = json.loads(annotated["Metric_Metadata_JSON"])
+                for metric in (
+                    "Data_Confidence_Score",
+                    "Long_Term_Score",
+                    "Industry_Model_Score",
+                    "Industry_Model_Coverage",
+                    "MarketCap_B",
+                ):
+                    self.assertEqual(metadata[metric]["status"], "VALID")
+                    self.assertIsNotNone(annotated[metric])
+                self.assertEqual(metadata["Quality_Score"]["status"], "NOT_APPLICABLE")
+                self.assertIsNone(annotated["Quality_Score"])
+
     def test_glw_missing_capex_is_abstain_not_zero(self):
         annotated = annotate_rows(
             [
