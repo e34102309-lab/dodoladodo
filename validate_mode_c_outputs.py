@@ -635,6 +635,20 @@ def _validate_dashboard(dashboard_path: Path, screen: pd.DataFrame) -> Dict[str,
     }
     if not required_metadata.issubset(metadata) or metadata.get("model_version") != RESEARCH_PRIORITY_VERSION:
         raise ValidationError("dashboard run metadata is incomplete or stale")
+    if "Latest_SEC_Availability_Date" in screen:
+        known_dates = [
+            _timestamp(value) for value in screen["Latest_SEC_Availability_Date"]
+            if pd.notna(value) and str(value).upper() != "UNKNOWN"
+        ]
+        expected_date = max((date for date in known_dates if date is not None), default=None)
+        displayed = metadata.get("latest_sec_availability_date")
+        displayed_date = _timestamp(displayed) if displayed and str(displayed).upper() != "UNKNOWN" else None
+        if displayed_date != expected_date:
+            raise ValidationError("dashboard latest SEC date differs from screen")
+        for _, row in screen.iterrows():
+            dashboard_date = dashboard_by_ticker[str(row["Ticker"])].get("Latest_SEC_Availability_Date")
+            if str(dashboard_date or "UNKNOWN") != str(row.get("Latest_SEC_Availability_Date") or "UNKNOWN"):
+                raise ValidationError(f"{row['Ticker']} dashboard SEC date differs from screen")
     baseline = payload.get("trend_baseline", {})
     previous_policy = baseline.get("previous_policy_version")
     current_policy = payload.get("trend_policy_version")
@@ -1667,6 +1681,26 @@ def _validate_evidence(
     }
 
 
+def _validate_sec_availability_dates(screen: pd.DataFrame, evidence_path: Path) -> None:
+    if "Latest_SEC_Availability_Date" not in screen:
+        return
+    latest: Dict[str, datetime] = {}
+    with evidence_path.open(encoding="utf-8-sig", newline="") as handle:
+        for row in csv.DictReader(handle):
+            if row.get("source_system") != "SEC" or row.get("record_type") != "source_fact":
+                continue
+            value = _timestamp(row.get("available_to_model_at"))
+            ticker = str(row.get("ticker") or "").upper()
+            if value is not None:
+                latest[ticker] = max(latest.get(ticker, value), value)
+    for _, row in screen.iterrows():
+        ticker = str(row["Ticker"]).upper()
+        raw = row.get("Latest_SEC_Availability_Date")
+        actual = _timestamp(raw) if pd.notna(raw) and str(raw).upper() != "UNKNOWN" else None
+        if actual != latest.get(ticker):
+            raise ValidationError(f"{ticker} latest SEC date differs from selected SEC source facts")
+
+
 def validate_outputs(
     screen_path: str | Path = DEFAULT_SCREEN,
     shortlist_path: str | Path = DEFAULT_SHORTLIST,
@@ -1685,6 +1719,7 @@ def validate_outputs(
             decision_timestamp,
         )
     )
+    _validate_sec_availability_dates(screen, paths[2])
     if dashboard_path is not None:
         dashboard = Path(dashboard_path)
         if not dashboard.is_file():

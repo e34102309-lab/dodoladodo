@@ -481,7 +481,7 @@ class SECDataDistiller:
             ],
             "CapEx": [
                 "PaymentsToAcquirePropertyPlantAndEquipment",
-                "PropertyPlantAndEquipmentAdditions",
+                "PaymentsToAcquireProductiveAssets",
             ],
             "SBC": [
                 "ShareBasedCompensation",
@@ -494,6 +494,7 @@ class SECDataDistiller:
             ],
             "Interest": [
                 "InterestExpense",
+                "InterestExpenseNonoperating",
                 "InterestExpenseDebt",
                 "InterestExpenseNet",
                 "InterestAndDebtExpense",
@@ -509,8 +510,10 @@ class SECDataDistiller:
                 "RevenueFromContractWithCustomerExcludingAssessedTax",
                 "SalesRevenueNet",
                 "SalesRevenueGoodsNet",
+                "RevenueFromContractWithCustomerIncludingAssessedTax",
             ],
             "GrossProfit": ["GrossProfit"],
+            "GrossProfitCost": ["CostOfRevenue", "CostOfGoodsAndServicesSold", "CostOfGoodsSold"],
             "COGS": ["CostOfRevenue", "CostOfGoodsAndServicesSold", "CostOfGoodsAndServiceExcludingDepreciationDepletionAndAmortization"],
             "Inventory": ["InventoryNet", "Inventory"],
             "AccountsReceivable": [
@@ -950,9 +953,67 @@ class SECDataDistiller:
                         frames.append(cleaned)
                 except Exception:
                     continue
-        if not frames:
+        result = pd.concat(frames, ignore_index=True, sort=False) if frames else pd.DataFrame()
+        if concept == "CapEx" and not result.empty:
+            # Productive assets include software/intangibles. Use its disclosed
+            # history consistently when it is the latest cash-capex basis; never
+            # bridge an old PP&E-only annual total to a broader current YTD.
+            productive = result[result["concept"] == "PaymentsToAcquireProductiveAssets"]
+            if not productive.empty and productive["end"].max() >= result["end"].max():
+                result = productive.copy()
+        if concept == "Revenue" and not result.empty:
+            included = result["concept"] == "RevenueFromContractWithCustomerIncludingAssessedTax"
+            if included.any():
+                normal = result[~included]
+                if normal.empty or result.loc[included, "end"].max() > normal["end"].max():
+                    result = result[included].copy()
+                else:
+                    result = normal.copy()
+        if concept == "GrossProfit":
+            # CompanyFacts does not require a separately tagged GrossProfit.
+            # Only total cost-of-sales tags qualify; a cost excluding D&A does not.
+            revenue = self.fetch_concept(cik, "Revenue", units)
+            cost = self.fetch_concept(cik, "GrossProfitCost", units)
+            if not result.empty and not revenue.empty:
+                reported_periods = set(zip(result["start"], result["end"], result["unit"]))
+                revenue = revenue[[
+                    (row["start"], row["end"], row["unit"]) not in reported_periods
+                    for _, row in revenue.iterrows()
+                ]]
+            derived = self._derive_same_period_difference(revenue, cost, "GrossProfit")
+            if not derived.empty:
+                result = pd.concat([result, derived], ignore_index=True, sort=False)
+        return result
+
+    def _derive_same_period_difference(
+        self, left: pd.DataFrame, right: pd.DataFrame, metric: str,
+    ) -> pd.DataFrame:
+        """Reconstruct an exact statement identity, preserving both SEC sources."""
+        keys = ["start", "end", "accn", "unit"]
+        if left.empty or right.empty or any(key not in left or key not in right for key in keys):
             return pd.DataFrame()
-        return pd.concat(frames, ignore_index=True, sort=False)
+        right = self._duration_facts(right, keep_accessions=True)
+        by_period = {tuple(row[key] for key in keys): row for _, row in right.iterrows()}
+        rows = []
+        for _, row in self._duration_facts(left, keep_accessions=True).iterrows():
+            other = by_period.get(tuple(row[key] for key in keys))
+            if other is None or not str(row.get("accn") or ""):
+                continue
+            value = float(row["val"]) - float(other["val"])
+            evidence_id = self._record_derived_metric(
+                metric, value, str(row["unit"]),
+                "same accession/start/end/unit Revenue - total CostOfRevenue", [row, other],
+                f"{metric}:statement-reconstruction",
+            )
+            derived = row.copy()
+            derived["val"] = value
+            derived["concept"] = "DerivedGrossProfit:Revenue-CostOfRevenue"
+            derived["concept_priority"] = 100
+            derived["evidence_id"] = evidence_id
+            if "available_to_model_at" in row and "available_to_model_at" in other:
+                derived["available_to_model_at"] = max(row["available_to_model_at"], other["available_to_model_at"])
+            rows.append(derived)
+        return pd.DataFrame(rows)
 
 
     def fetch_shares_outstanding(self, cik: str) -> pd.DataFrame:
@@ -1016,6 +1077,28 @@ class SECDataDistiller:
             df = df.drop_duplicates(subset=dedup, keep="last")
         return df.reset_index(drop=True)
 
+
+    @staticmethod
+    def _duration_facts(df: pd.DataFrame, keep_accessions: bool = False) -> pd.DataFrame:
+        """Choose comparable economic periods independently of filing fy/fp labels."""
+        if df.empty or "start" not in df:
+            return df.iloc[0:0].copy()
+        d = df[df["form"].astype(str).str.upper().isin({"10-Q", "10-Q/A", *ANNUAL_FILING_FORMS})].copy()
+        d = d[d["start"].notna() & d["duration_days"].between(60, 380)].copy()
+        if d.empty:
+            return d
+        if "concept_priority" not in d:
+            d["concept_priority"] = 0
+        order = ["start", "end", "concept_priority"]
+        ascending = [True, True, True]
+        for column in ("available_to_model_at", "filed"):
+            if column in d:
+                order.append(column)
+                ascending.append(False)
+        keys = ["start", "end"] + (["unit"] if "unit" in d else [])
+        if keep_accessions and "accn" in d:
+            keys.append("accn")
+        return d.sort_values(order, ascending=ascending).drop_duplicates(keys, keep="first").sort_values(["end", "start"])
 
     @staticmethod
     def _annual_facts(df: pd.DataFrame, latest_filed: bool = True) -> pd.DataFrame:
@@ -1210,17 +1293,32 @@ class SECDataDistiller:
                 "annual": val,
                 "evidence_id": evidence_id,
                 "period_end": pd.Timestamp(r["end"]).date().isoformat(),
+                "period_start": pd.Timestamp(r["start"]).date().isoformat(),
             }
 
 
         if pd.notna(latest_10q_end) and not annual.empty:
             latest_q_candidates = q[q["end"] == latest_10q_end]
             latest_q = latest_q_candidates.iloc[-1]
-            fy, fp = latest_q.get("fy"), str(latest_q.get("fp", "")).upper()
-            latest_ytd = self._select_ytd(d, fy, fp)
-            prior_ytd = self._select_ytd(d, pd.to_numeric(fy, errors="coerce") - 1, fp)
             annual_before = annual[annual["end"] < latest_q["end"]]
             annual_row = annual_before.iloc[-1] if not annual_before.empty else None
+            latest_ytd = prior_ytd = None
+            if annual_row is not None:
+                periods = self._duration_facts(d)
+                current = periods[
+                    (periods["start"] == annual_row["end"] + pd.Timedelta(days=1))
+                    & (periods["end"] == latest_10q_end)
+                ]
+                if not current.empty:
+                    latest_ytd = current.iloc[-1]
+                    previous = periods[
+                        (periods["start"] == annual_row["start"])
+                        & ((latest_10q_end - periods["end"]).dt.days.between(350, 380))
+                        & ((periods["duration_days"] - latest_ytd["duration_days"]).abs() <= 7)
+                    ]
+                    if not previous.empty:
+                        prior_ytd = previous.iloc[-1]
+            fp = str(latest_q.get("fp", "")).upper()
             aligned_ytd = False
             if latest_ytd is not None and prior_ytd is not None and annual_row is not None:
                 starts = [
@@ -1260,6 +1358,7 @@ class SECDataDistiller:
                     "prior_ytd": py / 1e9,
                     "evidence_id": evidence_id,
                     "period_end": pd.Timestamp(latest_ytd["end"]).date().isoformat(),
+                    "period_start": (pd.Timestamp(prior_ytd["end"]) + pd.Timedelta(days=1)).date().isoformat(),
                 }
 
 
@@ -1287,6 +1386,7 @@ class SECDataDistiller:
                 "q4sum": ttm,
                 "evidence_id": evidence_id,
                 "period_end": pd.Timestamp(qs.index[-1]).date().isoformat(),
+                "period_start": qs.attrs.get("period_starts", {}).get(pd.Timestamp(qs.index[0]).isoformat(), ""),
             }
 
 
@@ -1306,68 +1406,44 @@ class SECDataDistiller:
         return result, f"fallback annual: {method}", {
             "annual": val, "evidence_id": evidence_id,
             "period_end": pd.Timestamp(annual_rows.iloc[-1]["end"]).date().isoformat(),
+            "period_start": pd.Timestamp(annual_rows.iloc[-1]["start"]).date().isoformat(),
         }
 
 
     def quarterly_series(self, df: pd.DataFrame, normalized_metric: str = "") -> pd.Series:
-        if df.empty:
+        d = self._duration_facts(df)
+        if d.empty:
             return pd.Series(dtype=float)
-        d = df.copy()
-        d = d[
-            d["form"].astype(str).str.upper().isin(
-                {"10-Q", "10-Q/A", *ANNUAL_FILING_FORMS}
-            )
-        ]
-        if d.empty or "fy" not in d.columns or "fp" not in d.columns:
+        candidates: Dict[pd.Timestamp, Tuple[float, pd.Timestamp, List[pd.Series], int]] = {}
+
+        def add(row, value, start, sources, priority):
+            end = pd.Timestamp(row["end"])
+            if math.isfinite(value) and (end not in candidates or priority < candidates[end][3]):
+                candidates[end] = (value, pd.Timestamp(start), sources, priority)
+
+        # Standalone quarters can be comparative facts in a 10-K with fp=FY.
+        # Their actual duration is authoritative; fy/fp describe the filing.
+        for _, row in d[d["duration_days"].between(60, 130)].iterrows():
+            add(row, float(row["val"]), row["start"], [row], 0)
+        for _, group in d.groupby("start"):
+            records = [row for _, row in group.sort_values("end").iterrows()]
+            for earlier, later in zip(records, records[1:]):
+                if 60 <= (later["end"] - earlier["end"]).days <= 130:
+                    add(later, float(later["val"]) - float(earlier["val"]),
+                        earlier["end"] + pd.Timedelta(days=1), [earlier, later], 1)
+        if not candidates:
             return pd.Series(dtype=float)
-        years = sorted([y for y in d["fy"].dropna().unique() if str(y).replace(".", "").isdigit()])
-        out: List[Tuple[pd.Timestamp, float]] = []
         source_ids = set()
-
-        def adjacent_ytd(later, earlier) -> bool:
-            if later is None or earlier is None:
-                return False
-            start = pd.to_datetime(later.get("start"), errors="coerce")
-            prior_start = pd.to_datetime(earlier.get("start"), errors="coerce")
-            return bool(
-                pd.notna(start) and start == prior_start
-                and 60 <= (later["end"] - earlier["end"]).days <= 130
-            )
-
-        for fy in years:
-            q1 = self._select_ytd(d, fy, "Q1")
-            q2 = self._select_ytd(d, fy, "Q2")
-            q3 = self._select_ytd(d, fy, "Q3")
-            fyv = self._select_ytd(d, fy, "FY")
-            if fyv is None:
-                annual = self._annual_facts(d[d["fy"].astype(str) == str(fy)])
-                fyv = annual.iloc[-1] if not annual.empty else None
-            q_vals = []
-            if q1 is not None:
-                q_vals.append((pd.Timestamp(q1["end"]), float(q1["val"])))
-                source_ids.update(self._mark_rows_used(q1, f"{normalized_metric}:quarterly-series"))
-            if adjacent_ytd(q2, q1):
-                q_vals.append((pd.Timestamp(q2["end"]), float(q2["val"]) - float(q1["val"])))
-                source_ids.update(self._mark_rows_used(q1, f"{normalized_metric}:quarterly-series"))
-                source_ids.update(self._mark_rows_used(q2, f"{normalized_metric}:quarterly-series"))
-            if adjacent_ytd(q3, q2):
-                q_vals.append((pd.Timestamp(q3["end"]), float(q3["val"]) - float(q2["val"])))
-                source_ids.update(self._mark_rows_used(q2, f"{normalized_metric}:quarterly-series"))
-                source_ids.update(self._mark_rows_used(q3, f"{normalized_metric}:quarterly-series"))
-            if adjacent_ytd(fyv, q3):
-                q_vals.append((pd.Timestamp(fyv["end"]), float(fyv["val"]) - float(q3["val"])))
-                source_ids.update(self._mark_rows_used(q3, f"{normalized_metric}:quarterly-series"))
-                source_ids.update(self._mark_rows_used(fyv, f"{normalized_metric}:quarterly-series"))
-            for end, val in q_vals:
-                if math.isfinite(val):
-                    out.append((end, val))
-        if not out:
-            return pd.Series(dtype=float)
-        s = pd.Series({end: val for end, val in out}).sort_index()
-        s = s[~s.index.duplicated(keep="last")]
-        s.attrs["source_evidence_ids"] = sorted(source_ids)
-        s.attrs["latest_reported_end"] = d["end"].max()
-        return s
+        starts = {}
+        for end, (_, start, sources, _) in candidates.items():
+            starts[end.isoformat()] = start.date().isoformat()
+            for row in sources:
+                source_ids.update(self._mark_rows_used(row, f"{normalized_metric}:quarterly-series"))
+        series = pd.Series({end: item[0] for end, item in candidates.items()}).sort_index()
+        series.attrs["source_evidence_ids"] = sorted(source_ids)
+        series.attrs["period_starts"] = starts
+        series.attrs["latest_reported_end"] = d["end"].max()
+        return series
 
 
     def get_shares_now_1y_3y(self, df: pd.DataFrame) -> Tuple[float, float, float]:
@@ -1532,9 +1608,19 @@ def assess_ttm_period_alignment(
     }
     valid = [value for value in periods.values() if pd.notna(value)]
     latest = max(valid) if valid else pd.NaT
+    starts = {
+        name: pd.to_datetime(payload.get("period_start"), utc=True, errors="coerce")
+        for name, payload in details.items()
+    }
+    known_starts = [start for start in starts.values() if pd.notna(start)]
+    latest_start = max(known_starts) if known_starts else pd.NaT
     decision = pd.to_datetime(decision_timestamp, utc=True).normalize()
     return {
-        "mismatched": [name for name, value in periods.items() if pd.isna(value) or value != latest],
+        "mismatched": [
+            name for name, value in periods.items()
+            if pd.isna(value) or value != latest
+            or (pd.notna(starts[name]) and pd.notna(latest_start) and starts[name] != latest_start)
+        ],
         "stale": [
             name for name, value in periods.items()
             if pd.notna(value) and not 0 <= (decision - value.normalize()).days <= max_age_days
@@ -2139,6 +2225,12 @@ def _trailing_quarter_window(
     annual_gaps = window.index.to_series().diff(4).dt.days.iloc[4:]
     if not gaps.between(60, 130).all() or not annual_gaps.between(350, 380).all():
         return pd.Series(dtype=float)
+    starts = clean.attrs.get("period_starts", {})
+    if starts:
+        for prior_end, end in zip(window.index, window.index[1:]):
+            start = pd.to_datetime(starts.get(pd.Timestamp(end).isoformat()), errors="coerce")
+            if pd.isna(start) or start != pd.Timestamp(prior_end) + pd.Timedelta(days=1):
+                return pd.Series(dtype=float)
     window.attrs["latest_reported_end"] = anchor
     return window
 
@@ -5934,6 +6026,12 @@ def _run_mode_c_pipeline_core(
             "D&A": df_dna, "GrossProfit": df_gp, "NetIncome": df_net_income,
             "Cash": df_cash, "Equity": df_equity,
         }
+        # Keep the latest inspected SEC rows even when a missing/stale gate stops
+        # scoring, so the coverage failure and displayed filing date are auditable.
+        for name, frame in {**required_facts, "Interest": df_int, "SBC": df_sbc}.items():
+            if not frame.empty:
+                latest_rows = frame[frame["end"] == frame["end"].max()]
+                sec._mark_rows_used(latest_rows, f"{name}:coverage-check")
         missing_facts = [name for name, frame in required_facts.items() if frame.empty]
         if missing_facts:
             return ModeCResult(
@@ -8099,6 +8197,22 @@ def require_sec_contact_email() -> str:
     return user_email
 
 
+def latest_sec_availability_by_ticker(evidence_rows: Iterable[Mapping[str, Any]]) -> Dict[str, str]:
+    """Only an available SEC source fact can set the displayed SEC date."""
+    latest: Dict[str, str] = {}
+    for row in evidence_rows:
+        if row.get("source_system") != "SEC" or row.get("record_type") != "source_fact":
+            continue
+        if str(row.get("is_available_at_decision")).lower() not in {"true", "1"}:
+            continue
+        ticker = str(row.get("ticker") or "").upper()
+        available = SECDataDistiller._utc_naive_timestamp(row.get("available_to_model_at"))
+        decision = SECDataDistiller._utc_naive_timestamp(row.get("decision_timestamp"))
+        if ticker and pd.notna(available) and pd.notna(decision) and available <= decision:
+            latest[ticker] = max(latest.get(ticker, ""), available.isoformat())
+    return latest
+
+
 def main() -> None:
     GLOBAL_EVIDENCE_LEDGER.reset()
     watchlist_rows, universe_version = load_fixed_watchlist()
@@ -8161,14 +8275,7 @@ def main() -> None:
     results = [result for result in results if result is not None]
     git_commit = os.environ.get("GITHUB_SHA", "LOCAL_WORKTREE")
     selected_evidence = GLOBAL_EVIDENCE_LEDGER.rows(selected_only=True)
-    latest_sec_by_ticker: Dict[str, str] = {}
-    for evidence in selected_evidence:
-        evidence_ticker = str(evidence.get("ticker") or "").upper()
-        available_at = str(evidence.get("available_to_model_at") or "")
-        if evidence_ticker and available_at:
-            latest_sec_by_ticker[evidence_ticker] = max(
-                latest_sec_by_ticker.get(evidence_ticker, ""), available_at
-            )
+    latest_sec_by_ticker = latest_sec_availability_by_ticker(selected_evidence)
     for result in results:
         if not result.Decision_Timestamp:
             result.Decision_Timestamp = run_decision_timestamp.isoformat()

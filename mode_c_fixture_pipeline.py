@@ -52,7 +52,7 @@ def _base_row(ticker: str) -> dict[str, Any]:
         "Decision_Reason_Code": "PASS_MODEL_GATE",
         "Decision_Timestamp": DECISION_TIMESTAMP,
         "Price_Data_Date": "2026-07-15",
-        "Latest_SEC_Availability_Date": "2026-07-14T20:00:00+00:00",
+        "Latest_SEC_Availability_Date": "UNKNOWN",
         "Universe_Version": "fixture-universe-v2",
         "Git_Commit": "fixture-commit",
         "Data_Confidence_Score": 90.0,
