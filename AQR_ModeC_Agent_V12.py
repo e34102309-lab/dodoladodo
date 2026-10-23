@@ -3,7 +3,7 @@
 AQR Mode-C Agent V13 — 70/30 長期價值研究框架
 =============================================================================
 用途：
-1) 讀取每月全市場初篩清單 qualified_universe.csv（欄位：Ticker, CIK）
+1) 僅讀取固定 100 家研究名單 research_watchlist.csv（欄位：Ticker, CIK）
 2) 使用 SEC XBRL Company Facts 對齊 TTM / 最新 10-K、20-F、40-F / 最新 10-Q
 3) 產出：
    - mode_c_screen.csv              ：全量結構化數據總表
@@ -46,7 +46,6 @@ import pandas as pd
 import requests
 import yfinance as yf
 from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 
 from mode_c_evidence import EVIDENCE_COLUMNS, GLOBAL_EVIDENCE_LEDGER
 from mode_c_decision_inputs import (
@@ -55,6 +54,7 @@ from mode_c_decision_inputs import (
     load_portfolio_fit_inputs,
 )
 from mode_c_metric_contract import annotate_rows, finite_number
+from mode_c_watchlist import load_fixed_watchlist
 from mode_c_industry_models import (
     SPECIALIZED_MODEL_KEYS,
     IndustryModelEvaluation,
@@ -85,7 +85,6 @@ logger = logging.getLogger("ModeC")
 
 
 CACHE_FILE_SHARES = "local_shares_vector_cache.json"
-QUALIFIED_UNIVERSE = "qualified_universe.csv"
 OUTPUT_CSV = "mode_c_screen.csv"
 OUTPUT_SHORTLIST_CSV = "mode_c_shortlist.csv"
 OUTPUT_SHORTLIST_BY_MODEL_CSV = "mode_c_shortlist_by_model.csv"
@@ -176,13 +175,8 @@ _VECTOR_CACHE = load_json_cache(CACHE_FILE_SHARES)
 
 def create_retry_session() -> requests.Session:
     session = requests.Session()
-    retry = Retry(
-        total=3,
-        backoff_factor=1.0,
-        status_forcelist=[401, 403, 429, 500, 502, 503, 504],
-        allowed_methods=["GET"],
-    )
-    adapter = HTTPAdapter(max_retries=retry)
+    # RateLimitedSession owns retries so every actual SEC request is rate-limited.
+    adapter = HTTPAdapter(max_retries=0)
     session.mount("http://", adapter)
     session.mount("https://", adapter)
     session.headers.update(
@@ -357,7 +351,7 @@ def safe_yf_info(ticker: str) -> dict:
 
 
 def hydrate_info_cache_from_verified_universe(df: pd.DataFrame) -> None:
-    """Use monthly hunter identity metadata when a daily yf.info call is empty."""
+    """Use verified watchlist identity metadata when a daily yf.info call is empty."""
     sec_to_yahoo_exchange = {
         "NASDAQ": "NMS",
         "NYSE": "NYQ",
@@ -443,8 +437,11 @@ class RateLimitedSession:
                     return r
                 if r.status_code == 404:
                     return None
-                if r.status_code in (429, 503):
+                if r.status_code in (429, 500, 502, 503, 504):
                     time.sleep((2 ** attempt) * 1.5)
+                    continue
+                logger.warning("SEC request stopped after HTTP %s: %s", r.status_code, url)
+                return None
             except requests.RequestException:
                 time.sleep((2 ** attempt) * 1.2)
         return None
@@ -494,7 +491,6 @@ class SECDataDistiller:
             ],
             "EBIT": [
                 "OperatingIncomeLoss",
-                "IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest",
             ],
             "Interest": [
                 "InterestExpense",
@@ -573,7 +569,8 @@ class SECDataDistiller:
             "Dividend": ["PaymentsOfDividendsCommonStock", "PaymentsOfDividends"],
             "EPSDiluted": ["EarningsPerShareDiluted"],
             "SharesDiluted": ["WeightedAverageNumberOfDilutedSharesOutstanding"],
-            "IncomeTaxExpenseBenefit": ["IncomeTaxExpenseBenefit", "CurrentIncomeTaxExpenseBenefit"],
+            # Current tax excludes deferred tax and is not a substitute for total tax.
+            "IncomeTaxExpenseBenefit": ["IncomeTaxExpenseBenefit"],
             "Assets": ["Assets"],
             "Goodwill": ["Goodwill"],
             "IntangibleAssets": [
@@ -1009,6 +1006,7 @@ class SECDataDistiller:
         df["fy"] = pd.to_numeric(df["fy"], errors="coerce").astype("Int64")
         df["val"] = pd.to_numeric(df["val"], errors="coerce")
         df = df.dropna(subset=["val", "end"])
+        df = df[np.isfinite(df["val"])]
         sort_cols = [c for c in ["end", "filed"] if c in df.columns]
         df = df.sort_values(sort_cols)
         dedup = [c for c in ["fy", "fp", "form", "end", "duration_days", "frame", "accn"] if c in df.columns]
@@ -1211,6 +1209,7 @@ class SECDataDistiller:
             return result, f"{fallback_label}TTM=latest {annual_form} end={pd.Timestamp(r['end']).date()}", {
                 "annual": val,
                 "evidence_id": evidence_id,
+                "period_end": pd.Timestamp(r["end"]).date().isoformat(),
             }
 
 
@@ -1260,6 +1259,7 @@ class SECDataDistiller:
                     "latest_ytd": ly / 1e9,
                     "prior_ytd": py / 1e9,
                     "evidence_id": evidence_id,
+                    "period_end": pd.Timestamp(latest_ytd["end"]).date().isoformat(),
                 }
 
 
@@ -1286,6 +1286,7 @@ class SECDataDistiller:
             return result, "TTM=fallback sum(latest 4 consecutive derived quarters)", {
                 "q4sum": ttm,
                 "evidence_id": evidence_id,
+                "period_end": pd.Timestamp(qs.index[-1]).date().isoformat(),
             }
 
 
@@ -1302,7 +1303,10 @@ class SECDataDistiller:
             [annual_rows],
             f"{normalized_metric}:ttm-annual-fallback",
         )
-        return result, f"fallback annual: {method}", {"annual": val, "evidence_id": evidence_id}
+        return result, f"fallback annual: {method}", {
+            "annual": val, "evidence_id": evidence_id,
+            "period_end": pd.Timestamp(annual_rows.iloc[-1]["end"]).date().isoformat(),
+        }
 
 
     def quarterly_series(self, df: pd.DataFrame, normalized_metric: str = "") -> pd.Series:
@@ -1455,23 +1459,19 @@ def get_robust_shares(
     global _VECTOR_CACHE
     current_time = time.time()
     shares_now, shares_1y_ago = sec.get_shares_now_and_1y(df_shares)
-    if shares_now > 0:
+    if math.isfinite(shares_now) and shares_now > 0:
         drift = 0.02
         if shares_1y_ago > 0:
             drift = (shares_now / shares_1y_ago) - 1.0
             drift = max(-0.10, min(0.20, drift))
         _VECTOR_CACHE[ticker] = {"shares": shares_now, "drift": drift, "timestamp": current_time}
         return shares_now, "SEC"
-    if ticker in _VECTOR_CACHE:
-        c = _VECTOR_CACHE[ticker]
-        days = (current_time - float(c.get("timestamp", current_time))) / 86400
-        return (
-            float(c.get("shares", 0.0)) * (1 + float(c.get("drift", 0.02)) * days / 365),
-            "CACHE_EXTRAPOLATION",
-        )
-    yf_shares = info.get("sharesOutstanding") or info.get("impliedSharesOutstanding")
-    if yf_shares and yf_shares > 0:
-        return float(yf_shares) / 1e9, "YAHOO_FINANCE"
+    # A historical drift is not evidence of current shares. Prefer an explicit
+    # current market-data value; never manufacture a market cap from old cache.
+    for field in ("sharesOutstanding", "impliedSharesOutstanding"):
+        yf_shares = finite_number(info.get(field))
+        if yf_shares is not None and yf_shares > 0:
+            return yf_shares / 1e9, "YAHOO_FINANCE"
     return 0.0, "MISSING"
 
 
@@ -1482,7 +1482,28 @@ def fetch_price_metrics(ticker: str) -> Optional[dict]:
     volume = get_cached_series(ticker, "Volume")
     if close is None or volume is None or len(close) < 200:
         return None
-    dollar_volume = float((close * volume).tail(30).mean())
+    close = pd.to_numeric(close, errors="coerce")
+    volume = pd.to_numeric(volume, errors="coerce")
+    recent_close = close.tail(252)
+    if not np.isfinite(recent_close).all() or (recent_close <= 0).any():
+        return None
+    recent_pairs = pd.concat([close.rename("close"), volume.rename("volume")], axis=1).tail(30)
+    if (
+        len(recent_pairs) < 30
+        or not np.isfinite(recent_pairs.to_numpy()).all()
+        or (recent_pairs["volume"] < 0).any()
+    ):
+        return None
+    dollar_volume = float((recent_pairs["close"] * recent_pairs["volume"]).mean())
+    if not math.isfinite(dollar_volume):
+        return None
+    benchmark = get_cached_series("SPY", "Close")
+    if benchmark is not None and not benchmark.empty:
+        price_date = pd.to_datetime(close.index[-1], utc=True).normalize()
+        market_date = pd.to_datetime(benchmark.index[-1], utc=True).normalize()
+        if price_date < market_date:
+            logger.warning("價格資料未更新至本批市場交易日：%s (%s < %s)", ticker, price_date.date(), market_date.date())
+            return None
     last_close = float(close.iloc[-1])
     high_52w = float(close.tail(252).max())
     m = close.resample("ME").last().dropna()
@@ -1497,6 +1518,28 @@ def fetch_price_metrics(ticker: str) -> Optional[dict]:
     }
 
 
+
+
+def assess_ttm_period_alignment(
+    details: Mapping[str, Mapping[str, object]],
+    decision_timestamp: pd.Timestamp,
+    max_age_days: int,
+) -> Dict[str, List[str]]:
+    """Do not combine individually valid TTM inputs from different/stale periods."""
+    periods = {
+        name: pd.to_datetime(payload.get("period_end"), utc=True, errors="coerce")
+        for name, payload in details.items()
+    }
+    valid = [value for value in periods.values() if pd.notna(value)]
+    latest = max(valid) if valid else pd.NaT
+    decision = pd.to_datetime(decision_timestamp, utc=True).normalize()
+    return {
+        "mismatched": [name for name, value in periods.items() if pd.isna(value) or value != latest],
+        "stale": [
+            name for name, value in periods.items()
+            if pd.notna(value) and not 0 <= (decision - value.normalize()).days <= max_age_days
+        ],
+    }
 
 
 def safe_div(n: float, d: float, default: float = np.nan) -> float:
@@ -1562,6 +1605,7 @@ def decision_reason_code(status: Any, decision_state: Any = "") -> str:
             "no price",
             "missing price",
             "market data unavailable",
+            "市值資料缺失",
         )
     ):
         return "MISSING_MARKET_DATA"
@@ -2656,7 +2700,7 @@ def historical_valuation(
     shares_now: float,
     debt_component_frames: Optional[Mapping[str, pd.DataFrame]] = None,
 ) -> dict:
-    """Build comparable historical multiples from raw prices and filed annual data."""
+    """Match Yahoo's split-adjusted historical closes with shares on that same basis."""
     empty_result = {
         "ev_ebitda_hist": [],
         "pe_hist": [],
@@ -2815,16 +2859,17 @@ def historical_valuation(
         # The historical multiple is reconstructed only after every selected
         # filing input was available, plus one full-day information lag.
         valuation_date = evidence_date.normalize() + pd.Timedelta(days=1)
-        # yf.download(auto_adjust=False) returns the raw close on the valuation
-        # date. Align the period share count only through that date; applying a
-        # later split would multiply historical market capitalization.
+        # Yahoo Close remains split-adjusted even with auto_adjust=False (that
+        # flag controls dividend adjustment). Normalize shares through the same
+        # analysis-date split basis, including splits after the valuation date.
+        # This is a unit conversion, not a use of future financial information.
         adjusted_shares, split_factor = split_adjusted_share_value(
             ticker,
             float(shares_row["val"]),
             shares_row.get("end"),
             shares_row.get("available_to_model_at", shares_row.get("filed")),
             str(shares_row.get("concept") or ""),
-            valuation_date,
+            sec.decision_timestamp,
         )
         shares = adjusted_shares / 1e9
         if shares <= 0:
@@ -2850,7 +2895,7 @@ def historical_valuation(
                 "ratio",
                 "YAHOO_FINANCE",
                 "Stock Splits",
-                period_end=valuation_date,
+                period_end=sec.decision_timestamp,
             )
         market_cap_source_ids = [price_evidence_id, share_evidence_id]
         if split_evidence_id:
@@ -2859,7 +2904,7 @@ def historical_valuation(
             f"Historical_MarketCap_{period_key}",
             price * shares,
             "USD_B",
-            "historical market price * split-adjusted period shares outstanding",
+            "Yahoo split-adjusted historical close * period shares normalized to the same analysis-date split basis",
             market_cap_source_ids,
             "HistoricalValuation:model-input",
         )
@@ -5032,8 +5077,10 @@ def run_specialized_mode_c_pipeline(
         if reported_market_cap is not None and reported_market_cap > 0
         else np.nan
     )
-    if not math.isfinite(market_cap) or market_cap < MIN_MARKET_CAP_B:
-        return ModeCResult(Ticker=ticker, Status=f"Fail: 市值過低或無法取得 {market_cap:.2f}B")
+    if not math.isfinite(market_cap):
+        return ModeCResult(Ticker=ticker, Status="Abstain: 市值資料缺失")
+    if market_cap < MIN_MARKET_CAP_B:
+        return ModeCResult(Ticker=ticker, Status=f"Fail: 市值過低 {market_cap:.2f}B")
     if shares_now > 0:
         market_cap_evidence_id = sec._record_derived_from_ids(
             "MarketCap", market_cap, "USD_B", "market price * current shares outstanding",
@@ -5973,6 +6020,26 @@ def _run_mode_c_pipeline_core(
                     + ", ".join(missing_ttm)
                 ),
             )
+        period_details = {name: evidence for name, (_, evidence) in critical_ttm.items()}
+        if sbc_evidence.get("evidence_id"):
+            period_details["SBC"] = sbc_evidence
+        period_check = assess_ttm_period_alignment(
+            period_details, decision_timestamp, fact_age_limit_days(df_rev)
+        )
+        if period_check["mismatched"] or period_check["stale"]:
+            mismatch = "/".join(period_check["mismatched"])
+            stale = "/".join(period_check["stale"])
+            return ModeCResult(
+                Ticker=ticker,
+                Status=(
+                    f"Abstain: TTM 證據鏈不完整，期間不一致 {mismatch}"
+                    if mismatch else f"Abstain: 核心 TTM 期間過舊 {stale}"
+                ),
+                Sector=sector, Industry=industry,
+                Decision_State="ABSTAIN", Decision_Timestamp=decision_timestamp.isoformat(),
+                Data_Confidence_Score=0.0,
+                Data_Confidence_Reasons=f"Selected TTM period mismatch={mismatch}; stale/future periods={stale}",
+            )
         if capex_ttm < 0:
             return ModeCResult(
                 Ticker=ticker,
@@ -6037,6 +6104,9 @@ def _run_mode_c_pipeline_core(
                 if "evidence_id" in latest_share_fact.columns
                 else []
             )
+            share_evidence_ids.extend(
+                GLOBAL_EVIDENCE_LEDGER.selected_evidence_ids(ticker, "Share_Split_Factor_current")
+            )
         elif shares_now > 0:
             share_evidence_id = sec.record_observed_input(
                 "SharesOutstanding_Current",
@@ -6054,8 +6124,10 @@ def _run_mode_c_pipeline_core(
             if reported_market_cap is not None and reported_market_cap > 0
             else np.nan
         )
-        if not math.isfinite(mcap) or mcap < MIN_MARKET_CAP_B:
-            return ModeCResult(Ticker=ticker, Status=f"Fail: 市值過低或無法取得 {mcap:.2f}B")
+        if not math.isfinite(mcap):
+            return ModeCResult(Ticker=ticker, Status="Abstain: 市值資料缺失")
+        if mcap < MIN_MARKET_CAP_B:
+            return ModeCResult(Ticker=ticker, Status=f"Fail: 市值過低 {mcap:.2f}B")
         if shares_now > 0:
             market_cap_evidence_id = sec._record_derived_from_ids(
                 "MarketCap",
@@ -6175,6 +6247,7 @@ def _run_mode_c_pipeline_core(
             pretax_proxy > 0
             and tax_ttm >= 0
             and bool(tax_evidence.get("evidence_id"))
+            and tax_evidence.get("period_end") == net_income_evidence.get("period_end")
         )
         effective_tax_rate = (
             max(0.0, min(0.35, safe_div(tax_ttm, pretax_proxy, 0.21)))
@@ -6508,13 +6581,15 @@ def _run_mode_c_pipeline_core(
             [str(ocf_evidence.get("evidence_id") or ""), maintenance_capex_low_evidence_id, sbc_metric_evidence_id, market_cap_evidence_id],
             "Maintenance_Real_FCF_Yield_High:model-input",
         )
+        if interest_evidence.get("period_end") != ebit_evidence.get("period_end"):
+            interest_ttm = np.nan
         coverage_gate = calculate_interest_coverage_gate(
             ebit_ttm, interest_ttm, total_debt, cash
         )
         if bool(coverage_gate["missing_critical"]):
             return ModeCResult(
                 Ticker=ticker,
-                Status="Abstain: 有淨負債但利息費用證據缺失",
+                Status="Abstain: 有淨負債但缺少同期間利息費用證據",
                 Sector=sector,
                 Industry=industry,
                 Model_Route=str(model_route["route"]),
@@ -8026,17 +8101,10 @@ def require_sec_contact_email() -> str:
 
 def main() -> None:
     GLOBAL_EVIDENCE_LEDGER.reset()
+    watchlist_rows, universe_version = load_fixed_watchlist()
     user_email = require_sec_contact_email()
-    input_file = os.environ.get("QUALIFIED_UNIVERSE", QUALIFIED_UNIVERSE)
-    if not os.path.exists(input_file):
-        raise FileNotFoundError(f"找不到 {input_file}，請準備欄位 Ticker, CIK 的初選清單。")
-
-    df = pd.read_csv(input_file)
-    if "Ticker" not in df.columns or "CIK" not in df.columns:
-        raise ValueError("qualified_universe.csv 必須包含 Ticker, CIK 欄位。")
-    df["Ticker"] = df["Ticker"].astype(str).str.upper().str.strip()
-    df["CIK"] = df["CIK"].astype(str).str.replace(".0", "", regex=False).str.zfill(10)
-    raw_tickers = list(dict.fromkeys(df["Ticker"].tolist()))
+    df = pd.DataFrame(watchlist_rows)
+    raw_tickers = df["Ticker"].tolist()
     security_metadata_by_ticker: Dict[str, Dict[str, str]] = {}
     has_verified_route = "IndustryModelKey" in df.columns
     for _, row in df.iterrows():
@@ -8061,14 +8129,16 @@ def main() -> None:
         metadata["_HasVerifiedRoute"] = str(has_verified_route)
         security_metadata_by_ticker[ticker] = metadata
 
-    # 每月排程更新全市場名單；push/PR 僅重跑 Mode C 與測試。
+    # 股票資料僅限固定名單；另取既有市場/利率基準供動能與估值計算。
     pre_fetch_all_market_data(raw_tickers + ["SPY", "QQQ", "^TNX"], period="10y")
     pre_fetch_all_info(raw_tickers)
     hydrate_info_cache_from_verified_universe(df)
-    universe = prepare_uploaded_universe(df)
+    # 每家公司都留下 PASS/FAIL/ABSTAIN 結果，不因舊初篩狀態或當日資料缺失移出名單。
+    # 最新商品類型、流動性及產業驗證仍由個別 pipeline 執行。
+    universe = {row["Ticker"]: row["CIK"] for row in watchlist_rows}
     run_decision_timestamp = pd.Timestamp.now(tz="UTC").tz_convert(None)
 
-    logger.info(f"開始長期價值清算：驗證後 {len(universe)} 檔 / 上傳 {len(raw_tickers)} 檔")
+    logger.info("開始固定名單長期價值分析：%d 家；名單版本 %s", len(universe), universe_version)
     max_workers = int(os.environ.get("MODE_C_WORKERS", "3"))
     universe_items = list(universe.items())
     results: List[Optional[ModeCResult]] = [None] * len(universe_items)
@@ -8089,12 +8159,6 @@ def main() -> None:
             if completed % 25 == 0 or completed == len(futures):
                 logger.info("Mode C 深篩進度 %d/%d", completed, len(futures))
     results = [result for result in results if result is not None]
-    universe_path = Path(QUALIFIED_UNIVERSE)
-    universe_version = (
-        hashlib.sha256(universe_path.read_bytes()).hexdigest()[:16]
-        if universe_path.exists()
-        else "UNKNOWN"
-    )
     git_commit = os.environ.get("GITHUB_SHA", "LOCAL_WORKTREE")
     selected_evidence = GLOBAL_EVIDENCE_LEDGER.rows(selected_only=True)
     latest_sec_by_ticker: Dict[str, str] = {}

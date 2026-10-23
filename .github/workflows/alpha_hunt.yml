@@ -1,18 +1,10 @@
-name: Mode-C Long-Term Value Research Pipeline
+name: Mode-C Fixed 100 Research Pipeline
 
 on:
   schedule:
     # Thursday after US market close: 22:00 UTC (17:00 EST / 18:00 EDT; Friday 06:00 Asia/Taipei).
     - cron: '0 22 * * 4'
-    # Monthly full-market refresh, followed by Mode C on the refreshed universe.
-    - cron: '0 3 1 * *'
   workflow_dispatch:
-    inputs:
-      refresh_universe:
-        description: Run the full-market hunter before Mode C
-        required: false
-        type: boolean
-        default: false
   push:
     branches: [main]
     paths:
@@ -33,7 +25,7 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   quality-checks:
@@ -56,20 +48,23 @@ jobs:
           pip install -r ModeC_requirements.txt
 
       - name: Compile Python Sources
-        run: python -m py_compile AQR_ModeC_Agent_V12.py mode_c_evidence.py mode_c_metric_contract.py mode_c_routing.py mode_c_industry_models.py mode_c_research_priority.py mode_c_decision_inputs.py total_market_hunter_v2.py run_mode_c_ai_agent.py build_mode_c_dashboard.py enhance_dashboard_ui.py validate_mode_c_outputs.py mode_c_fixture_pipeline.py
+        run: python -m py_compile AQR_ModeC_Agent_V12.py mode_c_watchlist.py mode_c_evidence.py mode_c_metric_contract.py mode_c_routing.py mode_c_industry_models.py mode_c_research_priority.py mode_c_decision_inputs.py total_market_hunter_v2.py run_mode_c_ai_agent.py build_mode_c_dashboard.py enhance_dashboard_ui.py validate_mode_c_outputs.py mode_c_fixture_pipeline.py
+
+      - name: Validate Fixed Research Watchlist
+        run: python mode_c_watchlist.py
 
       - name: Run Unit Tests
         run: python -m unittest discover -s tests -v
 
   run-mode-c-pipeline:
     # Pushes and pull requests run only the inexpensive quality job. Network-heavy
-    # research runs are limited to the Thursday/monthly schedules or manual runs.
+    # fixed-watchlist research runs are limited to Thursday or manual runs.
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     needs: quality-checks
     runs-on: ubuntu-latest
     timeout-minutes: 360
     permissions:
-      contents: write
+      contents: read
       pages: write
       id-token: write
     steps:
@@ -97,72 +92,7 @@ jobs:
             exit 1
           fi
 
-      - name: Restore Full-Market Hunter Cache
-        if: github.event.schedule == '0 3 1 * *' || (github.event_name == 'workflow_dispatch' && inputs.refresh_universe)
-        uses: actions/cache/restore@v4
-        with:
-          path: |
-            .hunter_cache
-            hunter_checkpoint.jsonl
-          key: alpha-hunter-cache-${{ github.ref_name }}-${{ github.run_id }}
-          restore-keys: |
-            alpha-hunter-cache-${{ github.ref_name }}-
-            alpha-hunter-cache-
-
-      - name: Monthly Full-Market Universe Refresh
-        if: github.event.schedule == '0 3 1 * *' || (github.event_name == 'workflow_dispatch' && inputs.refresh_universe)
-        env:
-          USER_EMAIL: ${{ secrets.USER_EMAIL }}
-        run: |
-          set +e
-          contact_email="${USER_EMAIL}"
-          python total_market_hunter_v2.py --email "$contact_email" --output-dir .
-          status=$?
-          set -e
-          echo "HUNTER_EXIT=$status" >> "$GITHUB_ENV"
-          if [ "$status" -ne 0 ]; then
-            echo "::warning::Full-market hunter stopped early; Mode C will use the last complete qualified_universe.csv in the repository."
-            if [ ! -f qualified_universe.csv ]; then
-              exit "$status"
-            fi
-          fi
-
-      - name: Save Full-Market Hunter Cache
-        if: always() && (github.event.schedule == '0 3 1 * *' || (github.event_name == 'workflow_dispatch' && inputs.refresh_universe))
-        uses: actions/cache/save@v4
-        with:
-          path: |
-            .hunter_cache
-            hunter_checkpoint.jsonl
-          key: alpha-hunter-cache-${{ github.ref_name }}-${{ github.run_id }}
-
-      - name: Commit Refreshed Qualified Universe
-        if: env.HUNTER_EXIT == '0'
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add qualified_universe.csv
-          if git diff --cached --quiet; then
-            echo "No qualified_universe.csv changes to commit."
-          else
-            git commit -m "Monthly refresh qualified universe [skip ci]"
-            git push
-          fi
-
-      - name: Upload Full-Market Hunter Artifacts
-        if: always() && (github.event.schedule == '0 3 1 * *' || (github.event_name == 'workflow_dispatch' && inputs.refresh_universe))
-        uses: actions/upload-artifact@v4
-        with:
-          name: Alpha_Engine_Full_Market_Hunter
-          path: |
-            hunter_audit.csv
-            hunter_audit.partial.csv
-            qualified_universe.csv
-            qualified_universe.partial.csv
-          if-no-files-found: warn
-          retention-days: 30
-
-      - name: Validate Uploaded Universe and Run Quant Engine
+      - name: Update and Analyze Fixed 100 Watchlist
         env:
           USER_EMAIL: ${{ secrets.USER_EMAIL }}
           SEND_EMAIL: "0"
@@ -175,10 +105,9 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: .mode_c_state
-          key: mode-c-dashboard-trends-${{ github.ref_name }}-${{ github.run_id }}
+          key: mode-c-fixed-watchlist-trends-${{ hashFiles('research_watchlist.csv') }}-${{ github.ref_name }}-${{ github.run_id }}
           restore-keys: |
-            mode-c-dashboard-trends-${{ github.ref_name }}-
-            mode-c-dashboard-trends-
+            mode-c-fixed-watchlist-trends-${{ hashFiles('research_watchlist.csv') }}-${{ github.ref_name }}-
 
       - name: Build Static Research Dashboard
         run: python build_mode_c_dashboard.py
@@ -193,7 +122,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: .mode_c_state
-          key: mode-c-dashboard-trends-${{ github.ref_name }}-${{ github.run_id }}
+          key: mode-c-fixed-watchlist-trends-${{ hashFiles('research_watchlist.csv') }}-${{ github.ref_name }}-${{ github.run_id }}
 
       - name: Upload Static Dashboard Artifact
         uses: actions/upload-artifact@v4
@@ -208,6 +137,7 @@ jobs:
         with:
           name: Mode_C_Long_Term_Value_Outputs
           path: |
+            research_watchlist.csv
             mode_c_screen.csv
             mode_c_shortlist.csv
             mode_c_shortlist_by_model.csv

@@ -399,7 +399,7 @@ class ModeCCoreTests(unittest.TestCase):
         self.assertAlmostEqual(instant, 600e6)
         self.assertEqual(instant_factor, 6.0)
 
-    def test_historical_valuation_aligns_shares_to_the_valuation_date_split_basis(self):
+    def test_historical_valuation_matches_yahoo_analysis_date_split_basis(self):
         GLOBAL_EVIDENCE_LEDGER.reset()
         sec = SECDataDistiller(
             "research@example.com",
@@ -492,16 +492,30 @@ class ModeCCoreTests(unittest.TestCase):
                 )
 
             self.assertEqual(len(result["ev_ebitda_hist"]), 1)
-            self.assertAlmostEqual(result["ev_ebitda_hist"][0]["EV_EBITDA"], 10.0 / 1.2)
+            # The historical Close=10 already reflects BOTH the 10:1 split
+            # before valuation and the later 2:1 split. Shares must use 20:1.
+            self.assertAlmostEqual(result["ev_ebitda_hist"][0]["EV_EBITDA"], 20.0 / 1.2)
+            self.assertAlmostEqual(result["pe_hist"][0], 40.0)
             evidence = {row["normalized_metric"]: row for row in GLOBAL_EVIDENCE_LEDGER.rows()}
             split_metric = "Historical_Share_Split_Factor_2023-12-31"
             market_cap_metric = "Historical_MarketCap_2023-12-31"
-            self.assertEqual(float(evidence[split_metric]["value"]), 10.0)
-            self.assertEqual(float(evidence[market_cap_metric]["value"]), 10.0)
+            self.assertEqual(float(evidence[split_metric]["value"]), 20.0)
+            self.assertEqual(float(evidence[market_cap_metric]["value"]), 20.0)
             self.assertIn(
                 evidence[split_metric]["evidence_id"],
                 evidence[market_cap_metric]["source_evidence_ids"],
             )
+            # A later 1:2 reverse split changes the normalized price and shares,
+            # but cannot change the reconstructed historical market cap.
+            market_data.loc[pd.Timestamp("2024-06-10"), ("Stock Splits", "TEST")] = 0.5
+            market_data.loc[pd.Timestamp("2024-02-16"), ("Close", "TEST")] = 40.0
+            with patch("AQR_ModeC_Agent_V12._BULK_MARKET_DATA", market_data):
+                reversed_result = historical_valuation(
+                    "TEST", sec, ebit, dna, debt, pd.DataFrame(), cash, net_income, shares,
+                    current_ev_ebitda=10.0, current_pe=20.0, shares_now=1.0,
+                )
+            self.assertAlmostEqual(reversed_result["ev_ebitda_hist"][0]["EV_EBITDA"], 20.0 / 1.2)
+            self.assertAlmostEqual(reversed_result["pe_hist"][0], 40.0)
         finally:
             GLOBAL_EVIDENCE_LEDGER.reset()
 

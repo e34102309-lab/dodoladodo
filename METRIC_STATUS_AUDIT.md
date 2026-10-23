@@ -1,5 +1,7 @@
 # Mode C Metric-Status Audit
 
+2026-10-24 固定 100 家的公式與抓取複查見 I 節；A–H 節中的全市場家數與測試數量為歷史紀錄。
+
 ## A. Root Causes
 
 1. The dashboard used `Number(null)`, which evaluates to zero in JavaScript. Missing CSV values therefore rendered as `0.00`.
@@ -98,3 +100,25 @@ The current 1,209-row backfill classifies 1,430 evidenced/formula zeros, 31,050 
 ```
 
 The local backfill validated 1,209 screen rows, 12 shortlist rows, 164,765 selected evidence records, and 135 trend groups without another SEC fetch.
+
+## I. 2026-10-24 固定 100 家公式與資料抓取複查
+
+本輪針對一般企業分析路徑及共用 SEC／Yahoo 抓取邏輯做離線複查；固定名單與因子權重未改動，沒有執行最新行情／財報更新或全市場抓取。
+
+| 問題 | 已確認的影響 | 修正 |
+| --- | --- | --- |
+| 歷史價格與股數拆股基準不同 | Yahoo `Close` 已調整拆股，股數卻只調整到歷史估值日；後續拆股會使歷史市值與倍數失真 | 歷史股數與 Yahoo 價格統一到分析日拆股基準，保留拆股來源鏈；順拆、反拆的回歸案例確認歷史市值不因單位改變 |
+| 稅前利益被用作 EBIT | 稅前利益可能已包含利息與其他非營業項目，影響 EBITDA、ICR、ROIC | EBIT 僅接受 `OperatingIncomeLoss`；無可靠營業利益時沿用缺資料的 ABSTAIN 閘門，稅前利益保留在獨立概念 |
+| 當期所得稅被用作總所得稅 | `CurrentIncomeTaxExpenseBenefit` 不含遞延稅，會扭曲有效稅率與 NOPAT | 不再作總稅額備援；缺值或與淨利期間不同時使用既有明示 21% 假設及信心扣分 |
+| 個別 TTM 有效卻屬不同期末 | 一個指標使用舊年報，另一個使用較新季度，仍可能組合成 FCF／EBITDA | TTM 回傳實際採用期末；核心流量與 SEC SBC 必須同一期末，且採用期間本身須符合既有新鮮度限制；有淨負債時利息也須與 EBIT 同期 |
+| 股數快取外推 | 已有 Yahoo 當期股數仍先採用過去股數加漂移率，或缺值時製造估算市值 | SEC 股數優先，其次採用明確有限且為正的 Yahoo 股數；不再用快取漂移推估當期股數；市值未知為 ABSTAIN |
+| 非有限數字及價格／成交量缺漏 | Infinity 或缺漏成交量可能繞過流動性檢查，舊價格被當成目前資料 | SEC 清理時排除非有限值；近 30 日價格與成交量需完整配對，最近價格不得落後本批 SPY 的最後交易日（若有該基準資料） |
+| SEC 雙層重試 | HTTP adapter 內部重試繞過全域限速，永久 403 仍重送五次 | 關閉 adapter 內部重試，只由外層對暫時錯誤重試；每個請求都先經限速，永久錯誤立即停止 |
+
+拆股案例：原始股數 1 億股、估值日前 10:1 拆股、估值日後 2:1 拆股，Yahoo 正規化歷史 Close 為 10 美元。正確市值為 `10 × 20億股 = 200億美元`，舊計算只有 `10 × 10億股 = 100億美元`。若後續改為 1:2 反拆，正規化 Close 變為 40 美元、股數變為 5 億股，市值仍應是 200 億美元。測試同時確認 EV/EBITDA 與 P/E。
+
+本輪另核對了 `OCF - Maintenance CapEx - SBC`、Market Cap／EV yield 分母、平均投入資本 ROIC、三年必要 EBITDA CAGR、固定 D&A 壓力情境，以及可用因子權重的重新正規化；沒有調整原始權重或宣稱投資成效。
+
+驗證：新增 16 個針對錯誤來源與抓取行為的測試，並更正原本假設 Yahoo Close 為未拆股價格的歷史估值測試；完整 suite 245/245 通過。`fixture_output_formula_data_audit_20261024/` 的 CSV、Dashboard 與 validator 通過，`invalid_zero = 0`。三個本輪 Python 檔案通過 AST 語法檢查。這些是固定案例與程式行為驗證，尚未逐家下載、對照 100 家最新原始財報。
+
+參考：[yfinance 維護者的拆股處理說明](https://github.com/ranaroussi/yfinance/wiki/Price-repair)、[SEC XBRL Guide](https://www.sec.gov/files/edgar/filer-information/specifications/xbrl-guide-2025-11-19.pdf)（總稅額與當期稅額區別）、[FASB 所得稅 taxonomy 範例](https://xbrl.fasb.org/impdocs/IT_TIG/incometaxes.htm)、[SEC Company Facts API](https://www.sec.gov/search-filings/edgar-application-programming-interfaces)。

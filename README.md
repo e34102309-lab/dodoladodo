@@ -2,6 +2,8 @@
 
 本專案用 ETF 承擔核心市場報酬，主動個股只作有紀律的研究與提高長期報酬機會。程式是可審計的研究漏斗，不是自動買入或保證提高年化率的訊號。
 
+2026-10-24 起只追蹤使用者確認的固定 100 家 `research_watchlist.csv`。每週更新這 100 家的 Yahoo／SEC 資料並分析；已取消每月全市場抓取與手動刷新入口。
+
 ## 投資原則
 
 - QQQ 目標 40%、VOO 目標 30%、主動個股 0%～30%。
@@ -15,8 +17,9 @@
 
 ## 主要檔案
 
-- `total_market_hunter_v2.py`：本機執行、低請求量且可斷點續跑的全市場初篩器。
-- `qualified_universe.csv`：手動更新並上傳的候選宇宙，至少包含 `Ticker,CIK`。
+- `research_watchlist.csv`：正式固定 100 家名單，至少包含 `Ticker,CIK`；只有人工確認後才修改成分。
+- `mode_c_watchlist.py`：連網前驗證家數、Ticker、CIK 與重複，並計算實際輸入檔版本。
+- `total_market_hunter_v2.py`、`qualified_universe.csv`：保留舊邏輯與歷史資料，hunter CLI 已停用，主程式不會讀取舊全市場名單。
 - `AQR_ModeC_Agent_V12.py`：價值、品質、預期、資本配置與下檔風險評分引擎。
 - `mode_c_evidence.py`：point-in-time evidence ledger、來源血緣與衍生公式紀錄。
 - `mode_c_metric_contract.py`：統一 `VALID/MISSING/NOT_APPLICABLE/ABSTAIN/STALE/INVALID/ESTIMATED` 指標狀態，防止缺值被顯示成零。
@@ -27,37 +30,24 @@
 - `mode_c_fixture_pipeline.py`：以 GLW、PGR、IFNNY 固定資料跑完整 CSV、JSON、dashboard 與 validator 整合測試。
 - `run_mode_c_ai_agent.py`：保留為選用工具，不再由主要 GitHub Actions 自動呼叫。
 
-## 本機全市場初篩
+## 固定 100 家的更新與分析
 
-PowerShell 先測試 20 檔：
+先執行不連網的名單檢查：
 
-```powershell
-& D:\dobird\.venv\Scripts\python.exe D:\dobird\total_market_hunter_v2.py --email "your_email@gmail.com" --output-dir D:\dobird\hunter_output --scan-limit 20
+```bash
+python mode_c_watchlist.py
 ```
 
-測試成功後跑完整市場：
+設定 SEC 聯絡信箱後，執行下方 Mode C 指令即可。主程式一律讀取專案內的 `research_watchlist.csv`，不讀取舊 `qualified_universe.csv` 或 `QUALIFIED_UNIVERSE` 環境變數，也不搜尋其他股票。
 
-```powershell
-& D:\dobird\.venv\Scripts\python.exe D:\dobird\total_market_hunter_v2.py --email "your_email@gmail.com" --output-dir D:\dobird\hunter_output
-```
-
-重要行為：
-
-- 初篩市值至少 50 億美元。
-- 最近一年 OCF 必須為正。
-- 毛利率非正才在第一層排除；低於 25% 會與至少 5 個同業樣本比較，但低於中位數或樣本不足只留下警示並交給 SEC 深篩，避免錯殺低毛利、高周轉企業。
-- 有可靠 cash 時以 Net debt/EBITDA <=4 通過、4～5 警示、>5 排除，並保留 Gross debt/EBITDA 供稽核；cash 缺失才保守使用 gross debt 口徑。
-- Yahoo 詳細資料循序抓取，預設每次至少間隔 2.5 秒，不使用多執行緒轟炸。
-- 中斷、斷線或限流後重跑相同指令即可接續；不要加 `--fresh`。
-- 未完成時只更新 `*.partial.csv`，不覆蓋上次完整 `qualified_universe.csv`。
-- `hunter_audit.csv` 保留全部通過、淘汰與待查原因。
-- GitHub Actions 每週於美股週四收盤後（台灣時間週五 06:00）使用最近一次完整 universe 跑 Mode C；每月 1 日才重跑全市場初篩。push/PR 不重跑耗時初篩。
-- 平日若 `yf.info` 暫時被限流，只沿用最近一次完整獵人已驗證的 `quoteType`、交易所、sector 與 industry；價格、SBC、負債及財報數字不會由舊 metadata 猜測。
-- 第一層遇到專用產業會跑低誤殺的產業初篩，例如銀行／保險的負淨值、REIT 的已揭露 FFO、utility 的 EBITDA+OCF；不使用一般企業 OCF、毛利與 Debt/EBITDA 規則。Yahoo 欄位不足只會留下警示並交給 SEC 深篩，明確硬性失敗才淘汰。
-- 深篩在價格、流動性或市值前置閘門就停止時，輸出仍保留月度已驗證的 sector/industry 與原始模型 key，不用 dataclass 預設值假裝已跑一般企業模型。fee-based 金融公司只有在 SEC 顯示 loans/assets 至少 20% 且有信用損失準備時，才可透明細分成 `FINANCIAL_LENDER`；`Initial_Industry_Model_Key`、`Model_Route_Refined` 與原因必須寫入輸出。
-- 一般企業的 Yahoo OCF、毛利、EBITDA、負債或營收缺值也只標記後送 SEC；只有明確非正或槓桿超標才在第一層淘汰，SEC 仍缺核心證據時由 Mode C `ABSTAIN`。
-- 預設不設產業黑名單；單字母普通股 share class 會保留，多字母 preferred-style 後綴仍排除。月度 hunter 另以 Nasdaq Trader 官方 symbol directory 辨識 Common/Preferred/Unit/Right/Note；名稱只有泛稱 ADS/ADR 時，會用決策當時最新 10-K/20-F/40-F cover-page `Security12bTitle` 與 `TradingSymbol` 配對確認。若 SEC 標題仍是泛稱，只在該 CIK 僅剩一個 ADS，或另一股類已被官方證據確認為 preferred 時，以 `MEDIUM` 信心保留推定普通 ADS；其他無法辨識情況停在 `Review`。外國年報仍受既有資料信心扣分與非美元/IFRS 閘門約束。
-- 同一 CIK 有多個合格普通股類別時，不再用 Yahoo 估算市值決定；改選官方普通股證據完整且平均日成交金額最高的 class。`SecurityName`、`SecurityClass`、證據來源、成交金額及選擇理由都寫入 audit/universe。
+- 固定名單必須恰好 100 家，Ticker 與 CIK 均唯一且有效；檔案不存在或內容異常時，連網前立即停止。
+- 每次只更新這 100 家的價格、公司資訊與 SEC 財報。SPY、QQQ、^TNX 只供既有動能、估值與利率基準。
+- 個別公司不合格或資料不足時仍保留 FAIL／ABSTAIN 與原因，不從外面補足候選，也不因評分變化自動換股。
+- 第一版名額為科技 25、工業 20、醫療 20、必需消費 15、非必需消費 12、通訊與媒體 8；同一細產業最多 4 家。這些是研究名額，不是持倉權重。
+- 名單源自 2026-09-01 初篩快照及 2026-07-12 Yahoo 資訊快取。初篩數字保留原日期，最新分析以每次產生的 `mode_c_screen.csv` 為準。
+- Yahoo 資訊暫時缺失時，只沿用名單中已驗證的 quote type、交易所及產業身分資訊；不以舊快照補入價格、負債、SBC 或財報數字。
+- 名單固定保存，只有人工確認後才替換公司；編輯後先跑 `python mode_c_watchlist.py`。缺失資料不等於這家公司應移出研究範圍。
+- 舊全市場 hunter CLI 已停用，執行會直接停止且不發送抓取請求。舊模組與原始 universe 保留作歷史及離線測試。
 
 ## Mode C 評分邏輯
 
@@ -126,7 +116,7 @@ python mode_c_fixture_pipeline.py --output-dir fixture_output
 
 完整的缺值、產業適用性、FCF 分母、CapEx 敏感度與 dashboard 稽核紀錄見 `METRIC_STATUS_AUDIT.md`。
 
-本機產生的網站位於 `public/index.html`。`qualified_universe.csv` 可由本機手動更新；GitHub Actions 每週於美股週四收盤後（台灣時間週五 06:00）以現有 universe 更新 Mode C，每月 1 日才重跑全市場初篩並提交新的 `qualified_universe.csv`。PR 只跑品質檢查。
+本機產生的網站位於 `public/index.html`。GitHub Actions 每週於美股週四收盤後（台灣時間週五 06:00）只更新、分析 `research_watchlist.csv` 的固定 100 家；手動執行亦相同。沒有月度全市場排程，不會自動提交或替換名單。push／PR 只跑名單檢查、compile 與單元測試。
 
 ## 靜態研究網站
 
@@ -142,7 +132,7 @@ python mode_c_fixture_pipeline.py --output-dir fixture_output
 artifact 下載方式：
 
 1. 到 GitHub repository 的 `Actions`。
-2. 打開最新一次 `Mode-C Long-Term Value Research Pipeline`。
+2. 打開最新一次 `Mode-C Fixed 100 Research Pipeline`。
 3. 在頁面下方 `Artifacts` 下載 `Alpha_Engine_Static_Dashboard`。
 4. 解壓縮 zip。
 5. 直接打開 `index.html`。
@@ -173,4 +163,4 @@ artifact 下載方式：
 - `mode_c_agent_payload.json`：供手動 AI 研究或其他工具使用的九項反證任務包。
 - `public/index.html`：可直接開啟的研究網站。
 - `public/data.json`：網站使用的完整結構化資料。
-- `.mode_c_state/dashboard_trend_history.json`：dashboard 產生的趨勢基準檔，在 GitHub Actions 透過 cache 保存，供下次比較候選風口。這不是你需要手動編輯的正式名單。
+- `.mode_c_state/fixed_watchlist_dashboard_trend_history.json`：固定名單的趨勢基準，與舊全市場趨勢分開；GitHub Actions cache 依名單內容隔離，避免把範圍縮小誤判為產業變化。

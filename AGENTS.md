@@ -21,6 +21,8 @@
 
 專案是一套美股長期價值「研究漏斗」，不是自動交易器。Global Research Queue 是人工研究順序，不是買進訊號或保證報酬。
 
+2026-10-24 使用者已確認改為固定 100 家：`research_watchlist.csv` 是正式研究範圍。不得自行補入股票、重選名單或恢復全市場抓取。`qualified_universe.csv` 與 hunter 資料只保留作歷史紀錄，不是目前執行輸入。
+
 ## 3. 不可破壞的資料原則
 
 ### Point-in-time
@@ -72,7 +74,8 @@
 
 ## 5. 檔案責任
 
-- `total_market_hunter_v2.py`：每月第一層全市場 universe。
+- `research_watchlist.csv`、`mode_c_watchlist.py`：固定 100 家名單及連網前的完整性驗證。
+- `total_market_hunter_v2.py`：舊全市場初篩邏輯，CLI 已停用；只保留歷史與既有單元測試用途。
 - `AQR_ModeC_Agent_V12.py`：SEC 資料重建與 Mode C 主流程。
 - `mode_c_routing.py`：產業路由。
 - `mode_c_industry_models.py`：特殊產業模型。
@@ -101,12 +104,13 @@
 
 ### 預設不可自行執行的高成本流程
 
-除非使用者明確要求更新市場資料，否則不要執行：
+目前只可更新固定名單的市場資料。除非使用者明確要求恢復全市場模式，否則不要執行：
 
 - 完整 `total_market_hunter_v2.py` 全市場抓取。
-- 完整 `AQR_ModeC_Agent_V12.py` 網路研究流程。
 - 重複下載 SEC／Yahoo 全市場資料。
 - 只為確認 UI 而重建所有歷史研究輸出。
+
+本機完整固定 100 家的 `AQR_ModeC_Agent_V12.py` 連網研究流程，仍只在使用者要求更新資料時執行；程式修改的驗證使用離線測試及 fixture。
 
 ### 最小充分驗證
 
@@ -128,8 +132,9 @@ Windows 本機若存在可優先使用：
 
 ## 8. GitHub Actions 與排程
 
-- 每週四 `22:00 UTC`：美股盤後執行 Mode C。
-- 每月 1 日 `03:00 UTC`：全市場 universe refresh 後執行 Mode C。
+- 每週四 `22:00 UTC`（台灣週五 06:00）：只更新、分析固定 100 家。
+- 已取消每月全市場 universe refresh；手動 workflow 也只處理同一固定名單。
+- 固定名單缺失、非 100 家、Ticker／CIK 無效或重複時應停止，不得回退到舊全市場名單。
 - push／pull request 只應執行便宜的 compile 與 unit tests。
 - 不得讓 partial hunter 輸出覆蓋上一份完整 `qualified_universe.csv`。
 - Workflow 修改後檢查 `schedule`、`workflow_dispatch`、permissions、artifact 路徑與 timeout。

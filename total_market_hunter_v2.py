@@ -1,5 +1,5 @@
 """
-Alpha Engine - conservative total-market pre-screener.
+Legacy total-market pre-screener. CLI disabled after switching to a fixed watchlist.
 
 Design goals:
 1. Use one SEC request for ticker/CIK/exchange mapping.
@@ -2003,7 +2003,12 @@ def run(args: argparse.Namespace) -> int:
 
 
 def main() -> int:
-    return run(build_parser().parse_args())
+    print(
+        "[已停用] 專案已改為固定 100 家 research_watchlist.csv；"
+        "請執行 AQR_ModeC_Agent_V12.py，不再執行全市場抓取。",
+        file=sys.stderr,
+    )
+    return 2
 
 
 if __name__ == "__main__":

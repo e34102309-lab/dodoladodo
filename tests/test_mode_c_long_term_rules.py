@@ -76,14 +76,16 @@ class ModeCLongTermRuleTests(unittest.TestCase):
         self.assertIn("MAX_PER_SECTOR = 0", self.mode_c)
         self.assertIn("if max_per_sector > 0", self.mode_c)
 
-    def test_thursday_after_close_mode_c_and_monthly_universe_refresh_are_separate(self):
+    def test_thursday_fixed_watchlist_has_no_market_wide_refresh(self):
         self.assertIn("- cron: '0 22 * * 4'", self.workflow)
-        self.assertIn("- cron: '0 3 1 * *'", self.workflow)
-        self.assertGreaterEqual(
-            self.workflow.count("github.event.schedule == '0 3 1 * *'"),
-            4,
-        )
-        self.assertIn('contact_email="${USER_EMAIL}"', self.workflow)
+        self.assertEqual(self.workflow.count("- cron:"), 1)
+        for retired in ("0 3 1 * *", "refresh_universe", "HUNTER_EXIT", "alpha-hunter-cache", "git push"):
+            self.assertNotIn(retired, self.workflow)
+        self.assertNotIn("python total_market_hunter_v2.py", self.workflow)
+        self.assertIn("run: python mode_c_watchlist.py", self.workflow)
+        self.assertIn("research_watchlist.csv", self.workflow)
+        self.assertIn("hashFiles('research_watchlist.csv')", self.workflow)
+        self.assertNotIn("contents: write", self.workflow)
         self.assertIn("Missing USER_EMAIL repository secret", self.workflow)
         self.assertIn("user_email = require_sec_contact_email()", self.mode_c)
         self.assertNotIn("a7924177@gmail.com", self.workflow)

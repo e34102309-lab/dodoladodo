@@ -3,13 +3,14 @@
 > GitHub `main` 策略基準為 `1fcbd6e`，已於 2026-09-06 透過 merge commit `a7a0c1a` 整合；本文件另納入 2026-09-17 的舊 universe 路由版本稽核修正。五段檢查紀錄見 `STRATEGY_FIVE_STAGE_AUDIT.md`。
 > 本文件描述「程式目前真的會做什麼」，不是理想藍圖，也不是投資建議。
 > 金額若無特別註明，以十億美元（USD B）處理；百分比欄位以程式輸出的百分點表示。
+> 2026-10-24 執行範圍改為使用者確認的固定 100 家 `research_watchlist.csv`；取消月度全市場抓取，舊全市場資料與抓取邏輯僅保留歷史及測試用途，財務判斷公式未改動。
 
 ## 1. 系統目標與邊界
 
 本系統是一套只做多的研究漏斗，不是自動交易器：
 
-1. 每月建立一次美股大型股候選宇宙。
-2. 每週四美股盤後以最新候選宇宙執行 SEC point-in-time 深篩。
+1. 固定使用已確認的 100 家 `research_watchlist.csv`；連網前檢查家數、Ticker、CIK 與重複，錯誤即停止，不回退至舊 universe。
+2. 每週四美股盤後或手動執行時，只更新及分析這 100 家；另取 SPY／QQQ／^TNX 作既有基準。名單成分不隨分數、價格或資料缺失自動變動。
 3. 一般企業與特殊產業分流，不把銀行、保險、REIT 等硬塞進同一套 FCF/EBITDA 模型。
 4. 先用資料完整度、財務存續與硬性風險淘汰，再以同模型百分位建立研究順序。
 5. 最多輸出 12 檔 `Global_Research_Queue`，供人工研究，不直接下單；另輸出每個模型內的研究名單。
@@ -26,9 +27,9 @@
 
 ```mermaid
 flowchart TD
-    A[Yahoo 美國股票 Screener] --> B[證券種類與交易所檢查]
-    B --> C[每月第一層全市場初篩]
-    C --> D[qualified_universe.csv]
+    A[research_watchlist.csv 固定100家] --> B[家數與唯一Ticker CIK驗證]
+    B --> C[只更新名單內Yahoo市場資料]
+    C --> D[個別公司證券種類與交易所檢查]
     D --> E[共用產業路由]
     E --> F{模型類型}
     F -->|一般企業| G[SEC point-in-time 財報重建]
@@ -51,8 +52,8 @@ flowchart TD
 
 Yahoo 用於：
 
-- 初始美股候選、價格、市值、成交量、sector、industry 與 quote type。
-- 第一層低成本財務初篩。
+- 固定名單的價格、市值、成交量、sector、industry 與 quote type。
+- 不再執行全市場 Screener 或自動重選 100 家；名單中的初篩欄位只保留選定時的來源快照。
 - Mode C 當日價格、30 日平均成交金額、動能等市場欄位。
 - SEC 無法建立總負債時的明確 `totalDebt` fallback。
 - SEC SBC 或股數不足時的有限 fallback，但會扣資料信心。
@@ -198,6 +199,8 @@ sector／industry 只接受有效文字；空白、NaN、`None`、`null`、`N/A`
 - 核心 SEC 資料缺失、過舊、幣別不可靠或 lineage 不足：`ABSTAIN`。
 - 一般企業所需核心 facts：OCF、Revenue、EBIT、CapEx、D&A、Gross Profit、Net Income、Cash、Equity。
 - 一般企業核心 TTM：OCF、CapEx、EBIT、D&A、Revenue、Net Income。
+- 核心 TTM 與已採用的 SEC SBC 必須具有相同實際期末，且採用期間符合既有新鮮度限制；不能因原始資料含較新單季就把舊年報備援當成最新 TTM。
+- 近 30 日價格與成交量必須有完整有限配對；若有 SPY 基準，股票最新價格日不得落後本批市場交易日。
 - SBC 不可在缺失時默認為 0。
 - 總負債 SEC 優先；Yahoo `totalDebt` 只可作明確 fallback。
 - cash、equity 必須有可用的 SEC balance-sheet evidence。
@@ -267,6 +270,7 @@ sector／industry 只接受有效文字；空白、NaN、`None`、`null`、`N/A`
 ### 8.1 ROIC／ROCE
 
 - `Tax Rate = TTM Tax / (Net Income + Tax)`，限制在 0% 至 35%。
+- EBIT 只接受可核對的營業利益，不以稅前利益替代；總稅額不以僅含當期稅的標籤替代，且稅額與淨利必須為同一期末。
 - 無法建立時假設 21%，並扣資料信心。
 - `Invested Capital = Equity + Debt - Cash`
 - `Average Invested Capital = (Beginning Invested Capital + Ending Invested Capital) / 2`
@@ -280,6 +284,7 @@ sector／industry 只接受有效文字；空白、NaN、`None`、`null`、`N/A`
 - 一般情況：`ICR = EBIT / Interest Expense`。
 - Debt 很小（`<= 0.01B`）或 Cash `>= Debt`：ICR 視為 non-binding／無限大。
 - 有淨負債且缺 Interest evidence：`ABSTAIN`。
+- 利息證據須與 EBIT 的 TTM 期末一致；錯期視為無法驗證利息覆蓋，不以舊年報利息除較新 TTM EBIT。
 - 最終 eligible 需要 ICR `>= 3x`，除非 ICR non-binding。
 - ICR `< 1x`：一般企業直接 `FAIL`。
 
@@ -305,7 +310,7 @@ Survival 必須同時滿足：
 ### 9.1 歷史估值
 
 - 僅在 filing inputs 已可被市場取得後再重建該年估值，另加一日保守 lag。
-- 股數與價格先調整到一致拆股基準。
+- Yahoo `Close` 在 `auto_adjust=False` 時仍已包含拆股調整；歷史股數需調整至相同分析日基準，納入估值日後的拆股作單位正規化，避免歷史市值失真。此正規化不引入未來財務數字。
 - 用當時 debt、cash、EBITDA 重建 Market Cap 與 EV/EBITDA。
 - 至少 5 個正值 EV/EBITDA 年，且可用年度覆蓋率 `>= 60%` 才有效。
 - 主要 value 因子使用目前 EV/EBITDA 在自身歷史中的 percentile。

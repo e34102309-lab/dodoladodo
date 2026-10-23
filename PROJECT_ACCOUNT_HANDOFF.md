@@ -1,8 +1,19 @@
 # dodoladodo 專案帳號交接文件
 
-> 最後更新：2026-09-17（Asia/Taipei）
+> 最後更新：2026-10-24（Asia/Taipei）
 > 用途：更換 Codex／GitHub 帳號後，讓新的 AI 工作階段能從本文件直接接手。
 > 本文件記錄的是工程狀態與研究流程，不是投資建議，也不代表策略已經通過無偏回測。
+
+## 0. 目前執行範圍：固定 100 家
+
+- 使用者於 2026-10-24 確認前一輪 100 家草案，正式名單為 `research_watchlist.csv`；固定成分，不依每週價格或評分自動換股。
+- `mode_c_watchlist.py` 在連網前驗證恰好 100 家、唯一 Ticker／CIK 與有效識別字。任何錯誤直接停止，沒有舊全市場 fallback，亦不接受舊 `QUALIFIED_UNIVERSE` 環境變數切換範圍。
+- Mode C 與 Dashboard 預設使用相同名單。每家公司都保留分析結果；失敗或資料不足不會從研究範圍移除，也不會從外面補一家公司。
+- 只保留每週四 `22:00 UTC`（台灣週五 06:00）及手動執行；月度全市場排程、`refresh_universe` 選項、hunter cache／artifact／自動 commit 全部移除。舊 hunter CLI 直接停止。
+- 僅固定 100 家的股票資料會進入下載與分析；`SPY`、`QQQ`、`^TNX` 保留為既有市場與利率基準，不列入候選。
+- `qualified_universe.csv` 與舊稽核資料保留作歷史紀錄；發布前已保留遠端 `28b9bda` 的 2026-10-01 月度快照（1,218 家）。固定 100 家仍來自使用者確認的 2026-09-01 草案（當時候選 1,196 家），資訊快取是 2026-07-12；每次新分析的現況以 `mode_c_screen.csv` 為準，不把初選數字冒充當日數據。
+- 固定名單趨勢檔及 Actions cache 與舊全市場分離，cache 以名單 hash 區隔。資料選取、財務公式、風險閘門及輸出契約維持既有規則。
+- 本節是目前操作規則；以下較早的提交、全市場作業與驗證數字保留歷史脈絡。
 
 ## 1. 三分鐘接手摘要
 
@@ -13,8 +24,8 @@
 5. 完整策略修正提交：`0fb550d Harden Mode C strategy logic and decision contracts`；已包含 8 月份的累積修正。
 6. 2026-09-06 已抓取遠端 `main` 至 `5736083`，保留其最新月度 `qualified_universe.csv`，再以非 force push 完成整合；舊 tip `52ff824` 的截斷檔案修復亦已包含。
 7. 完整策略說明：`CURRENT_STRATEGY_LOGIC_FOR_AI_REVIEW.md`；本輪逐段紀錄：`STRATEGY_FIVE_STAGE_AUDIT.md`。
-8. 自動排程：每週四美股盤後跑 Mode C；每月 1 日另重抓全市場第一層 universe。
-9. 2026-09-17 工程驗證：完整 suite 217/217 通過；離線 fixture validator 的 `invalid_zero = 0`。詳見第 9 節。
+8. 自動排程：每週四美股盤後只更新固定 100 家；不再執行月度全市場抓取。
+9. 2026-10-24 工程驗證：公式／抓取複查後完整 suite 245/245 通過；固定名單連網邊界與離線 fixture 均通過，`invalid_zero = 0`。詳見第 9 節。
 10. 2026-09-17 GitHub Actions 在 `Validate Research Artifacts` 因舊 universe 的資產管理路由版本差異失敗；修正已納入 `main`，下一次排程會使用新 validator。本機未重跑高成本全市場流程。
 
 新帳號接手後，先執行：
@@ -46,8 +57,8 @@ git log --oneline --decorate -5
 
 這是一套美股長期價值研究漏斗，不是自動交易器。主要工作是：
 
-- 每月建立大型美股候選 universe。
-- 每週用 SEC XBRL point-in-time 資料進行深度研究。
+- 人工維護已確認的固定 100 家研究名單。
+- 每週只更新這 100 家的 Yahoo／SEC XBRL point-in-time 資料並進行深度研究。
 - 依產業模型分流，避免用同一套 FCF／EBITDA 邏輯評估銀行、保險、REIT 等企業。
 - 把資料不足、真正不合格與不適用因素分開處理。
 - 在各模型內計算研究優先順序，再產生最多 12 檔的 Global Research Queue。
@@ -59,7 +70,8 @@ git log --oneline --decorate -5
 
 | 檔案 | 責任 |
 |---|---|
-| `total_market_hunter_v2.py` | 每月全市場第一層初篩、證券種類辨識、產生 `qualified_universe.csv` |
+| `research_watchlist.csv`、`mode_c_watchlist.py` | 固定 100 家研究範圍與連網前驗證 |
+| `total_market_hunter_v2.py` | 舊全市場初篩邏輯保留，CLI 已停用 |
 | `AQR_ModeC_Agent_V12.py` | Mode C 主流程、SEC TTM 重建、一般企業評分、壓力測試與輸出 |
 | `mode_c_routing.py` | sector／industry 路由與特殊模型分流 |
 | `mode_c_industry_models.py` | 銀行、保險、REIT、utility、cyclical、fee financial 等專用模型 |
@@ -77,10 +89,10 @@ git log --oneline --decorate -5
 ## 4. 端到端流程
 
 ```text
-Yahoo 美國股票候選
-  -> 證券種類／交易所檢查
-  -> 每月第一層全市場初篩
-  -> qualified_universe.csv
+已確認的 research_watchlist.csv（固定 100 家）
+  -> 家數、Ticker、CIK 與重複驗證
+  -> 只更新固定名單的市場資料
+  -> 個別公司證券種類／交易所檢查
   -> 產業模型路由
   -> SEC point-in-time facts 與 TTM 重建
   -> 一般企業或特殊產業模型
@@ -230,13 +242,12 @@ Dashboard 預設使用 coverage-first round-robin 產生的 `Research_Priority_R
 
 Workflow：`.github/workflows/alpha_hunt.yml`
 
-- 每週四 `22:00 UTC`：美股盤後跑 Mode C，台北時間通常為週五 06:00。
-- 每月 1 日 `03:00 UTC`：先做全市場第一層 universe refresh，再跑 Mode C。
-- 手動執行可選 `refresh_universe=true`。
+- 每週四 `22:00 UTC`：固定 100 家 Mode C，台北時間週五 06:00。
+- 已取消每月全市場排程；手動執行無刷新選項，只分析同一固定名單。
 - push／pull request 只跑便宜的 compile 與單元測試，不跑高成本市場抓取。
 - 網路研究 job timeout 為 360 分鐘。
-- 月度 hunter 失敗時，如果 repo 仍有上一份完整 `qualified_universe.csv`，Mode C 可沿用舊完整 universe；partial 不會覆蓋完整輸出。
-- 成功後上傳 Full Market Hunter、Mode C outputs 與 Static Dashboard artifacts。
+- 固定名單錯誤即停止，不能沿用舊全市場名單或自動補入股票。
+- 成功後上傳包含固定輸入名單的 Mode C outputs 與 Static Dashboard artifacts。
 - Public repository 時部署 GitHub Pages。
 
 必要 GitHub Actions secret：
@@ -284,7 +295,21 @@ git diff --stat HEAD origin/codex/metric-integrity-audit-v2
 
 ## 9. 上次驗證結果
 
-2026-09-17 最近一次工程驗證結果：
+2026-10-24 公式與抓取複查：
+
+- 修正 Yahoo 歷史 Close 與股數拆股基準、EBIT／所得稅標籤混用、TTM 錯期／舊備援、股數快取外推、非有限來源與流動性缺漏、未知市值錯判 FAIL，以及 SEC adapter 的隱藏重試。
+- 新增 16 個測試並更正歷史拆股測試的錯誤價格假設，完整 suite 245/245 通過；三個本輪 Python 檔案通過 AST 語法檢查。
+- `fixture_output_formula_data_audit_20261024/` 整合及 validator 通過：5 fixture、3 PASS／1 FAIL／1 ABSTAIN、3 eligible、3 shortlist，`invalid_zero = 0`。
+- 100 家名單、權重與排程未再變動，名單版本維持 `2f277828438c03c5`；沒有逐家連網核對最新財報。使用者已授權將固定名單、排程及公式修正一併提交並推送；發布狀態以 `main` 提交與 Actions 結果為準。詳細公式案例與官方來源見 `METRIC_STATUS_AUDIT.md` 的 I 節。
+
+2026-10-24 同日較早的固定 100 家切換驗證：
+
+- 全部 229 個單元測試通過；包含固定名單家數、重複與無效識別字、缺檔停止、舊環境變數無法擴大範圍、100 家均留下結果及 hunter CLI 停用。
+- 六個本輪 Python 檔案通過 AST 語法檢查；`git diff --check` 無空白錯誤。
+- `fixture_output_fixed_watchlist_20261024/` 離線整合與 validator 通過：5 個 fixture、3 PASS／1 FAIL／1 ABSTAIN、3 eligible、3 shortlist，`invalid_zero = 0`。
+- 沒有連網更新這 100 家，也沒有全市場抓取；以上結果不代表最新市場分析。線上排程在變更進入 GitHub 預設分支後生效。
+
+2026-09-17 歷史工程驗證結果：
 
 - Python compile：七個本輪生產模組已通過 `py_compile`。
 - 單元測試：完整執行 217 項全部通過，約 4.1 秒；validator 聚焦模組 18/18 通過。
@@ -300,7 +325,7 @@ git diff --stat HEAD origin/codex/metric-integrity-audit-v2
 & 'D:\dobird\.venv\Scripts\python.exe' mode_c_fixture_pipeline.py --output-dir fixture_output_route_fix_20260917
 ```
 
-只有在確實需要更新市場資料時，才執行全市場 hunter 或完整 Mode C 網路流程。
+固定名單的完整 Mode C 連網流程只在需要更新這 100 家時執行；全市場 hunter 已停用，不得因例行更新而恢復。
 
 ## 10. 尚未完成與限制
 
@@ -342,6 +367,10 @@ universe 路由版本 validator 修正也已納入 main；217 項單元測試與
 均已通過。策略來源分支是 codex/metric-integrity-audit-v2。先看 git status、
 log、diff 確認真實狀態；未經授權不要再推送。
 
+目前僅使用使用者已確認的 research_watchlist.csv 固定 100 家，執行前先跑
+python mode_c_watchlist.py。不要執行全市場抓取、恢復月度排程或讓
+QUALIFIED_UNIVERSE 環境變數改回舊名單。
+
 這是一套美股長期價值研究漏斗，不是自動交易器。請維持 SEC point-in-time
 證據、禁止單季乘四、FAIL/ABSTAIN/N/A 分流、產業專用模型、同模型 percentile
 與小樣本收縮。跨模型尚未校準，不可把 Global Research Queue 稱為預期報酬。
@@ -356,7 +385,7 @@ log、diff 確認真實狀態；未經授權不要再推送。
 新帳號能回答並確認以下事項，即表示已成功接手：
 
 - 能找到本機 repo 與正確工作分支。
-- 能說明每月初篩、每週深篩與產業模型分流。
+- 能說明固定 100 家名單、每週深篩與產業模型分流，且知道月度全市場初篩已取消。
 - 知道 Global Research Queue 不是跨模型 alpha 排名。
 - 知道哪些情況是 `FAIL`、`ABSTAIN` 與 `NOT_APPLICABLE`。
 - 能找到 evidence ledger、validator、Dashboard 與 fixture pipeline。

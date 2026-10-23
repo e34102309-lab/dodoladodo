@@ -15,6 +15,7 @@ from mode_c_research_priority import (
     RESEARCH_PRIORITY_VERSION,
     annotate_research_priorities,
 )
+from mode_c_watchlist import FIXED_WATCHLIST_PATH
 
 DASHBOARD_TREND_POLICY_VERSION = (
     f"2026-07-model-relative-trends-v4:{RESEARCH_PRIORITY_VERSION}"
@@ -1148,9 +1149,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Build the static Mode C research dashboard.")
     parser.add_argument("--screen", default="mode_c_screen.csv")
     parser.add_argument("--shortlist", default="mode_c_shortlist.csv")
-    parser.add_argument("--universe", default="qualified_universe.csv")
+    parser.add_argument("--universe", default=str(FIXED_WATCHLIST_PATH))
     parser.add_argument("--output", default="public")
-    parser.add_argument("--history", default=".mode_c_state/dashboard_trend_history.json")
+    parser.add_argument("--history", default=".mode_c_state/fixed_watchlist_dashboard_trend_history.json")
     parser.add_argument("--no-history", action="store_true", help="Do not read or update emerging-theme trend history.")
     args = parser.parse_args()
     history = None if args.no_history else Path(args.history)
