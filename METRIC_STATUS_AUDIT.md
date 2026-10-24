@@ -122,3 +122,20 @@ The local backfill validated 1,209 screen rows, 12 shortlist rows, 164,765 selec
 驗證：新增 16 個針對錯誤來源與抓取行為的測試，並更正原本假設 Yahoo Close 為未拆股價格的歷史估值測試；完整 suite 245/245 通過。`fixture_output_formula_data_audit_20261024/` 的 CSV、Dashboard 與 validator 通過，`invalid_zero = 0`。三個本輪 Python 檔案通過 AST 語法檢查。這些是固定案例與程式行為驗證，尚未逐家下載、對照 100 家最新原始財報。
 
 參考：[yfinance 維護者的拆股處理說明](https://github.com/ranaroussi/yfinance/wiki/Price-repair)、[SEC XBRL Guide](https://www.sec.gov/files/edgar/filer-information/specifications/xbrl-guide-2025-11-19.pdf)（總稅額與當期稅額區別）、[FASB 所得稅 taxonomy 範例](https://xbrl.fasb.org/impdocs/IT_TIG/incometaxes.htm)、[SEC Company Facts API](https://www.sec.gov/search-filings/edgar-application-programming-interfaces)。
+
+## J. 2026-10-24 固定名單首次實跑後的 SEC 覆蓋修正
+
+首次手動 run `40029125980` 成功完成 100 家，但有 84 ABSTAIN、5 FAIL、11 PASS、1 eligible。這表示執行成功不等於資料覆蓋已足夠；原始 100 家及風險閘門保持不變。
+
+- 由 SEC 原始 CompanyFacts 確認：NVDA／LRCX 使用 `PaymentsToAcquireProductiveAssets`，MSFT 使用 `InterestExpenseNonoperating`，CRWD 使用含稅營收標籤。補齊對應並保留口徑；現金 CapEx 不再使用非現金 PP&E additions 代替。
+- GOOGL 等公司未單獨標記 GrossProfit 時，以同一 accession／start／end／unit 的已揭露營收減完整成本重建，保留兩個 SEC 來源及衍生血緣。不能把不含 D&A 的部分成本當完整成本；直接揭露毛利優先。
+- 比較期的 fy／fp 常沿用申報檔案標籤。季度與 TTM 以經濟起訖日選取，支援年報內直接揭露的比較單季，避免漏掉季度或重複計算；已知 TTM 開始與結束日均須一致，四季不能重疊或缺季。
+- 最新 SEC 日期改只取已選用、決策時可用的 SEC source_fact。缺資料而提前退出的公司仍保留最新已檢查來源；Yahoo 觀測及 MODEL 衍生時間不能冒充 SEC 申報時間。Validator 同時核對來源、CSV 與 Dashboard 日期。
+
+新增 15 項真實缺陷的回歸案例，完整 suite 260/260 通過；離線 fixture 與網站 validator 通過，`invalid_zero = 0`。線上重跑結果記錄於交接文件。
+
+第二次手動 [run 40061919126](https://github.com/e34102309-lab/dodoladodo/actions/runs/40061919126) 使用 `dd30aca`，研究、來源／日期／網站 Validator 與 Pages 部署全部成功。固定 100 家與原名單逐家一致，價格日均為 2026-10-23；100 家 SEC 日期逐一吻合選用來源，288 項可計算公式重算通過。PASS 11→33、FAIL 5→6、ABSTAIN 84→61，eligible／shortlist 1→5；52,507 列來源與衍生證據通過血緣驗證，`invalid_zero = 0`。
+
+仍有 61 家無法可靠判斷，屬核心標準事實過舊、必要證據或同期間資料缺漏、信心不足等。已抽查 CMI 的 SBC 只提供年報，AAPL 標準利息標籤停在舊年報，以及 DHR 目前的現金合計含受限資金；不能以單季乘四、舊年報、含受限現金總額或零值冒充缺失資料。本輪沒有實作自訂 taxonomy 的完整申報解析，也未降低既有風險門檻。
+
+來源：[SEC API 說明](https://www.sec.gov/search-filings/edgar-application-programming-interfaces)（CompanyFacts 僅彙整非自訂 taxonomy、全公司層級事實，缺少標準標籤不等於公司未申報）、[NVIDIA CompanyFacts](https://data.sec.gov/api/xbrl/companyfacts/CIK0001045810.json)、[Lam Research CompanyFacts](https://data.sec.gov/api/xbrl/companyfacts/CIK0000707549.json)、[Alphabet CompanyFacts](https://data.sec.gov/api/xbrl/companyfacts/CIK0001652044.json)、[Microsoft CompanyFacts](https://data.sec.gov/api/xbrl/companyfacts/CIK0000789019.json)、[CrowdStrike CompanyFacts](https://data.sec.gov/api/xbrl/companyfacts/CIK0001535527.json)。

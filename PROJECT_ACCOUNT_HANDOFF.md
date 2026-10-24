@@ -25,7 +25,7 @@
 6. 2026-09-06 已抓取遠端 `main` 至 `5736083`，保留其最新月度 `qualified_universe.csv`，再以非 force push 完成整合；舊 tip `52ff824` 的截斷檔案修復亦已包含。
 7. 完整策略說明：`CURRENT_STRATEGY_LOGIC_FOR_AI_REVIEW.md`；本輪逐段紀錄：`STRATEGY_FIVE_STAGE_AUDIT.md`。
 8. 自動排程：每週四美股盤後只更新固定 100 家；不再執行月度全市場抓取。
-9. 2026-10-24 工程驗證：公式／抓取複查後完整 suite 245/245 通過；固定名單連網邊界與離線 fixture 均通過，`invalid_zero = 0`。詳見第 9 節。
+9. 2026-10-24 最新工程驗證：SEC 覆蓋／期間／日期修正 `dd30aca` 的完整 suite 260/260、離線 fixture 及固定 100 家線上實跑均通過，`invalid_zero = 0`。實跑仍有 61 家 ABSTAIN，不能宣稱全部資料已補齊；詳見第 9 節。
 10. 2026-09-17 GitHub Actions 在 `Validate Research Artifacts` 因舊 universe 的資產管理路由版本差異失敗；修正已納入 `main`，下一次排程會使用新 validator。本機未重跑高成本全市場流程。
 
 新帳號接手後，先執行：
@@ -294,6 +294,18 @@ git diff --stat HEAD origin/codex/metric-integrity-audit-v2
 9. 不要使用 `git reset --hard`，並確認 Actions secret、workflow permissions、Pages 與排程仍可用。
 
 ## 9. 上次驗證結果
+
+2026-10-24 SEC 實跑缺陷修正與第二次 100 家驗證：
+
+- 程式提交：`dd30aca Repair SEC fact coverage, economic period alignment and filing dates`，已推送 `main`；手動 [run 40061919126](https://github.com/e34102309-lab/dodoladodo/actions/runs/40061919126) 的品質、研究、Validator、Pages 均成功，線上網站已核對同一提交。
+- 補齊有原始 SEC 來源的現金 CapEx、含稅營收及非營業利息標籤；毛利由同一 accession／起訖日／單位的營收減完整銷貨成本重建。季度與 TTM 改依經濟起訖日配對；`Latest_SEC_Availability_Date` 僅取已選用 SEC 原始證據，並由 Validator 核對 CSV、來源與網站。
+- 完整 suite 260/260；`fixture_output_sec_coverage_20261024/` 離線整合及 Validator 通過，`invalid_zero = 0`。
+- 固定 100 家完整留存、沒有補換股票；100 家價格皆為 `2026-10-23`。名單 Linux 原始位元組 hash `164de4c19efcffa6`，Windows checkout 為 `2f277828438c03c5`，已核對差異僅 LF／CRLF 換行，名單內容一致。
+- 與首次 run `40029125980` 比較：PASS 11→33、FAIL 5→6、ABSTAIN 84→61、eligible／shortlist 1→5。原先 84 家 ABSTAIN 中有 22 家恢復 PASS、1 家在資料齊備後判為 FAIL；原 11 PASS 與 5 FAIL 均維持原狀。不能把 PASS 或研究候選等同買入建議。
+- 新輸出 52,507 列 evidence（40,689 source、11,818 derived）；`invalid_zero = 0`。100 家均有選用 SEC 來源，100 個 SEC 顯示日期與來源吻合，288 項可計算的 EV／FCF 等公式重算無誤。這些不表示 100 家核心財報資料均完整。
+- 仍有 61 ABSTAIN：25 核心標準事實過舊、21 缺必要證據／期間不一致、14 可驗證證據或信心不足、1 季度毛利不足。保留原有新鮮度、同期間與信心閘門，沒有補零或把舊年度當當期 TTM。
+- 剩餘案例已與原始 CompanyFacts 複核：CMI SBC 只到 2025 年報，AAPL 利息費用只到 2023 年報；DHR 目前提供含 restricted cash 的合計，不能直接當 unrestricted cash。CompanyFacts 不含公司自訂 taxonomy，標準標籤缺漏不等於公司完全未揭露；若要擴充須另建立可稽核的申報來源，不得隨意替代欄位。
+- 本機完整對照與輸出在 `../outputs/sec_fix_verification_20261024/`：`comparison_summary.json`、`verification_summary.json`、`before_after_100.csv` 與解壓縮 artifact；不納入 Git。未執行全市場抓取。
 
 2026-10-24 公式與抓取複查：
 
