@@ -1,6 +1,6 @@
 import unittest
 
-from mode_c_sec_filings import parse_instance, parse_labels, parse_calculations, filing_base
+from mode_c_sec_filings import parse_instance, parse_labels, parse_calculations, filing_base, select_recent_filings
 
 
 def instance(facts, contexts="", units=""):
@@ -41,6 +41,13 @@ class OriginalFilingTests(unittest.TestCase):
         data=instance('<test:Cash contextRef="group" unitRef="eur">5</test:Cash><test:EPS contextRef="group" unitRef="eps">5</test:EPS>',units=units)
         self.assertFalse(parse_instance(data,"1")["facts"])
 
+    def test_rounded_duplicate_uses_more_precise_value_but_true_conflict_stays_missing(self):
+        data = instance('''<test:Cash contextRef="group" unitRef="usd" decimals="-6">1000000</test:Cash>
+        <test:Cash contextRef="group" unitRef="usd" decimals="0">1234567</test:Cash>''')
+        self.assertEqual(parse_instance(data,"1")["facts"][0]["val"],1234567)
+        conflict = data.replace(b'1234567',b'2345678')
+        self.assertFalse(parse_instance(conflict,"1")["facts"])
+
     def test_denial_html_and_entity_documents_fail_closed(self):
         for data in [b'<html>Access Denied</html>',b'<!DOCTYPE x [<!ENTITY a "bad">]><x/>']:
             with self.subTest(data=data),self.assertRaises(ValueError):
@@ -50,6 +57,17 @@ class OriginalFilingTests(unittest.TestCase):
         self.assertEqual(filing_base("1","0000000001-26-000001"),"https://www.sec.gov/Archives/edgar/data/1/000000000126000001/")
         for accession in ["../../other", "https://evil.test", "bad"]:
             with self.assertRaises(ValueError): filing_base("1",accession)
+
+    def test_partial_amendment_does_not_replace_original_annual_financials(self):
+        payload = {"filings": {"recent": {
+            "accessionNumber": ["0000000001-26-000002", "0000000001-26-000001"],
+            "form": ["10-K/A", "10-K"], "reportDate": ["2025-12-31"] * 2,
+            "filingDate": ["2026-03-01", "2026-02-01"],
+            "acceptanceDateTime": ["2026-03-01T12:00:00Z", "2026-02-01T12:00:00Z"],
+        }}}
+        rows = select_recent_filings(payload, "2026-04-01")
+        self.assertEqual({row["form"] for row in rows}, {"10-K", "10-K/A"})
+        self.assertEqual([r["form"] for r in select_recent_filings(payload, "2026-02-15")], ["10-K"])
 
 
 if __name__ == "__main__":

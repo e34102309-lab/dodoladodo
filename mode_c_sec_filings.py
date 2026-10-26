@@ -3,11 +3,16 @@ from __future__ import annotations
 
 from collections import Counter
 from decimal import Decimal, InvalidOperation
+from datetime import datetime, timedelta, timezone
+from functools import lru_cache
 import hashlib
 import io
 import math
+import json
+import os
+from pathlib import Path
 import re
-from urllib.parse import urlsplit
+import threading
 import xml.etree.ElementTree as ET
 
 XBRLI = "http://www.xbrl.org/2003/instance"
@@ -15,6 +20,131 @@ LINK = "http://www.xbrl.org/2003/linkbase"
 XLINK = "http://www.w3.org/1999/xlink"
 XSI = "http://www.w3.org/2001/XMLSchema-instance"
 MAX_XML_BYTES = 20_000_000
+PARSER_VERSION = "2026-10-original-xbrl-v2"
+_AUDIT = {}
+_AUDIT_LOCK = threading.Lock()
+
+
+def utc_time(value):
+    try:
+        result = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        return result.replace(tzinfo=timezone.utc) if result.tzinfo is None else result.astimezone(timezone.utc)
+    except (ValueError, TypeError):
+        return None
+
+
+def filing_available(filing):
+    accepted, filed = utc_time(filing.get("acceptanceDateTime")), utc_time(filing.get("filingDate"))
+    return accepted + timedelta(minutes=5) if accepted else filed + timedelta(days=1) if filed else None
+
+
+def select_recent_filings(payload: dict, decision, annual_limit=3, quarter_limit=3) -> list:
+    decision = utc_time(decision)
+    table = payload.get("filings", {}).get("recent", {})
+    rows = []
+    for i, accession in enumerate(table.get("accessionNumber", [])):
+        row = {key: values[i] if i < len(values) else "" for key, values in table.items() if isinstance(values, list)}
+        available = filing_available(row)
+        if row.get("form") in {"10-K", "10-K/A", "10-Q", "10-Q/A"} and available and decision and available <= decision:
+            rows.append(row)
+    rows.sort(key=lambda r: (r.get("reportDate", ""), r.get("acceptanceDateTime", ""), r.get("filingDate", "")), reverse=True)
+    result, grouped, counts = [], {}, Counter()
+    for row in rows:
+        key = (row["form"].split("/")[0], row.get("reportDate"))
+        grouped.setdefault(key, []).append(row)
+    for (form, _), candidates in grouped.items():
+        if counts[form] >= (annual_limit if form == "10-K" else quarter_limit):
+            continue
+        counts[form] += 1
+        original = next((row for row in candidates if not row["form"].endswith("/A")), None)
+        if original:
+            result.append(original)
+        # Part-III-only amendments cannot replace the underlying financials.
+        result.extend([row for row in candidates if row["form"].endswith("/A")][:2])
+    return result
+
+
+@lru_cache(maxsize=1)
+def review_plan() -> dict:
+    return json.loads(Path(__file__).with_name("sec_filing_review.json").read_text(encoding="utf-8"))
+
+
+def original_filings(session, headers, ticker, cik, decision, submission) -> list:
+    """Bounded immutable-accession cache; transport failures remain explicit."""
+    plan = review_plan()
+    if not any(row["ticker"] == ticker and row["cik"] == cik for row in plan["targets"]):
+        return []
+    replay = os.environ.get("MODE_C_SEC_SNAPSHOT_DIR")
+    if replay:
+        path = Path(replay) / f"{ticker}_filings.json"
+        if path.is_file():
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if payload.get("ticker") != ticker or payload.get("cik") != cik:
+                raise ValueError("SEC snapshot identity mismatch")
+            filings = payload.get("filings", [])
+        else:
+            filings = []
+    else:
+        cache = Path(".mode_c_sec_filings")
+        cache.mkdir(exist_ok=True)
+        filings = []
+        for descriptor in select_recent_filings(submission, decision):
+            base = filing_base(cik, descriptor["accessionNumber"])
+            key = hashlib.sha256((PARSER_VERSION + base).encode()).hexdigest()
+            path = cache / (key + ".json")
+            if path.is_file():
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            else:
+                payload = collect_filing(session, headers, cik, descriptor)
+                # A denied or partial response is not a reusable missing-data fact.
+                if payload.get("facts") and not payload.get("errors"):
+                    path.write_text(json.dumps(payload), encoding="utf-8")
+            filings.append(payload)
+    current = utc_time(decision)
+    filings = [f for f in filings if filing_available(f) and filing_available(f) <= current]
+    with _AUDIT_LOCK:
+        _AUDIT[ticker] = {"cik": cik, "filings": [
+            {k: f.get(k) for k in ("accessionNumber", "reportDate", "form", "filingDate", "instance_url", "sha256", "errors", "skipped")}
+            for f in filings], "metrics": {}}
+    return filings
+
+
+def filing_concept_rows(filings: list, ticker: str, metric: str, standard_tags: list, units: tuple, override_mappings=None) -> list:
+    mappings = (review_plan().get("mappings", {}).get(ticker, {}).get(metric, [])
+                if override_mappings is None else override_mappings)
+    names = {"us-gaap:" + tag: {"priority": index, "basis": "reviewed standard taxonomy"}
+             for index, tag in enumerate(standard_tags)}
+    names.update({row["qname"]: {"priority": 0, "basis": row["basis"]} for row in mappings})
+    rows = []
+    for filing in filings:
+        for fact in filing.get("facts", []):
+            mapping = names.get(fact.get("qname"))
+            if not mapping or fact.get("unit") not in units:
+                continue
+            concept = fact["qname"].split(":", 1)[-1] if fact["qname"].startswith("us-gaap:") else fact["qname"]
+            rows.append({**fact, "concept": concept, "concept_priority": mapping["priority"],
+                         "accn": filing["accessionNumber"], "filed": filing["filingDate"], "form": filing["form"],
+                         "fy": int(str(filing.get("reportDate", "0000"))[:4]),
+                         "fp": "FY" if filing["form"].startswith("10-K") else "",
+                         "source_document_url": filing.get("instance_url", ""),
+                         "source_document_sha256": filing.get("sha256", ""),
+                         "mapping_basis": "SEC_ORIGINAL_XBRL: " + mapping["basis"]})
+    with _AUDIT_LOCK:
+        if ticker in _AUDIT:
+            _AUDIT[ticker]["metrics"][metric] = {"source_rows": len(rows),
+                "reviewed_qnames": sorted(names), "period_ends": sorted({r["end"] for r in rows}),
+                "used_qnames": sorted({r["qname"] for r in rows})}
+    return rows
+
+
+def audit_snapshot() -> dict:
+    with _AUDIT_LOCK:
+        return json.loads(json.dumps(_AUDIT))
+
+
+def reset_audit():
+    with _AUDIT_LOCK:
+        _AUDIT.clear()
 
 
 def xml_root(payload: bytes):
@@ -61,7 +191,7 @@ def parse_instance(payload: bytes, cik: str) -> dict:
             units[unit.get("id")] = "USD"
         elif local == "shares" and namespace == XBRLI:
             units[unit.get("id")] = "shares"
-    facts, duplicates = [], {}
+    facts, duplicates = {}, {}
     for node in root:
         context = contexts.get(node.get("contextRef"))
         unit = units.get(node.get("unitRef"))
@@ -82,16 +212,32 @@ def parse_instance(payload: bytes, cik: str) -> dict:
         prefix = prefixes.get(namespace, "")
         qname = prefix + ":" + local
         key = (qname, unit, context["start"], context["end"])
+        decimals = str(node.get("decimals", "INF"))
+        try:
+            if decimals != "INF" and (not re.fullmatch(r"-?\d{1,3}", decimals) or abs(int(decimals)) > 100):
+                raise ValueError("invalid precision")
+            resolution = Decimal(0) if decimals == "INF" else Decimal(10) ** -int(decimals)
+        except (ValueError, InvalidOperation):
+            skipped["invalid_precision"] += 1
+            continue
+        low, high = number - resolution / 2, number + resolution / 2
         if key in duplicates:
-            if duplicates[key] != number:
+            previous = duplicates[key]
+            if previous is None:
+                continue
+            low, high = max(low, previous[0]), min(high, previous[1])
+            if low > high:
                 duplicates[key] = None
                 skipped["conflicting_duplicate"] += 1
-            continue
-        duplicates[key] = number
-        facts.append({"qname": qname, "namespace": namespace, "unit": unit,
-                      "val": value, "context_id": node.get("contextRef"), **context})
-    facts = [fact for fact in facts if duplicates[(fact["qname"], fact["unit"], fact["start"], fact["end"])] is not None]
-    return {"facts": facts, "skipped": dict(skipped), "sha256": hashlib.sha256(payload).hexdigest()}
+                continue
+            if resolution >= previous[2]:
+                duplicates[key] = (low, high, previous[2])
+                continue
+        duplicates[key] = (low, high, resolution)
+        facts[key] = {"qname": qname, "namespace": namespace, "unit": unit,
+                      "val": value, "decimals": decimals, "context_id": node.get("contextRef"), **context}
+    selected = [fact for key, fact in facts.items() if duplicates[key] is not None]
+    return {"facts": selected, "skipped": dict(skipped), "sha256": hashlib.sha256(payload).hexdigest()}
 
 
 def parse_labels(payload: bytes) -> dict:

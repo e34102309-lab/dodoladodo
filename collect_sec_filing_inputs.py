@@ -7,36 +7,14 @@ import argparse
 import pandas as pd
 
 from AQR_ModeC_Agent_V12 import SECDataDistiller, require_sec_contact_email, _GLOBAL_SEC_SESSION
-from mode_c_sec_filings import collect_filing
+from mode_c_sec_filings import collect_filing, select_recent_filings
 from mode_c_watchlist import load_fixed_watchlist
 
 PLAN = Path(__file__).with_name("sec_filing_review.json")
 
 
 def recent_filings(payload, decision):
-    table = payload.get("filings", {}).get("recent", {})
-    rows = [{key: values[i] if i < len(values) else "" for key, values in table.items()}
-            for i in range(len(table.get("accessionNumber", [])))]
-    rows = [r for r in rows if r.get("form") in {"10-K", "10-K/A", "10-Q", "10-Q/A"}
-            and str(r.get("filingDate", "")) <= decision.date().isoformat()
-            and pd.to_datetime(r.get("acceptanceDateTime"), utc=True, errors="coerce") + pd.Timedelta(minutes=5) <= decision]
-    rows.sort(key=lambda r: (r.get("reportDate", ""), r.get("filingDate", "")), reverse=True)
-    result, seen, annual, quarterly = [], set(), 0, 0
-    for row in rows:
-        key = (row["form"].split("/")[0], row.get("reportDate"))
-        if key in seen:
-            continue
-        if key[0] == "10-K":
-            if annual >= 2:
-                continue
-            annual += 1
-        else:
-            if quarterly >= 3:
-                continue
-            quarterly += 1
-        seen.add(key)
-        result.append(row)
-    return result
+    return select_recent_filings(payload, decision)
 
 
 def collect_company(target, email, decision, output):
