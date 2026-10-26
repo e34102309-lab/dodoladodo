@@ -26,6 +26,7 @@ local_shares_vector_cache.json
 public/
 fixture_output/
 fixture_output_*/
+sec_filing_snapshot/
 
 # Local secrets
 .env

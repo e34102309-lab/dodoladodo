@@ -1,0 +1,311 @@
+{
+  "baseline_run": 40061919126,
+  "targets": [
+    {
+      "ticker": "AAPL",
+      "cik": "0000320193",
+      "baseline_reason": "Abstain: 有淨負債但缺少同期間利息費用證據"
+    },
+    {
+      "ticker": "AMD",
+      "cik": "0000002488",
+      "baseline_reason": "Abstain: SEC 核心資料過舊 D&A"
+    },
+    {
+      "ticker": "PANW",
+      "cik": "0001327567",
+      "baseline_reason": "Abstain: 有淨負債但缺少同期間利息費用證據"
+    },
+    {
+      "ticker": "ANET",
+      "cik": "0001596532",
+      "baseline_reason": "Abstain: Data confidence 45<70"
+    },
+    {
+      "ticker": "CRWD",
+      "cik": "0001535527",
+      "baseline_reason": "Abstain: TTM 證據鏈不完整 D&A"
+    },
+    {
+      "ticker": "KLAC",
+      "cik": "0000319201",
+      "baseline_reason": "Abstain: SEC 核心資料過舊 EBIT"
+    },
+    {
+      "ticker": "UBER",
+      "cik": "0001543151",
+      "baseline_reason": "Abstain: SEC 核心資料缺失 GrossProfit"
+    },
+    {
+      "ticker": "NOW",
+      "cik": "0001373715",
+      "baseline_reason": "Abstain: Data confidence 35<70"
+    },
+    {
+      "ticker": "GLW",
+      "cik": "0000024741",
+      "baseline_reason": "Abstain: SEC 核心資料過舊 CapEx"
+    },
+    {
+      "ticker": "HPE",
+      "cik": "0001645590",
+      "baseline_reason": "Abstain: SEC 核心資料過舊 GrossProfit"
+    },
+    {
+      "ticker": "CAT",
+      "cik": "0000018230",
+      "baseline_reason": "Abstain: 有淨負債但缺少同期間利息費用證據"
+    },
+    {
+      "ticker": "GE",
+      "cik": "0000040545",
+      "baseline_reason": "Abstain: SEC 核心資料過舊 EBIT/D&A/GrossProfit/Cash"
+    },
+    {
+      "ticker": "RTX",
+      "cik": "0000101829",
+      "baseline_reason": "Abstain: SEC 核心資料過舊 D&A/GrossProfit"
+    },
+    {
+      "ticker": "UNP",
+      "cik": "0000100885",
+      "baseline_reason": "Abstain: SEC 核心資料缺失 GrossProfit"
+    },
+    {
+      "ticker": "LMT",
+      "cik": "0000936468",
+      "baseline_reason": "Abstain: SEC 核心資料過舊 D&A"
+    },
+    {
+      "ticker": "GD",
+      "cik": "0000040533",
+      "baseline_reason": "Abstain: SEC 核心資料過舊 GrossProfit"
+    },
+    {
+      "ticker": "CSX",
+      "cik": "0000277948",
+      "baseline_reason": "Abstain: SEC 核心資料缺失 GrossProfit"
+    },
+    {
+      "ticker": "UPS",
+      "cik": "0001090727",
+      "baseline_reason": "Abstain: SEC 核心資料缺失 GrossProfit"
+    },
+    {
+      "ticker": "MMM",
+      "cik": "0000066740",
+      "baseline_reason": "Abstain: SEC 核心資料過舊 Cash"
+    },
+    {
+      "ticker": "WM",
+      "cik": "0000823768",
+      "baseline_reason": "Abstain: 有淨負債但缺少同期間利息費用證據"
+    },
+    {
+      "ticker": "EMR",
+      "cik": "0000032604",
+      "baseline_reason": "Abstain: SEC 核心資料缺失 EBIT"
+    },
+    {
+      "ticker": "CMI",
+      "cik": "0000026172",
+      "baseline_reason": "Abstain: TTM 證據鏈不完整，期間不一致 SBC"
+    },
+    {
+      "ticker": "FDX",
+      "cik": "0001048911",
+      "baseline_reason": "Abstain: SEC 核心資料過舊 GrossProfit"
+    },
+    {
+      "ticker": "NSC",
+      "cik": "0000702165",
+      "baseline_reason": "Abstain: SEC 核心資料缺失 GrossProfit"
+    },
+    {
+      "ticker": "RSG",
+      "cik": "0001060391",
+      "baseline_reason": "Abstain: TTM 證據鏈不完整，期間不一致 SBC"
+    },
+    {
+      "ticker": "LLY",
+      "cik": "0000059478",
+      "baseline_reason": "Abstain: SEC 核心資料缺失 EBIT"
+    },
+    {
+      "ticker": "JNJ",
+      "cik": "0000200406",
+      "baseline_reason": "Abstain: SEC 核心資料過舊 EBIT"
+    },
+    {
+      "ticker": "MRK",
+      "cik": "0000310158",
+      "baseline_reason": "Abstain: SEC 核心資料缺失 EBIT"
+    },
+    {
+      "ticker": "DHR",
+      "cik": "0000313616",
+      "baseline_reason": "Abstain: SEC 核心資料過舊 Cash"
+    },
+    {
+      "ticker": "VRTX",
+      "cik": "0000875320",
+      "baseline_reason": "Abstain: Data confidence 30<70"
+    },
+    {
+      "ticker": "ISRG",
+      "cik": "0001035267",
+      "baseline_reason": "Abstain: SEC 核心資料過舊 D&A"
+    },
+    {
+      "ticker": "MCK",
+      "cik": "0000927653",
+      "baseline_reason": "Abstain: TTM 證據鏈不完整，期間不一致 SBC"
+    },
+    {
+      "ticker": "REGN",
+      "cik": "0000872589",
+      "baseline_reason": "Abstain: SEC 核心資料過舊 GrossProfit"
+    },
+    {
+      "ticker": "COR",
+      "cik": "0001140859",
+      "baseline_reason": "Abstain: 有淨負債但缺少同期間利息費用證據"
+    },
+    {
+      "ticker": "CAH",
+      "cik": "0000721371",
+      "baseline_reason": "Abstain: 季度毛利資料不足"
+    },
+    {
+      "ticker": "VEEV",
+      "cik": "0001393052",
+      "baseline_reason": "Abstain: SEC 核心資料過舊 CapEx/D&A"
+    },
+    {
+      "ticker": "WMT",
+      "cik": "0000104169",
+      "baseline_reason": "Abstain: SEC 核心資料過舊 D&A"
+    },
+    {
+      "ticker": "PG",
+      "cik": "0000080424",
+      "baseline_reason": "Abstain: SEC 核心資料過舊 Cash"
+    },
+    {
+      "ticker": "PM",
+      "cik": "0001413329",
+      "baseline_reason": "Abstain: TTM 證據鏈不完整，期間不一致 SBC"
+    },
+    {
+      "ticker": "MO",
+      "cik": "0000764180",
+      "baseline_reason": "Abstain: SBC TTM 證據缺失"
+    },
+    {
+      "ticker": "MNST",
+      "cik": "0000865752",
+      "baseline_reason": "Abstain: Data confidence 45<70"
+    },
+    {
+      "ticker": "TGT",
+      "cik": "0000027419",
+      "baseline_reason": "Abstain: SEC 核心資料過舊 Cash"
+    },
+    {
+      "ticker": "EL",
+      "cik": "0001001250",
+      "baseline_reason": "Abstain: SEC 核心資料過舊 Cash"
+    },
+    {
+      "ticker": "KVUE",
+      "cik": "0001944048",
+      "baseline_reason": "Abstain: Data confidence 25<70"
+    },
+    {
+      "ticker": "HSY",
+      "cik": "0000047111",
+      "baseline_reason": "Abstain: SEC 核心資料過舊 Cash"
+    },
+    {
+      "ticker": "KR",
+      "cik": "0000056873",
+      "baseline_reason": "Abstain: SEC 核心資料過舊 GrossProfit"
+    },
+    {
+      "ticker": "BKNG",
+      "cik": "0001075531",
+      "baseline_reason": "Abstain: SEC 核心資料過舊 GrossProfit/NetIncome"
+    },
+    {
+      "ticker": "TJX",
+      "cik": "0000109198",
+      "baseline_reason": "Abstain: SEC 核心資料過舊 EBIT"
+    },
+    {
+      "ticker": "ABNB",
+      "cik": "0001559720",
+      "baseline_reason": "Abstain: SEC 核心資料過舊 CapEx/D&A"
+    },
+    {
+      "ticker": "DASH",
+      "cik": "0001792789",
+      "baseline_reason": "Abstain: SEC 核心資料缺失 GrossProfit"
+    },
+    {
+      "ticker": "CVNA",
+      "cik": "0001690820",
+      "baseline_reason": "Abstain: SEC 核心資料缺失 D&A"
+    },
+    {
+      "ticker": "ROST",
+      "cik": "0000745732",
+      "baseline_reason": "Abstain: Data confidence 45<70"
+    },
+    {
+      "ticker": "NKE",
+      "cik": "0000320187",
+      "baseline_reason": "Abstain: SEC 核心資料缺失 EBIT"
+    },
+    {
+      "ticker": "CMG",
+      "cik": "0001058090",
+      "baseline_reason": "Abstain: SEC 核心資料缺失 GrossProfit"
+    },
+    {
+      "ticker": "DHI",
+      "cik": "0000882184",
+      "baseline_reason": "Abstain: SEC 核心資料缺失 EBIT"
+    },
+    {
+      "ticker": "GOOGL",
+      "cik": "0001652044",
+      "baseline_reason": "Abstain: Data confidence 55<70"
+    },
+    {
+      "ticker": "META",
+      "cik": "0001326801",
+      "baseline_reason": "Abstain: Data confidence 55<70"
+    },
+    {
+      "ticker": "DIS",
+      "cik": "0001744489",
+      "baseline_reason": "Abstain: SEC 核心資料缺失 GrossProfit"
+    },
+    {
+      "ticker": "APP",
+      "cik": "0001751008",
+      "baseline_reason": "Abstain: SEC 核心資料過舊 CapEx"
+    },
+    {
+      "ticker": "CMCSA",
+      "cik": "0001166691",
+      "baseline_reason": "Abstain: SEC 核心資料缺失 GrossProfit"
+    },
+    {
+      "ticker": "LYV",
+      "cik": "0001335258",
+      "baseline_reason": "Abstain: SEC 核心資料缺失 GrossProfit"
+    }
+  ],
+  "mappings": {}
+}
