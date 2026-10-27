@@ -139,3 +139,9 @@ The local backfill validated 1,209 screen rows, 12 shortlist rows, 164,765 selec
 仍有 61 家無法可靠判斷，屬核心標準事實過舊、必要證據或同期間資料缺漏、信心不足等。已抽查 CMI 的 SBC 只提供年報，AAPL 標準利息標籤停在舊年報，以及 DHR 目前的現金合計含受限資金；不能以單季乘四、舊年報、含受限現金總額或零值冒充缺失資料。本輪沒有實作自訂 taxonomy 的完整申報解析，也未降低既有風險門檻。
 
 來源：[SEC API 說明](https://www.sec.gov/search-filings/edgar-application-programming-interfaces)（CompanyFacts 僅彙整非自訂 taxonomy、全公司層級事實，缺少標準標籤不等於公司未申報）、[NVIDIA CompanyFacts](https://data.sec.gov/api/xbrl/companyfacts/CIK0001045810.json)、[Lam Research CompanyFacts](https://data.sec.gov/api/xbrl/companyfacts/CIK0000707549.json)、[Alphabet CompanyFacts](https://data.sec.gov/api/xbrl/companyfacts/CIK0001652044.json)、[Microsoft CompanyFacts](https://data.sec.gov/api/xbrl/companyfacts/CIK0000789019.json)、[CrowdStrike CompanyFacts](https://data.sec.gov/api/xbrl/companyfacts/CIK0001535527.json)。
+
+## K. 2026-10-28 原始申報補值與 61 家逐項複核
+
+`41d8060` 新增原始 extracted XBRL 解析、已複核的公司自訂欄位、同申報／期間重建及完整維度分拆；修正多科目去重、四捨五入精度衝突與部分修訂取代原年報的問題。Evidence 保留原始 URL、SHA256、context、qname 與來源鏈。完整 suite 279/279、離線 fixture／validator 通過，GD／RTX 真實 XML 片段的季度毛利與原表相同。
+
+本輪沒有降低信心、新鮮度或風險門檻。當期資料補齊不保證歷史估值與全部季度序列足夠，仍可維持 ABSTAIN。DHR 等現金另與當期資產負債表實際列示核對，經確認的 accession 才可接受其較廣 taxonomy；不能把這個 issuer-specific 複核當成所有含受限現金標籤的通用別名。完整來源、補值依據與本輪線上結果見 [SEC 原始申報複核](SEC_ORIGINAL_FILING_REVIEW.md)。

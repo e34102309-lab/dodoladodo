@@ -1,6 +1,6 @@
 # dodoladodo 專案帳號交接文件
 
-> 最後更新：2026-10-24（Asia/Taipei）
+> 最後更新：2026-10-28（Asia/Taipei）
 > 用途：更換 Codex／GitHub 帳號後，讓新的 AI 工作階段能從本文件直接接手。
 > 本文件記錄的是工程狀態與研究流程，不是投資建議，也不代表策略已經通過無偏回測。
 
@@ -25,7 +25,7 @@
 6. 2026-09-06 已抓取遠端 `main` 至 `5736083`，保留其最新月度 `qualified_universe.csv`，再以非 force push 完成整合；舊 tip `52ff824` 的截斷檔案修復亦已包含。
 7. 完整策略說明：`CURRENT_STRATEGY_LOGIC_FOR_AI_REVIEW.md`；本輪逐段紀錄：`STRATEGY_FIVE_STAGE_AUDIT.md`。
 8. 自動排程：每週四美股盤後只更新固定 100 家；不再執行月度全市場抓取。
-9. 2026-10-24 最新工程驗證：SEC 覆蓋／期間／日期修正 `dd30aca` 的完整 suite 260/260、離線 fixture 及固定 100 家線上實跑均通過，`invalid_zero = 0`。實跑仍有 61 家 ABSTAIN，不能宣稱全部資料已補齊；詳見第 9 節。
+9. 2026-10-28 原始 SEC 申報補值修正 `41d8060` 已推送 main；279 項 unit tests、離線 fixture 與固定 100 家實跑通過。最新 43 PASS／8 FAIL／49 ABSTAIN，原 61 家有 12 家解除 ABSTAIN；Pages 已部署。逐家口徑及限制以第 9 節與 `SEC_ORIGINAL_FILING_REVIEW.md` 為準。
 10. 2026-09-17 GitHub Actions 在 `Validate Research Artifacts` 因舊 universe 的資產管理路由版本差異失敗；修正已納入 `main`，下一次排程會使用新 validator。本機未重跑高成本全市場流程。
 
 新帳號接手後，先執行：
@@ -294,6 +294,15 @@ git diff --stat HEAD origin/codex/metric-integrity-audit-v2
 9. 不要使用 `git reset --hard`，並確認 Actions secret、workflow permissions、Pages 與排程仍可用。
 
 ## 9. 上次驗證結果
+
+2026-10-28 原始 SEC 申報補值：
+
+- 生產修正 `41d8060b03019bc63cfe291bf68216cf5878aa9f`；手動 [run 40583805033](https://github.com/e34102309-lab/dodoladodo/actions/runs/40583805033) 的研究、輸出／網站 validator 與 Pages 部署全部成功。
+- 固定 100 家逐家及名單檔案內容一致，價格日均為 2026-10-27；PASS 33→43、FAIL 6→8、ABSTAIN 61→49，eligible／queue 維持 SYK、BSX、IDXX、PEP、NFLX 共 5 家。原 61 家中 10 家 PASS，CRWD／CVNA 因三年股數稀釋 FAIL，其餘 49 家保留具體限制。
+- 61 家共檢查 372 份原始申報；1,871 列原始事實進入證據鏈，63,919 列來源／衍生 evidence 通過 validator。另行重算 378 項輸出公式與 160 項原始重建公式，全部通過，`invalid_zero = 0`。
+- 完整 suite 279/279 與離線 fixture 通過。沒有全市場抓取；既有資料信心、期間、新鮮度及風險閘門維持。原始申報快取及兩份逐家稽核輸出已加入每週／手動 workflow。
+- 49 家不全是財報缺漏：含歷史估值、期初投入資本、股數、SBC／成本／利息口徑及模型限制。PANW 有當期利息真零，但現行有淨負債的 ICR 零分母仍保留 ABSTAIN；原始 artifact 的概括缺利息訊息不可誤讀為未揭露。現金較廣標籤只限已核對 accession，新申報須複核。
+- 原始快照與實跑均無 HTTP 下載失敗；7 項附檔警示是局部修訂缺計算關係或 FDX 2024 附檔無法唯一選定，已保留原因。逐家來源／結果見 `SEC_ORIGINAL_FILING_REVIEW.md`，完整本機證據位於 `../outputs/sec_original_review_20261027/`。
 
 2026-10-24 SEC 實跑缺陷修正與第二次 100 家驗證：
 

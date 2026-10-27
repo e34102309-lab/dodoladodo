@@ -19,7 +19,7 @@
       "ticker": "PANW",
       "cik": "0001327567",
       "baseline_reason": "Abstain: 有淨負債但缺少同期間利息費用證據",
-      "review_note": "原始 2026 年報有明確揭露利息費用為零；只採有證據的真零，重跑確認淨負債與期間閘門。",
+      "review_note": "原始 2026 年報及 TTM 利息確為零，已有證據，並非抓取缺值；現行模型對有淨負債且零利息的情況無法建立有效覆蓋率，保留 ABSTAIN，不能把現有概括原因解讀為利息未揭露。",
       "reviewed_source": "https://www.sec.gov/Archives/edgar/data/1327567/000132756726000023/panw-20260731.htm"
     },
     {

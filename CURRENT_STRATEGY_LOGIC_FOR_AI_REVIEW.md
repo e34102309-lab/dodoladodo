@@ -68,6 +68,7 @@ Yahoo 當前 metadata 不得被當成歷史時點基本面，因此目前的 led
 
 - Company Facts 提供 XBRL facts。
 - Submissions 提供 accession、filing date、acceptance time 與表單資訊。
+- 固定名單中上一輪剩餘 61 家另讀 SEC 原始 XBRL instance；依 `sec_filing_review.json` 的已複核別名、同期間公式與 GD／RTX 完整產品服務分拆補值。一般維度事實不直接當合併數字；需完整組成及調和，缺項即停止重建。部分現金別名僅適用已複核 accession，新申報不自動推定受限現金為零。細節與逐家公司原因見 `SEC_ORIGINAL_FILING_REVIEW.md`。
 - 每個 fact 必須滿足 `available_to_model_at <= decision_timestamp`。
 - acceptance time 缺失時，保守使用 filing date 次日，並降低資料信心。
 - 國內公司核心 fact 最長可舊 240 天。
