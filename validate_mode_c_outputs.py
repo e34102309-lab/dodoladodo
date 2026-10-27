@@ -4,6 +4,7 @@ import argparse
 import csv
 import json
 import math
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable
@@ -26,6 +27,7 @@ from mode_c_research_priority import (
     shrunk_percentile,
 )
 from mode_c_routing import route_industry_model
+from mode_c_sec_filings import filing_base
 
 
 DEFAULT_SCREEN = "mode_c_screen.csv"
@@ -1621,6 +1623,18 @@ def _validate_evidence(
 
             record_type = str(row.get("record_type") or "")
             if record_type == "source_fact":
+                if str(row.get("mapping_basis") or "").startswith("SEC_ORIGINAL_XBRL:"):
+                    try:
+                        base = filing_base(row.get("cik", ""), row.get("accession_number", ""))
+                    except ValueError as exc:
+                        raise ValidationError(f"invalid original SEC identity at line {line_number}") from exc
+                    document = str(row.get("source_document_url") or "")
+                    if not document.startswith(base) or not re.fullmatch(r"[A-Za-z0-9_.-]+_htm\.xml", document[len(base):]):
+                        raise ValidationError(f"invalid original SEC document URL at line {line_number}")
+                    if not re.fullmatch(r"[a-f0-9]{64}", str(row.get("source_document_sha256") or "")):
+                        raise ValidationError(f"missing original SEC document SHA256 at line {line_number}")
+                    if not row.get("context_id") or not re.fullmatch(r"[A-Za-z_][\w.-]*:[A-Za-z_][\w.-]*", str(row.get("source_qname") or "")):
+                        raise ValidationError(f"missing original SEC XBRL context/qname at line {line_number}")
                 source_count += 1
                 continue
             if record_type != "derived_metric":

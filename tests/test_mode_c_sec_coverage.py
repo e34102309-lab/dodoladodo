@@ -49,6 +49,23 @@ class SECCoverageTests(unittest.TestCase):
         sec = self.sec({"PropertyPlantAndEquipmentAdditions": [fact("2026-01-01", "2026-06-30", 1e9)]})
         self.assertTrue(sec.fetch_concept("1", "CapEx").empty)
 
+    def test_complete_dna_cannot_bridge_to_a_depreciation_only_annual(self):
+        sec=self.sec({
+            "Depreciation":[fact("2025-01-01","2025-12-31",.5e9,"10-K")],
+            "DepreciationAndAmortization":[fact("2025-01-01","2025-06-30",1.5e9),fact("2026-01-01","2026-06-30",1.6e9)],
+        })
+        frame=sec.fetch_concept("1","DnA")
+        self.assertNotIn("Depreciation",set(frame["concept"]))
+        value,_,_=sec.ttm_flow(frame)
+        self.assertTrue(pd.isna(value))
+
+    def test_cleaning_preserves_distinct_concepts_and_units_for_one_period(self):
+        first=dict(fact("2026-01-01","2026-06-30",100),concept="Revenue",unit="USD")
+        frame=engine.SECDataDistiller._clean_facts(pd.DataFrame([
+            first,dict(first,concept="Cost",val=30),dict(first,unit="shares",val=2),
+        ]))
+        self.assertEqual(len(frame),3)
+
     def test_new_nonoperating_interest_expense_tag_is_supported(self):
         sec = self.sec({"InterestExpenseNonoperating": [fact("2025-07-01", "2026-06-30", 3.051e9, "10-K")]})
         value, _, _ = sec.ttm_flow(sec.fetch_concept("1", "Interest"))

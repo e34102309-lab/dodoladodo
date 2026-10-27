@@ -1,6 +1,9 @@
 import unittest
 
-from mode_c_sec_filings import parse_instance, parse_labels, parse_calculations, filing_base, select_recent_filings
+from mode_c_sec_filings import parse_instance, parse_labels, parse_calculations, filing_base, select_recent_filings, review_plan, write_review_outputs
+import csv
+from pathlib import Path
+import tempfile
 
 
 def instance(facts, contexts="", units=""):
@@ -25,6 +28,7 @@ class OriginalFilingTests(unittest.TestCase):
         <xbrli:context id="other"><xbrli:entity><xbrli:identifier>2</xbrli:identifier></xbrli:entity><xbrli:period><xbrli:instant>2026-06-30</xbrli:instant></xbrli:period></xbrli:context>'''
         data = instance(''.join(f'<test:Cash contextRef="{c}" unitRef="usd">10</test:Cash>' for c in ['group','segment','other']),contexts)
         self.assertEqual(len(parse_instance(data,"1")["facts"]),1)
+        self.assertEqual(len(parse_instance(data,"1")["dimensional_facts"]),1)
 
     def test_missing_nonfinite_and_conflicting_facts_are_not_zero(self):
         facts = '''<test:Nil contextRef="group" unitRef="usd" xsi:nil="true"/>
@@ -68,6 +72,18 @@ class OriginalFilingTests(unittest.TestCase):
         rows = select_recent_filings(payload, "2026-04-01")
         self.assertEqual({row["form"] for row in rows}, {"10-K", "10-K/A"})
         self.assertEqual([r["form"] for r in select_recent_filings(payload, "2026-02-15")], ["10-K"])
+
+    def test_all_61_review_targets_have_a_specific_note_and_an_output_receipt(self):
+        targets=review_plan()["targets"]
+        self.assertEqual(len(targets),61)
+        self.assertEqual(len({r["ticker"] for r in targets}),61)
+        self.assertTrue(all(r.get("review_note") and r.get("reviewed_source", "").startswith("https://www.sec.gov/Archives/") for r in targets))
+        with tempfile.TemporaryDirectory() as temp:
+            write_review_outputs([],[],temp)
+            with (Path(temp)/"mode_c_data_gaps.csv").open(encoding="utf-8-sig",newline="") as handle:
+                rows=list(csv.DictReader(handle))
+            self.assertEqual({r["Ticker"] for r in rows},{r["ticker"] for r in targets})
+            self.assertTrue(all(r["Current_Reason"]=="NO_RESULT" for r in rows))
 
 
 if __name__ == "__main__":

@@ -55,6 +55,7 @@ from mode_c_decision_inputs import (
 )
 from mode_c_metric_contract import annotate_rows, finite_number
 from mode_c_watchlist import load_fixed_watchlist
+from mode_c_sec_filings import original_filings, filing_concept_rows, partition_component_rows, review_plan, reset_audit, write_review_outputs
 from mode_c_industry_models import (
     SPECIALIZED_MODEL_KEYS,
     IndustryModelEvaluation,
@@ -472,6 +473,8 @@ class SECDataDistiller:
         self.ledger = GLOBAL_EVIDENCE_LEDGER
         self._companyfacts_cache: Dict[str, dict] = {}
         self._submission_metadata_cache: Dict[str, Dict[str, dict]] = {}
+        self._submission_payload_cache: Dict[str, dict] = {}
+        self._original_filings_cache: Optional[list] = None
         self.share_split_factors = {"current": 1.0, "1y": 1.0, "3y": 1.0}
         self.share_split_evidence_ids: List[str] = []
         self.config = {
@@ -713,6 +716,7 @@ class SECDataDistiller:
         except Exception:
             payload = {}
         filings = payload.get("filings", {}) if isinstance(payload, dict) else {}
+        self._submission_payload_cache[normalized_cik] = payload
         rows = self._columnar_submission_rows(filings.get("recent", {}))
         for descriptor in filings.get("files", []) or []:
             name = str(descriptor.get("name") or "").strip()
@@ -798,6 +802,11 @@ class SECDataDistiller:
                 available_to_model_at=available_at,
                 decision_timestamp=self.decision_timestamp,
                 is_available_at_decision=is_available,
+                source_document_url=str(row.get("source_document_url") or ""),
+                source_document_sha256=str(row.get("source_document_sha256") or ""),
+                context_id=str(row.get("context_id") or ""),
+                source_qname=str(row.get("qname") or ""),
+                mapping_basis=str(row.get("mapping_basis") or ""),
             )
             evidence_ids.append(evidence_id)
             accepted_values.append(accepted_at)
@@ -933,6 +942,8 @@ class SECDataDistiller:
 
     def fetch_concept(self, cik: str, concept: str, units: Tuple[str, ...] = ("USD",)) -> pd.DataFrame:
         tags = self.config.get(concept, [concept])
+        if concept in review_plan().get("exclusive_original_metrics", {}).get(self.ticker, []):
+            tags = []
         taxonomy = self._fetch_companyfacts(cik).get("us-gaap", {})
         frames = []
         for priority, tag in enumerate(tags):
@@ -953,7 +964,16 @@ class SECDataDistiller:
                         frames.append(cleaned)
                 except Exception:
                     continue
+        original = self._original_concept_facts(cik, concept, tags, units)
+        if not original.empty:
+            frames.append(original)
         result = pd.concat(frames, ignore_index=True, sort=False) if frames else pd.DataFrame()
+        if concept == "DnA" and not result.empty:
+            aggregate = result[result["concept"] != "Depreciation"]
+            if not aggregate.empty and aggregate["end"].max() >= result["end"].max():
+                # Depreciation alone is not the same basis as total D&A. Never
+                # bridge a partial annual figure to a complete current YTD.
+                result = aggregate.copy()
         if concept == "CapEx" and not result.empty:
             # Productive assets include software/intangibles. Use its disclosed
             # history consistently when it is the latest cash-capex basis; never
@@ -984,6 +1004,121 @@ class SECDataDistiller:
             if not derived.empty:
                 result = pd.concat([result, derived], ignore_index=True, sort=False)
         return result
+
+    def _original_concept_facts(self, cik: str, concept: str, tags: list, units: tuple) -> pd.DataFrame:
+        if not any(row["ticker"] == self.ticker and row["cik"] == str(cik).zfill(10) for row in review_plan()["targets"]):
+            return pd.DataFrame()
+        if self._original_filings_cache is None:
+            self._fetch_submission_metadata(cik)
+            self._original_filings_cache = original_filings(
+                self.session, self.headers, self.ticker, str(cik).zfill(10), self.decision_timestamp,
+                self._submission_payload_cache.get(str(cik).zfill(10), {}),
+            )
+        rows = filing_concept_rows(self._original_filings_cache, self.ticker, concept, tags, units)
+        frames = []
+        if rows:
+            frame = self._clean_facts(pd.DataFrame(rows))
+            frames.extend(self._attach_point_in_time_evidence(group, concept, unit)
+                          for unit, group in frame.groupby("unit"))
+        for formula in review_plan().get("formulas", {}).get(self.ticker, {}).get(concept, []):
+            derived = self._reconstruct_original_metric(concept, units, formula)
+            if not derived.empty:
+                frames.append(derived)
+        for partition in review_plan().get("partitions", {}).get(self.ticker, {}).get(concept, []):
+            derived = self._reconstruct_original_partition(concept, partition)
+            if not derived.empty:
+                frames.append(derived)
+        return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+    def _reconstruct_original_partition(self, concept: str, partition: dict) -> pd.DataFrame:
+        rows = []
+        for filing in self._original_filings_cache:
+            raw = partition_component_rows(filing, partition)
+            if not raw:
+                continue
+            for fact in raw:
+                fact.update(concept=fact["qname"] + "[" + fact["partition_member"] + "]", concept_priority=0,
+                    accn=filing["accessionNumber"], filed=filing["filingDate"], form=filing["form"],
+                    source_document_url=filing["instance_url"], source_document_sha256=filing["sha256"],
+                    mapping_basis="SEC_ORIGINAL_XBRL: " + partition["basis"])
+            source = self._attach_point_in_time_evidence(self._clean_facts(pd.DataFrame(raw)), concept + "_Components", "USD")
+            if source.empty:
+                continue
+            for _, group in source.groupby(["start", "end", "unit"], dropna=True):
+                facts = {(r["qname"], r["partition_member"]): r for _, r in group.iterrows()}
+                expected = {(qname, member) for qname in [partition["revenue_qname"], partition["cost_qname"]]
+                            for member in partition["members"]}
+                total_key = (partition["revenue_qname"], "CONSOLIDATED")
+                if not (expected | {total_key}).issubset(facts):
+                    continue
+                revenue = sum(float(facts[(partition["revenue_qname"], member)]["val"]) for member in partition["members"])
+                total = float(facts[total_key]["val"])
+                tolerance = sum(0.5 * 10 ** -int(str(r["decimals"])) for r in facts.values()
+                                if re.fullmatch(r"-?\d{1,3}", str(r.get("decimals", "INF"))))
+                if abs(revenue - total) > max(1., tolerance):
+                    continue
+                cost = sum(float(facts[(partition["cost_qname"], member)]["val"]) for member in partition["members"])
+                row = facts[total_key].copy()
+                row["val"], row["concept"], row["concept_priority"] = cost, "Reconstructed:" + concept, 1
+                row["evidence_id"] = self._record_derived_metric(concept, cost, "USD", partition["basis"],
+                    list(facts.values()), concept + ":reviewed-exhaustive-partition")
+                rows.append(row)
+        return pd.DataFrame(rows)
+
+    def _reconstruct_original_metric(self, concept: str, units: tuple, formula: dict) -> pd.DataFrame:
+        """Only reviewed signed identities, all from one accession and exact period."""
+        terms = formula["terms"]
+        validation_terms = formula.get("validation_terms", terms)
+        names = {term["qname"] for term in [*terms, *validation_terms]}
+        if formula.get("validation_parent"):
+            names.add(formula["validation_parent"])
+        raw = filing_concept_rows(self._original_filings_cache, self.ticker, concept + "_Components", [], units,
+            [{"qname": name, "basis": formula["basis"]} for name in sorted(names)])
+        if not raw:
+            return pd.DataFrame()
+        source = self._clean_facts(pd.DataFrame(raw))
+        source = self._attach_point_in_time_evidence(source, concept + "_Components", "USD")
+        grouped = {}
+        for _, row in source.iterrows():
+            key = (row["accn"], row["start"], row["end"], row["unit"])
+            if pd.notna(row["start"]):
+                grouped.setdefault(key, {})[row["qname"]] = row
+        rows = []
+        for key, facts in grouped.items():
+            if not names.issubset(facts):
+                continue
+            filing = next(f for f in self._original_filings_cache if f["accessionNumber"] == key[0])
+            graph_valid = True
+            for parent, expected_children in formula.get("calculation_children", {}).items():
+                roles = {}
+                for arc in filing.get("calculations", []):
+                    if arc["parent"] == parent:
+                        roles.setdefault(arc["role"], {})[arc["child"]] = arc["weight"]
+                if expected_children not in roles.values():
+                    graph_valid = False
+                    break
+            if not graph_valid:
+                continue
+            if formula.get("validation_parent"):
+                expected = sum(float(facts[t["qname"]]["val"]) * t["coefficient"] for t in validation_terms)
+                reported = float(facts[formula["validation_parent"]]["val"])
+                tolerance = 0.0
+                for fact in facts.values():
+                    decimals = str(fact.get("decimals", "INF"))
+                    if decimals != "INF" and re.fullmatch(r"-?\d{1,3}", decimals):
+                        tolerance += 0.5 * 10 ** -int(decimals)
+                if abs(expected - reported) > max(1.0, tolerance):
+                    continue
+            value = sum(float(facts[t["qname"]]["val"]) * t["coefficient"] for t in terms)
+            row = facts[terms[0]["qname"]].copy()
+            row["val"] = value
+            row["concept"] = "Reconstructed:" + concept
+            row["concept_priority"] = 1
+            row["available_to_model_at"] = max(r["available_to_model_at"] for r in facts.values())
+            row["evidence_id"] = self._record_derived_metric(concept, value, "USD", formula["basis"],
+                list(facts.values()), concept + ":original-filing-reconstruction")
+            rows.append(row)
+        return pd.DataFrame(rows)
 
     def _derive_same_period_difference(
         self, left: pd.DataFrame, right: pd.DataFrame, metric: str,
@@ -1070,7 +1205,7 @@ class SECDataDistiller:
         df = df[np.isfinite(df["val"])]
         sort_cols = [c for c in ["end", "filed"] if c in df.columns]
         df = df.sort_values(sort_cols)
-        dedup = [c for c in ["fy", "fp", "form", "end", "duration_days", "frame", "accn"] if c in df.columns]
+        dedup = [c for c in ["concept", "unit", "start", "fy", "fp", "form", "end", "duration_days", "frame", "accn"] if c in df.columns]
         if "accn" not in df.columns and "filed" in df.columns:
             dedup.append("filed")
         if dedup:
@@ -8215,6 +8350,7 @@ def latest_sec_availability_by_ticker(evidence_rows: Iterable[Mapping[str, Any]]
 
 def main() -> None:
     GLOBAL_EVIDENCE_LEDGER.reset()
+    reset_audit()
     watchlist_rows, universe_version = load_fixed_watchlist()
     user_email = require_sec_contact_email()
     df = pd.DataFrame(watchlist_rows)
@@ -8355,6 +8491,7 @@ def main() -> None:
     }
     payload = build_agent_payload(shortlist, metric_metadata_by_ticker)
     Path(OUTPUT_JSON).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    write_review_outputs(rows, evidence_rows)
     save_json_cache(CACHE_FILE_SHARES, _VECTOR_CACHE)
 
     logger.info(f"完成。Eligible={eligible_count} / Shortlist={len(shortlist)} / Total={len(out_df)}")

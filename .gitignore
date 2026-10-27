@@ -27,6 +27,9 @@ public/
 fixture_output/
 fixture_output_*/
 sec_filing_snapshot/
+.mode_c_sec_filings/
+mode_c_sec_filing_audit.json
+mode_c_data_gaps.csv
 
 # Local secrets
 .env

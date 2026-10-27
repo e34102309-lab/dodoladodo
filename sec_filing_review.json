@@ -4,308 +4,981 @@
     {
       "ticker": "AAPL",
       "cik": "0000320193",
-      "baseline_reason": "Abstain: 有淨負債但缺少同期間利息費用證據"
+      "baseline_reason": "Abstain: 有淨負債但缺少同期間利息費用證據",
+      "review_note": "當期原始申報未提供可用的獨立利息費用；歷史標準標籤只到 2023 年，不能用利息收入淨額或稅務利息替代。",
+      "reviewed_source": "https://www.sec.gov/Archives/edgar/data/320193/000032019326000020/aapl-20260627.htm"
     },
     {
       "ticker": "AMD",
       "cik": "0000002488",
-      "baseline_reason": "Abstain: SEC 核心資料過舊 D&A"
+      "baseline_reason": "Abstain: SEC 核心資料過舊 D&A",
+      "review_note": "D&A 由原始財報的 OtherDepreciationAndAmortization 與無形資產攤銷相加；保留原年報，不能以只更新 Part III 的 10-K/A 取代。",
+      "reviewed_source": "https://www.sec.gov/Archives/edgar/data/2488/000000248826000123/amd-20260627.htm"
     },
     {
       "ticker": "PANW",
       "cik": "0001327567",
-      "baseline_reason": "Abstain: 有淨負債但缺少同期間利息費用證據"
+      "baseline_reason": "Abstain: 有淨負債但缺少同期間利息費用證據",
+      "review_note": "原始 2026 年報有明確揭露利息費用為零；只採有證據的真零，重跑確認淨負債與期間閘門。",
+      "reviewed_source": "https://www.sec.gov/Archives/edgar/data/1327567/000132756726000023/panw-20260731.htm"
     },
     {
       "ticker": "ANET",
       "cik": "0001596532",
-      "baseline_reason": "Abstain: Data confidence 45<70"
+      "baseline_reason": "Abstain: Data confidence 45<70",
+      "review_note": "原始當期財報可讀，但資料信心包含歷史估值、期初投入資本或負債／利息備援限制，不能僅補當期數值便視作解除。",
+      "reviewed_source": "https://www.sec.gov/Archives/edgar/data/1596532/000159653226000175/anet-20260630.htm",
+      "baseline_confidence_reasons": "ROIC uses ending invested capital because a beginning balance is unavailable; Comparable point-in-time valuation history is unavailable; Total debt uses a non-SEC fallback; cash fully covers debt"
     },
     {
       "ticker": "CRWD",
       "cik": "0001535527",
-      "baseline_reason": "Abstain: TTM 證據鏈不完整 D&A"
+      "baseline_reason": "Abstain: TTM 證據鏈不完整 D&A",
+      "review_note": "現金流量表的自訂 D&A 不含收購無形資產攤銷；同期間加回該攤銷，排除另一個僅部分折舊的標準標籤。",
+      "reviewed_source": "https://www.sec.gov/Archives/edgar/data/1535527/000153552726000031/crwd-20260731.htm"
     },
     {
       "ticker": "KLAC",
       "cik": "0000319201",
-      "baseline_reason": "Abstain: SEC 核心資料過舊 EBIT"
+      "baseline_reason": "Abstain: SEC 核心資料過舊 EBIT",
+      "review_note": "按已複核原始損益表重建營業利益；同申報、同起訖日、USD，並與稅前利益／非營業項調和。",
+      "reviewed_source": "https://www.sec.gov/Archives/edgar/data/319201/000031920126000027/klac-20260630.htm"
     },
     {
       "ticker": "UBER",
       "cik": "0001543151",
-      "baseline_reason": "Abstain: SEC 核心資料缺失 GrossProfit"
+      "baseline_reason": "Abstain: SEC 核心資料缺失 GrossProfit",
+      "review_note": "當期原始申報未提供符合模型的合併 GrossProfit／完整 COGS 口徑；成本分類與營業費用／折舊分配無法安全銜接，維持資料不足。",
+      "reviewed_source": "https://www.sec.gov/Archives/edgar/data/1543151/000154315126000032/uber-20260630.htm"
     },
     {
       "ticker": "NOW",
       "cik": "0001373715",
-      "baseline_reason": "Abstain: Data confidence 35<70"
+      "baseline_reason": "Abstain: Data confidence 35<70",
+      "review_note": "原始當期財報可讀，但資料信心包含歷史估值、期初投入資本或負債／利息備援限制，不能僅補當期數值便視作解除。",
+      "reviewed_source": "https://www.sec.gov/Archives/edgar/data/1373715/000137371526000076/now-20260630.htm",
+      "baseline_confidence_reasons": "ROIC uses ending invested capital because a beginning balance is unavailable; Comparable point-in-time valuation history is unavailable; EBITDA source reconciliation exceeds tolerance; ICR uses cash interest paid as a proxy for accrual interest expense"
     },
     {
       "ticker": "GLW",
       "cik": "0000024741",
-      "baseline_reason": "Abstain: SEC 核心資料過舊 CapEx"
+      "baseline_reason": "Abstain: SEC 核心資料過舊 CapEx",
+      "review_note": "採原始現金流量表 PaymentsForCapitalImprovements 的現金資本支出；不使用未付設備增加額。",
+      "reviewed_source": "https://www.sec.gov/Archives/edgar/data/24741/000002474126000255/glw-20260630.htm"
     },
     {
       "ticker": "HPE",
       "cik": "0001645590",
-      "baseline_reason": "Abstain: SEC 核心資料過舊 GrossProfit"
+      "baseline_reason": "Abstain: SEC 核心資料過舊 GrossProfit",
+      "review_note": "主表產品／服務成本明列不含另列攤銷，且有融資業務；沒有可調和的一致完整毛利口徑，不能把部分成本當全部 COGS。",
+      "reviewed_source": "https://www.sec.gov/Archives/edgar/data/1645590/000164559026000080/hpe-20260731.htm"
     },
     {
       "ticker": "CAT",
       "cik": "0000018230",
-      "baseline_reason": "Abstain: 有淨負債但缺少同期間利息費用證據"
+      "baseline_reason": "Abstain: 有淨負債但缺少同期間利息費用證據",
+      "review_note": "當期合併申報未取得與企業 TTM 一致的利息費用；金融子公司／分部數字不能直接冒充合併利息。",
+      "reviewed_source": "https://www.sec.gov/Archives/edgar/data/18230/000001823026000046/cat-20260630.htm"
     },
     {
       "ticker": "GE",
       "cik": "0000040545",
-      "baseline_reason": "Abstain: SEC 核心資料過舊 EBIT/D&A/GrossProfit/Cash"
+      "baseline_reason": "Abstain: SEC 核心資料過舊 EBIT/D&A/GrossProfit/Cash",
+      "review_note": "合併現金明確包含受限現金及保險／處分業務；成本含融資與非營業項，D&A 含 accretion，不能直接當一般企業的現金、EBIT 或純 D&A。",
+      "reviewed_source": "https://www.sec.gov/Archives/edgar/data/40545/000004054526000064/ge-20260930.htm"
     },
     {
       "ticker": "RTX",
       "cik": "0000101829",
-      "baseline_reason": "Abstain: SEC 核心資料過舊 D&A/GrossProfit"
+      "baseline_reason": "Abstain: SEC 核心資料過舊 D&A/GrossProfit",
+      "review_note": "D&A 依實際現金流量表標題映射；產品／服務完整成本分拆須先調和營收才重建毛利。",
+      "reviewed_source": "https://www.sec.gov/Archives/edgar/data/101829/000010182926000031/rtx-20260930.htm"
     },
     {
       "ticker": "UNP",
       "cik": "0000100885",
-      "baseline_reason": "Abstain: SEC 核心資料缺失 GrossProfit"
+      "baseline_reason": "Abstain: SEC 核心資料缺失 GrossProfit",
+      "review_note": "運輸業按營運費用呈現，沒有可調和的獨立完整 GrossProfit／COGS；不能把全部營業費用或排除折舊的成本當一般毛利。",
+      "reviewed_source": "https://www.sec.gov/Archives/edgar/data/100885/000010088526000321/unp-20260930.htm"
     },
     {
       "ticker": "LMT",
       "cik": "0000936468",
-      "baseline_reason": "Abstain: SEC 核心資料過舊 D&A"
+      "baseline_reason": "Abstain: SEC 核心資料過舊 D&A",
+      "review_note": "現金流量表明確列示 Depreciation and amortization，採 issuer-specific 映射，不把較廣的 taxonomy 當全市場通用別名。",
+      "reviewed_source": "https://www.sec.gov/Archives/edgar/data/936468/000162828026066928/lmt-20260927.htm"
     },
     {
       "ticker": "GD",
       "cik": "0000040533",
-      "baseline_reason": "Abstain: SEC 核心資料過舊 GrossProfit"
+      "baseline_reason": "Abstain: SEC 核心資料過舊 GrossProfit",
+      "review_note": "產品與服務成本採已核對的完整維度分拆，加總前先驗證兩部分營收等於合併營收；利息現付代理仍保留信心扣分。",
+      "reviewed_source": "https://www.sec.gov/Archives/edgar/data/40533/000004053326000032/gd-20260705.htm"
     },
     {
       "ticker": "CSX",
       "cik": "0000277948",
-      "baseline_reason": "Abstain: SEC 核心資料缺失 GrossProfit"
+      "baseline_reason": "Abstain: SEC 核心資料缺失 GrossProfit",
+      "review_note": "運輸業按營運費用呈現，沒有可調和的獨立完整 GrossProfit／COGS；不能把全部營業費用或排除折舊的成本當一般毛利。",
+      "reviewed_source": "https://www.sec.gov/Archives/edgar/data/277948/000027794826000040/csx-20260930.htm"
     },
     {
       "ticker": "UPS",
       "cik": "0001090727",
-      "baseline_reason": "Abstain: SEC 核心資料缺失 GrossProfit"
+      "baseline_reason": "Abstain: SEC 核心資料缺失 GrossProfit",
+      "review_note": "運輸業按營運費用呈現，沒有可調和的獨立完整 GrossProfit／COGS；不能把全部營業費用或排除折舊的成本當一般毛利。",
+      "reviewed_source": "https://www.sec.gov/Archives/edgar/data/1090727/000162828026053249/ups-20260630.htm"
     },
     {
       "ticker": "MMM",
       "cik": "0000066740",
-      "baseline_reason": "Abstain: SEC 核心資料過舊 Cash"
+      "baseline_reason": "Abstain: SEC 核心資料過舊 Cash",
+      "review_note": "已核對當期資產負債表現金及約當現金 4.835B；只允許已複核申報，其他含受限現金的申報不自動套用。",
+      "reviewed_source": "https://www.sec.gov/Archives/edgar/data/66740/000006674026000311/mmm-20260930.htm"
     },
     {
       "ticker": "WM",
       "cik": "0000823768",
-      "baseline_reason": "Abstain: 有淨負債但缺少同期間利息費用證據"
+      "baseline_reason": "Abstain: 有淨負債但缺少同期間利息費用證據",
+      "review_note": "當期只取得利息淨額／利息及其他費用合計，不能直接當獨立總利息費用；年度利息不得冒充較新 TTM。",
+      "reviewed_source": "https://www.sec.gov/Archives/edgar/data/823768/000110465926088016/wm-20260630x10q.htm"
     },
     {
       "ticker": "EMR",
       "cik": "0000032604",
-      "baseline_reason": "Abstain: SEC 核心資料缺失 EBIT"
+      "baseline_reason": "Abstain: SEC 核心資料缺失 EBIT",
+      "review_note": "已核對當期資產負債表現金 2.180B；EBIT 尚需區分 Other deductions 中的非營業項，淨利息不能冒充總利息費用。",
+      "reviewed_source": "https://www.sec.gov/Archives/edgar/data/32604/000003260426000043/emr-20260630.htm"
     },
     {
       "ticker": "CMI",
       "cik": "0000026172",
-      "baseline_reason": "Abstain: TTM 證據鏈不完整，期間不一致 SBC"
+      "baseline_reason": "Abstain: TTM 證據鏈不完整，期間不一致 SBC",
+      "review_note": "當期只取得包含選擇權行使的 APIC 調整，不能當 SBC 費用；完整 SBC 標準證據停留在年報。",
+      "reviewed_source": "https://www.sec.gov/Archives/edgar/data/26172/000002617226000029/cmi-20260630.htm"
     },
     {
       "ticker": "FDX",
       "cik": "0001048911",
-      "baseline_reason": "Abstain: SEC 核心資料過舊 GrossProfit"
+      "baseline_reason": "Abstain: SEC 核心資料過舊 GrossProfit",
+      "review_note": "運輸業按營運費用呈現，沒有可調和的獨立完整 GrossProfit／COGS；不能把全部營業費用或排除折舊的成本當一般毛利。",
+      "reviewed_source": "https://www.sec.gov/Archives/edgar/data/1048911/000104891126000105/fdx-20260531.htm"
     },
     {
       "ticker": "NSC",
       "cik": "0000702165",
-      "baseline_reason": "Abstain: SEC 核心資料缺失 GrossProfit"
+      "baseline_reason": "Abstain: SEC 核心資料缺失 GrossProfit",
+      "review_note": "運輸業按營運費用呈現，沒有可調和的獨立完整 GrossProfit／COGS；不能把全部營業費用或排除折舊的成本當一般毛利。",
+      "reviewed_source": "https://www.sec.gov/Archives/edgar/data/702165/000162828026066836/nsc-20260930.htm"
     },
     {
       "ticker": "RSG",
       "cik": "0001060391",
-      "baseline_reason": "Abstain: TTM 證據鏈不完整，期間不一致 SBC"
+      "baseline_reason": "Abstain: TTM 證據鏈不完整，期間不一致 SBC",
+      "review_note": "當期 APIC 成本認列不等於完整合併 SBC 費用；無可靠年報加當期 YTD 減前期 YTD 的同口徑鏈。",
+      "reviewed_source": "https://www.sec.gov/Archives/edgar/data/1060391/000106039126000275/rsg-20260630.htm"
     },
     {
       "ticker": "LLY",
       "cik": "0000059478",
-      "baseline_reason": "Abstain: SEC 核心資料缺失 EBIT"
+      "baseline_reason": "Abstain: SEC 核心資料缺失 EBIT",
+      "review_note": "按已複核原始損益表重建營業利益；同申報、同起訖日、USD，並與稅前利益／非營業項調和。另補原始現金設備支出。",
+      "reviewed_source": "https://www.sec.gov/Archives/edgar/data/59478/000005947826000081/lly-20260630.htm"
     },
     {
       "ticker": "JNJ",
       "cik": "0000200406",
-      "baseline_reason": "Abstain: SEC 核心資料過舊 EBIT"
+      "baseline_reason": "Abstain: SEC 核心資料過舊 EBIT",
+      "review_note": "按已複核原始損益表重建營業利益；同申報、同起訖日、USD，並與稅前利益／非營業項調和。",
+      "reviewed_source": "https://www.sec.gov/Archives/edgar/data/200406/000020040626000197/jnj-20260927.htm"
     },
     {
       "ticker": "MRK",
       "cik": "0000310158",
-      "baseline_reason": "Abstain: SEC 核心資料缺失 EBIT"
+      "baseline_reason": "Abstain: SEC 核心資料缺失 EBIT",
+      "review_note": "按已複核原始損益表重建營業利益；同申報、同起訖日、USD，並與稅前利益／非營業項調和。",
+      "reviewed_source": "https://www.sec.gov/Archives/edgar/data/310158/000031015826000212/mrk-20260630.htm"
     },
     {
       "ticker": "DHR",
       "cik": "0000313616",
-      "baseline_reason": "Abstain: SEC 核心資料過舊 Cash"
+      "baseline_reason": "Abstain: SEC 核心資料過舊 Cash",
+      "review_note": "已核對當期資產負債表 Cash and cash equivalents 與原始數值相符，僅允許已複核申報；不把其他申報的受限現金假設為零。",
+      "reviewed_source": "https://www.sec.gov/Archives/edgar/data/313616/000031361626000199/dhr-20260925.htm"
     },
     {
       "ticker": "VRTX",
       "cik": "0000875320",
-      "baseline_reason": "Abstain: Data confidence 30<70"
+      "baseline_reason": "Abstain: Data confidence 30<70",
+      "review_note": "原始當期財報可讀，但資料信心包含歷史估值、期初投入資本或負債／利息備援限制，不能僅補當期數值便視作解除。",
+      "reviewed_source": "https://www.sec.gov/Archives/edgar/data/875320/000087532026000259/vrtx-20260630.htm",
+      "baseline_confidence_reasons": "A material share of selected facts relies on alternate XBRL tags; ROIC uses ending invested capital because a beginning balance is unavailable; Comparable point-in-time valuation history is unavailable; EBITDA source reconciliation exceeds tolerance; Total debt uses a non-SEC fallback; cash fully covers debt"
     },
     {
       "ticker": "ISRG",
       "cik": "0001035267",
-      "baseline_reason": "Abstain: SEC 核心資料過舊 D&A"
+      "baseline_reason": "Abstain: SEC 核心資料過舊 D&A",
+      "review_note": "當期折舊與固定資產處分損益合併，自訂攤銷又含合約取得成本，無法直接當純 D&A；不猜處分損益為零。",
+      "reviewed_source": "https://www.sec.gov/Archives/edgar/data/1035267/000103526726000071/isrg-20260930.htm"
     },
     {
       "ticker": "MCK",
       "cik": "0000927653",
-      "baseline_reason": "Abstain: TTM 證據鏈不完整，期間不一致 SBC"
+      "baseline_reason": "Abstain: TTM 證據鏈不完整，期間不一致 SBC",
+      "review_note": "當期 APIC 增加額不能直接當 SBC 費用；SBC 季度與年度 TTM 期間無法安全銜接。",
+      "reviewed_source": "https://www.sec.gov/Archives/edgar/data/927653/000092765326000234/mck-20260630.htm"
     },
     {
       "ticker": "REGN",
       "cik": "0000872589",
-      "baseline_reason": "Abstain: SEC 核心資料過舊 GrossProfit"
+      "baseline_reason": "Abstain: SEC 核心資料過舊 GrossProfit",
+      "review_note": "當期營收包括協作等收入，但沒有與全部收入同口徑的完整合併 COGS／GrossProfit；不能只用產品成本。",
+      "reviewed_source": "https://www.sec.gov/Archives/edgar/data/872589/000087258926000025/regn-20260630.htm"
     },
     {
       "ticker": "COR",
       "cik": "0001140859",
-      "baseline_reason": "Abstain: 有淨負債但缺少同期間利息費用證據"
+      "baseline_reason": "Abstain: 有淨負債但缺少同期間利息費用證據",
+      "review_note": "當期揭露為非營業利息淨額，不能當總利息費用；現付利息及其 TTM 仍受既有期間規則檢查。",
+      "reviewed_source": "https://www.sec.gov/Archives/edgar/data/1140859/000114085926000034/cor-20260630.htm"
     },
     {
       "ticker": "CAH",
       "cik": "0000721371",
-      "baseline_reason": "Abstain: 季度毛利資料不足"
+      "baseline_reason": "Abstain: 季度毛利資料不足",
+      "review_note": "年報 TTM 毛利可取得，但合併季度毛利序列不足；不能把年度毛利拆成假季度。",
+      "reviewed_source": "https://www.sec.gov/Archives/edgar/data/721371/000072137126000038/cah-20260630.htm"
     },
     {
       "ticker": "VEEV",
       "cik": "0001393052",
-      "baseline_reason": "Abstain: SEC 核心資料過舊 CapEx/D&A"
+      "baseline_reason": "Abstain: SEC 核心資料過舊 CapEx/D&A",
+      "review_note": "原始表明確揭露 OtherDepreciationAndAmortization 為總 D&A，可補；投資流量 Long-term assets 不是完整獨立 CapEx 證據。",
+      "reviewed_source": "https://www.sec.gov/Archives/edgar/data/1393052/000139305226000036/veev-20260731.htm"
     },
     {
       "ticker": "WMT",
       "cik": "0000104169",
-      "baseline_reason": "Abstain: SEC 核心資料過舊 D&A"
+      "baseline_reason": "Abstain: SEC 核心資料過舊 D&A",
+      "review_note": "補現金流量表明列的總 D&A；當期 SBC 沒有可靠獨立費用／YTD 鏈，不能由舊年報或股權變動猜補。",
+      "reviewed_source": "https://www.sec.gov/Archives/edgar/data/104169/000010416926000154/wmt-20260731.htm"
     },
     {
       "ticker": "PG",
       "cik": "0000080424",
-      "baseline_reason": "Abstain: SEC 核心資料過舊 Cash"
+      "baseline_reason": "Abstain: SEC 核心資料過舊 Cash",
+      "review_note": "已核對當期資產負債表 Cash and cash equivalents 與原始數值相符，僅允許已複核申報；不把其他申報的受限現金假設為零。",
+      "reviewed_source": "https://www.sec.gov/Archives/edgar/data/80424/000008042426000256/pg-20260930.htm"
     },
     {
       "ticker": "PM",
       "cik": "0001413329",
-      "baseline_reason": "Abstain: TTM 證據鏈不完整，期間不一致 SBC"
+      "baseline_reason": "Abstain: TTM 證據鏈不完整，期間不一致 SBC",
+      "review_note": "股份發行的 SBC 價值不是當期 SBC 費用；不以 StockIssuedDuringPeriodValueShareBasedCompensation 替代。",
+      "reviewed_source": "https://www.sec.gov/Archives/edgar/data/1413329/000162828026066976/pm-20260930.htm"
     },
     {
       "ticker": "MO",
       "cik": "0000764180",
-      "baseline_reason": "Abstain: SBC TTM 證據缺失"
+      "baseline_reason": "Abstain: SBC TTM 證據缺失",
+      "review_note": "自訂 APIC 調整包含所得稅淨影響，不能當純 SBC 費用；缺可靠同期間 SBC 鏈。",
+      "reviewed_source": "https://www.sec.gov/Archives/edgar/data/764180/000076418026000094/mo-20260630.htm"
     },
     {
       "ticker": "MNST",
       "cik": "0000865752",
-      "baseline_reason": "Abstain: Data confidence 45<70"
+      "baseline_reason": "Abstain: Data confidence 45<70",
+      "review_note": "原始當期財報可讀，但資料信心包含歷史估值、期初投入資本或負債／利息備援限制，不能僅補當期數值便視作解除。",
+      "reviewed_source": "https://www.sec.gov/Archives/edgar/data/865752/000110465926092193/mnst-20260630x10q.htm",
+      "baseline_confidence_reasons": "ROIC uses ending invested capital because a beginning balance is unavailable; Comparable point-in-time valuation history is unavailable; Total debt uses a non-SEC fallback; cash fully covers debt"
     },
     {
       "ticker": "TGT",
       "cik": "0000027419",
-      "baseline_reason": "Abstain: SEC 核心資料過舊 Cash"
+      "baseline_reason": "Abstain: SEC 核心資料過舊 Cash",
+      "review_note": "已核對當期資產負債表 Cash and cash equivalents 與原始數值相符，僅允許已複核申報；不把其他申報的受限現金假設為零。",
+      "reviewed_source": "https://www.sec.gov/Archives/edgar/data/27419/000002741926000042/tgt-20260801.htm"
     },
     {
       "ticker": "EL",
       "cik": "0001001250",
-      "baseline_reason": "Abstain: SEC 核心資料過舊 Cash"
+      "baseline_reason": "Abstain: SEC 核心資料過舊 Cash",
+      "review_note": "已核對當期資產負債表 Cash and cash equivalents 與原始數值相符，僅允許已複核申報；不把其他申報的受限現金假設為零。",
+      "reviewed_source": "https://www.sec.gov/Archives/edgar/data/1001250/000100125026000041/el-20260630.htm"
     },
     {
       "ticker": "KVUE",
       "cik": "0001944048",
-      "baseline_reason": "Abstain: Data confidence 25<70"
+      "baseline_reason": "Abstain: Data confidence 25<70",
+      "review_note": "原始當期財報可讀，但資料信心包含歷史估值、期初投入資本或負債／利息備援限制，不能僅補當期數值便視作解除。",
+      "reviewed_source": "https://www.sec.gov/Archives/edgar/data/1944048/000194404826000142/kvue-20260628.htm",
+      "baseline_confidence_reasons": "ROIC uses ending invested capital because a beginning balance is unavailable; Comparable point-in-time valuation history is unavailable; EBITDA source reconciliation exceeds tolerance; Total debt uses a non-SEC current-market-data fallback"
     },
     {
       "ticker": "HSY",
       "cik": "0000047111",
-      "baseline_reason": "Abstain: SEC 核心資料過舊 Cash"
+      "baseline_reason": "Abstain: SEC 核心資料過舊 Cash",
+      "review_note": "已核對當期資產負債表 Cash and cash equivalents 與原始數值相符，僅允許已複核申報；不把其他申報的受限現金假設為零。",
+      "reviewed_source": "https://www.sec.gov/Archives/edgar/data/47111/000162828026050900/hsy-20260628.htm"
     },
     {
       "ticker": "KR",
       "cik": "0000056873",
-      "baseline_reason": "Abstain: SEC 核心資料過舊 GrossProfit"
+      "baseline_reason": "Abstain: SEC 核心資料過舊 GrossProfit",
+      "review_note": "成本標籤明確排除折舊攤銷，缺少銷貨與營業費用之間的完整分攤；不能把部分成本當完整 COGS。",
+      "reviewed_source": "https://www.sec.gov/Archives/edgar/data/56873/000110465926108926/kr-20260815x10q.htm"
     },
     {
       "ticker": "BKNG",
       "cik": "0001075531",
-      "baseline_reason": "Abstain: SEC 核心資料過舊 GrossProfit/NetIncome"
+      "baseline_reason": "Abstain: SEC 核心資料過舊 GrossProfit/NetIncome",
+      "review_note": "現行淨額／總額收入呈現與舊 GrossProfit 基礎不同，未取得一致完整 COGS；不得沿用 2017 毛利作當期。",
+      "reviewed_source": "https://www.sec.gov/Archives/edgar/data/1075531/000107553126000037/bkng-20260630.htm"
     },
     {
       "ticker": "TJX",
       "cik": "0000109198",
-      "baseline_reason": "Abstain: SEC 核心資料過舊 EBIT"
+      "baseline_reason": "Abstain: SEC 核心資料過舊 EBIT",
+      "review_note": "按已複核原始損益表重建營業利益；同申報、同起訖日、USD，並與稅前利益／非營業項調和。",
+      "reviewed_source": "https://www.sec.gov/Archives/edgar/data/109198/000010919826000048/tjx-20260801.htm"
     },
     {
       "ticker": "ABNB",
       "cik": "0001559720",
-      "baseline_reason": "Abstain: SEC 核心資料過舊 CapEx/D&A"
+      "baseline_reason": "Abstain: SEC 核心資料過舊 CapEx/D&A",
+      "review_note": "當期沒有獨立完整 CapEx／D&A；其他投資活動合計不可直接當 CapEx，舊年度不冒充當期 TTM。",
+      "reviewed_source": "https://www.sec.gov/Archives/edgar/data/1559720/000155972026000027/abnb-20260630.htm"
     },
     {
       "ticker": "DASH",
       "cik": "0001792789",
-      "baseline_reason": "Abstain: SEC 核心資料缺失 GrossProfit"
+      "baseline_reason": "Abstain: SEC 核心資料缺失 GrossProfit",
+      "review_note": "當期原始申報未提供符合模型的合併 GrossProfit／完整 COGS 口徑；成本分類與營業費用／折舊分配無法安全銜接，維持資料不足。",
+      "reviewed_source": "https://www.sec.gov/Archives/edgar/data/1792789/000179278926000050/dash-20260630.htm"
     },
     {
       "ticker": "CVNA",
       "cik": "0001690820",
-      "baseline_reason": "Abstain: SEC 核心資料缺失 D&A"
+      "baseline_reason": "Abstain: SEC 核心資料缺失 D&A",
+      "review_note": "採明確自訂 D&A excluding debt issuance costs，保留融資發行成本攤銷排除及原始來源。",
+      "reviewed_source": "https://www.sec.gov/Archives/edgar/data/1690820/000169082026000055/cvna-20260630.htm"
     },
     {
       "ticker": "ROST",
       "cik": "0000745732",
-      "baseline_reason": "Abstain: Data confidence 45<70"
+      "baseline_reason": "Abstain: Data confidence 45<70",
+      "review_note": "原始當期財報可讀，但資料信心包含歷史估值、期初投入資本或負債／利息備援限制，不能僅補當期數值便視作解除。",
+      "reviewed_source": "https://www.sec.gov/Archives/edgar/data/745732/000074573226000041/rost-20260801.htm",
+      "baseline_confidence_reasons": "Most selected facts rely on lower-priority XBRL tag mappings; Comparable point-in-time valuation history is unavailable; EBITDA source reconciliation exceeds tolerance"
     },
     {
       "ticker": "NKE",
       "cik": "0000320187",
-      "baseline_reason": "Abstain: SEC 核心資料缺失 EBIT"
+      "baseline_reason": "Abstain: SEC 核心資料缺失 EBIT",
+      "review_note": "按已複核原始損益表重建營業利益；同申報、同起訖日、USD，並與稅前利益／非營業項調和。",
+      "reviewed_source": "https://www.sec.gov/Archives/edgar/data/320187/000032018726000193/nke-20260831.htm"
     },
     {
       "ticker": "CMG",
       "cik": "0001058090",
-      "baseline_reason": "Abstain: SEC 核心資料缺失 GrossProfit"
+      "baseline_reason": "Abstain: SEC 核心資料缺失 GrossProfit",
+      "review_note": "當期原始申報未提供符合模型的合併 GrossProfit／完整 COGS 口徑；成本分類與營業費用／折舊分配無法安全銜接，維持資料不足。",
+      "reviewed_source": "https://www.sec.gov/Archives/edgar/data/1058090/000105809026000066/cmg-20260630.htm"
     },
     {
       "ticker": "DHI",
       "cik": "0000882184",
-      "baseline_reason": "Abstain: SEC 核心資料缺失 EBIT"
+      "baseline_reason": "Abstain: SEC 核心資料缺失 EBIT",
+      "review_note": "主表以稅前利益為主，且建商利息資本化／結轉成本；不能把 Pretax 直接當 EBIT 或把 incurred interest 當費用。",
+      "reviewed_source": "https://www.sec.gov/Archives/edgar/data/882184/000088218426000096/dhi-20260630.htm"
     },
     {
       "ticker": "GOOGL",
       "cik": "0001652044",
-      "baseline_reason": "Abstain: Data confidence 55<70"
+      "baseline_reason": "Abstain: Data confidence 55<70",
+      "review_note": "原始當期財報可讀，但資料信心包含歷史估值、期初投入資本或負債／利息備援限制，不能僅補當期數值便視作解除。",
+      "reviewed_source": "https://www.sec.gov/Archives/edgar/data/1652044/000165204426000071/goog-20260630.htm",
+      "baseline_confidence_reasons": "Comparable point-in-time valuation history is unavailable; EBITDA source reconciliation exceeds tolerance"
     },
     {
       "ticker": "META",
       "cik": "0001326801",
-      "baseline_reason": "Abstain: Data confidence 55<70"
+      "baseline_reason": "Abstain: Data confidence 55<70",
+      "review_note": "原始當期財報可讀，但資料信心包含歷史估值、期初投入資本或負債／利息備援限制，不能僅補當期數值便視作解除。",
+      "reviewed_source": "https://www.sec.gov/Archives/edgar/data/1326801/000162828026066773/meta-20260930.htm",
+      "baseline_confidence_reasons": "Comparable point-in-time valuation history is unavailable; EBITDA source reconciliation exceeds tolerance"
     },
     {
       "ticker": "DIS",
       "cik": "0001744489",
-      "baseline_reason": "Abstain: SEC 核心資料缺失 GrossProfit"
+      "baseline_reason": "Abstain: SEC 核心資料缺失 GrossProfit",
+      "review_note": "當期原始申報未提供符合模型的合併 GrossProfit／完整 COGS 口徑；成本分類與營業費用／折舊分配無法安全銜接，維持資料不足。",
+      "reviewed_source": "https://www.sec.gov/Archives/edgar/data/1744489/000174448926000057/dis-20260627.htm"
     },
     {
       "ticker": "APP",
       "cik": "0001751008",
-      "baseline_reason": "Abstain: SEC 核心資料過舊 CapEx"
+      "baseline_reason": "Abstain: SEC 核心資料過舊 CapEx",
+      "review_note": "當期僅 Other investing activities 合計，不能直接視作現金 CapEx；不以零代替未單獨揭露的支出。",
+      "reviewed_source": "https://www.sec.gov/Archives/edgar/data/1751008/000175100826000059/app-20260630.htm"
     },
     {
       "ticker": "CMCSA",
       "cik": "0001166691",
-      "baseline_reason": "Abstain: SEC 核心資料缺失 GrossProfit"
+      "baseline_reason": "Abstain: SEC 核心資料缺失 GrossProfit",
+      "review_note": "當期原始申報未提供符合模型的合併 GrossProfit／完整 COGS 口徑；成本分類與營業費用／折舊分配無法安全銜接，維持資料不足。",
+      "reviewed_source": "https://www.sec.gov/Archives/edgar/data/1166691/000162828026066863/cmcsa-20260930.htm"
     },
     {
       "ticker": "LYV",
       "cik": "0001335258",
-      "baseline_reason": "Abstain: SEC 核心資料缺失 GrossProfit"
+      "baseline_reason": "Abstain: SEC 核心資料缺失 GrossProfit",
+      "review_note": "當期原始申報未提供符合模型的合併 GrossProfit／完整 COGS 口徑；成本分類與營業費用／折舊分配無法安全銜接，維持資料不足。",
+      "reviewed_source": "https://www.sec.gov/Archives/edgar/data/1335258/000133525826000035/lyv-20260630.htm"
     }
   ],
-  "mappings": {}
+  "mappings": {
+    "WMT": {
+      "DnA": [
+        {
+          "qname": "us-gaap:DepreciationAmortizationAndAccretionNet",
+          "basis": "Issuer consolidated cash-flow statement explicitly labels this amount Depreciation and amortization; broader taxonomy is accepted only for this reviewed issuer",
+          "reviewed_source": "https://www.sec.gov/Archives/edgar/data/104169/000010416926000154/wmt-20260731.htm"
+        }
+      ]
+    },
+    "LMT": {
+      "DnA": [
+        {
+          "qname": "us-gaap:DepreciationAmortizationAndAccretionNet",
+          "basis": "Issuer consolidated cash-flow statement explicitly labels this amount Depreciation and amortization; broader taxonomy is accepted only for this reviewed issuer",
+          "reviewed_source": "https://www.sec.gov/Archives/edgar/data/936468/000162828026066928/lmt-20260927.htm"
+        }
+      ]
+    },
+    "RTX": {
+      "DnA": [
+        {
+          "qname": "us-gaap:DepreciationAmortizationAndAccretionNet",
+          "basis": "Issuer consolidated cash-flow statement explicitly labels this amount Depreciation and amortization; broader taxonomy is accepted only for this reviewed issuer",
+          "reviewed_source": "https://www.sec.gov/Archives/edgar/data/101829/000010182926000031/rtx-20260930.htm"
+        }
+      ]
+    },
+    "CVNA": {
+      "DnA": [
+        {
+          "qname": "cvna:DepreciationAndAmortizationExcludingDebtIssuanceCosts",
+          "basis": "Reported total operating depreciation and amortization excludes financing/debt issuance amortization",
+          "reviewed_source": "https://www.sec.gov/Archives/edgar/data/1690820/000169082026000055/cvna-20260630.htm"
+        }
+      ]
+    },
+    "GLW": {
+      "CapEx": [
+        {
+          "qname": "us-gaap:PaymentsForCapitalImprovements",
+          "basis": "Reported cash capital expenditures in consolidated investing cash flows; not unpaid additions",
+          "reviewed_source": "https://www.sec.gov/Archives/edgar/data/24741/000002474126000255/glw-20260630.htm"
+        }
+      ]
+    },
+    "DHR": {
+      "Cash": [
+        {
+          "qname": "us-gaap:CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents",
+          "allowed_accessions": [
+            "0000313616-26-000199"
+          ],
+          "basis": "Reviewed balance-sheet row explicitly reports Cash and cash equivalents and exactly matches this instance value; accept only reviewed accession, never infer restricted cash is zero in another filing",
+          "reviewed_source": "https://www.sec.gov/Archives/edgar/data/313616/000031361626000199/dhr-20260925.htm"
+        }
+      ]
+    },
+    "PG": {
+      "Cash": [
+        {
+          "qname": "us-gaap:CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents",
+          "allowed_accessions": [
+            "0000080424-26-000256"
+          ],
+          "basis": "Reviewed balance-sheet row explicitly reports Cash and cash equivalents and exactly matches this instance value; accept only reviewed accession, never infer restricted cash is zero in another filing",
+          "reviewed_source": "https://www.sec.gov/Archives/edgar/data/80424/000008042426000256/pg-20260930.htm"
+        }
+      ]
+    },
+    "TGT": {
+      "Cash": [
+        {
+          "qname": "us-gaap:CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents",
+          "allowed_accessions": [
+            "0000027419-26-000042"
+          ],
+          "basis": "Reviewed balance-sheet row explicitly reports Cash and cash equivalents and exactly matches this instance value; accept only reviewed accession, never infer restricted cash is zero in another filing",
+          "reviewed_source": "https://www.sec.gov/Archives/edgar/data/27419/000002741926000042/tgt-20260801.htm"
+        }
+      ]
+    },
+    "EL": {
+      "Cash": [
+        {
+          "qname": "us-gaap:CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents",
+          "allowed_accessions": [
+            "0001001250-26-000041"
+          ],
+          "basis": "Reviewed balance-sheet row explicitly reports Cash and cash equivalents and exactly matches this instance value; accept only reviewed accession, never infer restricted cash is zero in another filing",
+          "reviewed_source": "https://www.sec.gov/Archives/edgar/data/1001250/000100125026000041/el-20260630.htm"
+        }
+      ]
+    },
+    "HSY": {
+      "Cash": [
+        {
+          "qname": "us-gaap:CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents",
+          "allowed_accessions": [
+            "0001628280-26-050900"
+          ],
+          "basis": "Reviewed balance-sheet row explicitly reports Cash and cash equivalents and exactly matches this instance value; accept only reviewed accession, never infer restricted cash is zero in another filing",
+          "reviewed_source": "https://www.sec.gov/Archives/edgar/data/47111/000162828026050900/hsy-20260628.htm"
+        }
+      ]
+    },
+    "MMM": {
+      "Cash": [
+        {
+          "qname": "us-gaap:CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents",
+          "allowed_accessions": [
+            "0000066740-26-000311"
+          ],
+          "basis": "Reviewed balance-sheet row explicitly reports Cash and cash equivalents and exactly matches this instance value; accept only reviewed accession, never infer restricted cash is zero in another filing",
+          "reviewed_source": "https://www.sec.gov/Archives/edgar/data/66740/000006674026000311/mmm-20260930.htm"
+        }
+      ]
+    },
+    "CSX": {
+      "Cash": [
+        {
+          "qname": "us-gaap:CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents",
+          "allowed_accessions": [
+            "0000277948-26-000040"
+          ],
+          "basis": "Reviewed balance-sheet row explicitly reports Cash and cash equivalents and exactly matches this instance value; accept only reviewed accession, never infer restricted cash is zero in another filing",
+          "reviewed_source": "https://www.sec.gov/Archives/edgar/data/277948/000027794826000040/csx-20260930.htm"
+        }
+      ]
+    },
+    "EMR": {
+      "Cash": [
+        {
+          "qname": "us-gaap:CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents",
+          "allowed_accessions": [
+            "0000032604-26-000043"
+          ],
+          "basis": "Reviewed balance-sheet row explicitly reports Cash and cash equivalents and exactly matches this instance value; accept only reviewed accession, never infer restricted cash is zero in another filing",
+          "reviewed_source": "https://www.sec.gov/Archives/edgar/data/32604/000003260426000043/emr-20260630.htm"
+        }
+      ]
+    },
+    "LLY": {
+      "CapEx": [
+        {
+          "qname": "us-gaap:PaymentsToAcquireOtherPropertyPlantAndEquipment",
+          "basis": "Consolidated cash-flow row Purchases of property and equipment; actual cash payment, not noncash additions",
+          "reviewed_source": "https://www.sec.gov/Archives/edgar/data/59478/000005947826000081/lly-20260630.htm"
+        }
+      ]
+    },
+    "VEEV": {
+      "DnA": [
+        {
+          "qname": "us-gaap:OtherDepreciationAndAmortization",
+          "basis": "Consolidated cash-flow row explicitly reports total Depreciation and amortization; intangible amortization is already included, do not add it again",
+          "reviewed_source": "https://www.sec.gov/Archives/edgar/data/1393052/000139305226000036/veev-20260731.htm"
+        }
+      ]
+    }
+  },
+  "formulas": {
+    "AMD": {
+      "DnA": [
+        {
+          "terms": [
+            {
+              "qname": "us-gaap:OtherDepreciationAndAmortization",
+              "coefficient": 1
+            },
+            {
+              "qname": "us-gaap:AmortizationOfIntangibleAssets",
+              "coefficient": 1
+            }
+          ],
+          "validation_terms": [
+            {
+              "qname": "us-gaap:OtherDepreciationAndAmortization",
+              "coefficient": 1
+            },
+            {
+              "qname": "us-gaap:AmortizationOfIntangibleAssets",
+              "coefficient": 1
+            }
+          ],
+          "validation_parent": null,
+          "basis": "Same-period reported OtherDepreciationAndAmortization plus separately reported intangible amortization; no debt/lease financing costs",
+          "reviewed_source": "https://www.sec.gov/Archives/edgar/data/2488/000000248826000123/amd-20260627.htm"
+        }
+      ]
+    },
+    "KLAC": {
+      "EBIT": [
+        {
+          "terms": [
+            {
+              "qname": "us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax",
+              "coefficient": 1
+            },
+            {
+              "qname": "us-gaap:CostOfRevenue",
+              "coefficient": -1
+            },
+            {
+              "qname": "us-gaap:ResearchAndDevelopmentExpense",
+              "coefficient": -1
+            },
+            {
+              "qname": "us-gaap:SellingGeneralAndAdministrativeExpense",
+              "coefficient": -1
+            },
+            {
+              "qname": "us-gaap:AssetImpairmentCharges",
+              "coefficient": -1
+            }
+          ],
+          "validation_terms": [
+            {
+              "qname": "us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax",
+              "coefficient": 1
+            },
+            {
+              "qname": "us-gaap:CostOfRevenue",
+              "coefficient": -1
+            },
+            {
+              "qname": "us-gaap:ResearchAndDevelopmentExpense",
+              "coefficient": -1
+            },
+            {
+              "qname": "us-gaap:SellingGeneralAndAdministrativeExpense",
+              "coefficient": -1
+            },
+            {
+              "qname": "us-gaap:AssetImpairmentCharges",
+              "coefficient": -1
+            },
+            {
+              "qname": "us-gaap:InterestExpenseNonoperating",
+              "coefficient": -1
+            },
+            {
+              "qname": "us-gaap:OtherNonoperatingIncomeExpense",
+              "coefficient": 1
+            }
+          ],
+          "validation_parent": "us-gaap:IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest",
+          "basis": "Reviewed statement operating components; reconcile all operating and disclosed nonoperating components to reported pretax income, exact accession/start/end/USD; no pretax-as-EBIT alias",
+          "reviewed_source": "https://www.sec.gov/Archives/edgar/data/319201/000031920126000027/klac-20260630.htm"
+        }
+      ]
+    },
+    "NKE": {
+      "EBIT": [
+        {
+          "terms": [
+            {
+              "qname": "us-gaap:GrossProfit",
+              "coefficient": 1
+            },
+            {
+              "qname": "us-gaap:SellingGeneralAndAdministrativeExpense",
+              "coefficient": -1
+            }
+          ],
+          "validation_terms": [
+            {
+              "qname": "us-gaap:GrossProfit",
+              "coefficient": 1
+            },
+            {
+              "qname": "us-gaap:SellingGeneralAndAdministrativeExpense",
+              "coefficient": -1
+            },
+            {
+              "qname": "us-gaap:InterestIncomeExpenseNonoperatingNet",
+              "coefficient": 1
+            },
+            {
+              "qname": "us-gaap:OtherNonoperatingIncomeExpense",
+              "coefficient": 1
+            }
+          ],
+          "validation_parent": "us-gaap:IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest",
+          "basis": "Reviewed statement operating components; reconcile all operating and disclosed nonoperating components to reported pretax income, exact accession/start/end/USD; no pretax-as-EBIT alias",
+          "reviewed_source": "https://www.sec.gov/Archives/edgar/data/320187/000032018726000193/nke-20260831.htm"
+        }
+      ]
+    },
+    "TJX": {
+      "EBIT": [
+        {
+          "terms": [
+            {
+              "qname": "us-gaap:RevenueFromContractWithCustomerIncludingAssessedTax",
+              "coefficient": 1
+            },
+            {
+              "qname": "us-gaap:CostOfGoodsAndServicesSold",
+              "coefficient": -1
+            },
+            {
+              "qname": "us-gaap:SellingGeneralAndAdministrativeExpense",
+              "coefficient": -1
+            }
+          ],
+          "validation_terms": [
+            {
+              "qname": "us-gaap:RevenueFromContractWithCustomerIncludingAssessedTax",
+              "coefficient": 1
+            },
+            {
+              "qname": "us-gaap:CostOfGoodsAndServicesSold",
+              "coefficient": -1
+            },
+            {
+              "qname": "us-gaap:SellingGeneralAndAdministrativeExpense",
+              "coefficient": -1
+            },
+            {
+              "qname": "us-gaap:InterestRevenueExpenseNet",
+              "coefficient": 1
+            }
+          ],
+          "validation_parent": "us-gaap:IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest",
+          "basis": "Reviewed statement operating components; reconcile all operating and disclosed nonoperating components to reported pretax income, exact accession/start/end/USD; no pretax-as-EBIT alias",
+          "reviewed_source": "https://www.sec.gov/Archives/edgar/data/109198/000010919826000048/tjx-20260801.htm"
+        }
+      ]
+    },
+    "JNJ": {
+      "EBIT": [
+        {
+          "terms": [
+            {
+              "qname": "us-gaap:GrossProfit",
+              "coefficient": 1
+            },
+            {
+              "qname": "us-gaap:ResearchAndDevelopmentExpenseExcludingAcquiredInProcessCost",
+              "coefficient": -1
+            },
+            {
+              "qname": "us-gaap:RestructuringCharges",
+              "coefficient": -1
+            },
+            {
+              "qname": "us-gaap:SellingGeneralAndAdministrativeExpense",
+              "coefficient": -1
+            },
+            {
+              "qname": "jnj:ResearchAndDevelopmentInProcess1",
+              "coefficient": -1
+            }
+          ],
+          "validation_terms": [
+            {
+              "qname": "us-gaap:GrossProfit",
+              "coefficient": 1
+            },
+            {
+              "qname": "us-gaap:ResearchAndDevelopmentExpenseExcludingAcquiredInProcessCost",
+              "coefficient": -1
+            },
+            {
+              "qname": "us-gaap:RestructuringCharges",
+              "coefficient": -1
+            },
+            {
+              "qname": "us-gaap:SellingGeneralAndAdministrativeExpense",
+              "coefficient": -1
+            },
+            {
+              "qname": "jnj:ResearchAndDevelopmentInProcess1",
+              "coefficient": -1
+            },
+            {
+              "qname": "us-gaap:InvestmentIncomeInterest",
+              "coefficient": 1
+            },
+            {
+              "qname": "us-gaap:OtherNonoperatingIncomeExpense",
+              "coefficient": 1
+            },
+            {
+              "qname": "us-gaap:InterestExpenseNonoperating",
+              "coefficient": -1
+            }
+          ],
+          "validation_parent": "us-gaap:IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest",
+          "basis": "Reviewed statement operating components; reconcile all operating and disclosed nonoperating components to reported pretax income, exact accession/start/end/USD; no pretax-as-EBIT alias",
+          "reviewed_source": "https://www.sec.gov/Archives/edgar/data/200406/000020040626000197/jnj-20260927.htm"
+        }
+      ]
+    },
+    "MRK": {
+      "EBIT": [
+        {
+          "terms": [
+            {
+              "qname": "us-gaap:Revenues",
+              "coefficient": 1
+            },
+            {
+              "qname": "mrk:CostsExpensesAndOther",
+              "coefficient": -1
+            },
+            {
+              "qname": "us-gaap:OtherNonoperatingIncomeExpense",
+              "coefficient": -1
+            }
+          ],
+          "validation_terms": [
+            {
+              "qname": "us-gaap:Revenues",
+              "coefficient": 1
+            },
+            {
+              "qname": "mrk:CostsExpensesAndOther",
+              "coefficient": -1
+            }
+          ],
+          "validation_parent": "us-gaap:IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest",
+          "calculation_children": {
+            "mrk:CostsExpensesAndOther": {
+              "us-gaap:CostOfGoodsAndServicesSold": 1,
+              "us-gaap:SellingGeneralAndAdministrativeExpense": 1,
+              "us-gaap:ResearchAndDevelopmentExpense": 1,
+              "us-gaap:RestructuringCharges": 1,
+              "us-gaap:OtherNonoperatingIncomeExpense": -1
+            },
+            "us-gaap:IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest": {
+              "us-gaap:Revenues": 1,
+              "mrk:CostsExpensesAndOther": -1
+            }
+          },
+          "basis": "Revenue - reported costs/expenses/other aggregate - explicitly nonoperating income; require reviewed complete calculation children and reconciliation to reported pretax, same accession/start/end/USD",
+          "reviewed_source": "https://www.sec.gov/Archives/edgar/data/310158/000031015826000212/mrk-20260630.htm"
+        }
+      ]
+    },
+    "LLY": {
+      "EBIT": [
+        {
+          "terms": [
+            {
+              "qname": "us-gaap:Revenues",
+              "coefficient": 1
+            },
+            {
+              "qname": "lly:CostOfSalesOperatingExpensesAndOtherNet",
+              "coefficient": -1
+            },
+            {
+              "qname": "us-gaap:NonoperatingIncomeExpense",
+              "coefficient": -1
+            }
+          ],
+          "validation_terms": [
+            {
+              "qname": "us-gaap:Revenues",
+              "coefficient": 1
+            },
+            {
+              "qname": "lly:CostOfSalesOperatingExpensesAndOtherNet",
+              "coefficient": -1
+            }
+          ],
+          "validation_parent": "us-gaap:IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest",
+          "calculation_children": {
+            "lly:CostOfSalesOperatingExpensesAndOtherNet": {
+              "us-gaap:ResearchAndDevelopmentAssetAcquiredOtherThanThroughBusinessCombinationWrittenOff": 1,
+              "us-gaap:CostOfGoodsAndServicesSold": 1,
+              "us-gaap:ResearchAndDevelopmentExpenseExcludingAcquiredInProcessCost": 1,
+              "us-gaap:SellingGeneralAndAdministrativeExpense": 1,
+              "us-gaap:RestructuringSettlementAndImpairmentProvisions": 1,
+              "us-gaap:NonoperatingIncomeExpense": -1
+            },
+            "us-gaap:IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest": {
+              "us-gaap:Revenues": 1,
+              "lly:CostOfSalesOperatingExpensesAndOtherNet": -1
+            }
+          },
+          "basis": "Revenue - reported costs/expenses/other aggregate - explicitly nonoperating income; require reviewed complete calculation children and reconciliation to reported pretax, same accession/start/end/USD",
+          "reviewed_source": "https://www.sec.gov/Archives/edgar/data/59478/000005947826000081/lly-20260630.htm"
+        }
+      ]
+    },
+    "CRWD": {
+      "DnA": [
+        {
+          "terms": [
+            {
+              "qname": "crwd:DepreciationAndAmortizationExcludingIntangibleAssetsAndDeferredContractAcquisitionCosts",
+              "coefficient": 1
+            },
+            {
+              "qname": "us-gaap:AmortizationOfIntangibleAssets",
+              "coefficient": 1
+            }
+          ],
+          "basis": "Consolidated cash-flow statement separately discloses depreciation/amortization excluding acquired intangibles and acquired-intangible amortization; sum exact accession/start/end/USD; exclude deferred contract acquisition costs",
+          "reviewed_source": "https://www.sec.gov/Archives/edgar/data/1535527/000153552726000031/crwd-20260731.htm"
+        }
+      ]
+    }
+  },
+  "exclusive_original_metrics": {
+    "CRWD": [
+      "DnA"
+    ]
+  },
+  "partitions": {
+    "GD": {
+      "GrossProfitCost": [
+        {
+          "axis": "srt:ProductOrServiceAxis",
+          "members": [
+            "us-gaap:ProductMember",
+            "us-gaap:ServiceMember"
+          ],
+          "cost_qname": "us-gaap:CostOfGoodsAndServicesSold",
+          "revenue_qname": "us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax",
+          "basis": "Reviewed complete products/services cost-of-sales partition; require both revenue components to reconcile to consolidated revenue, all exact accession/start/end/USD; no arbitrary segment sum",
+          "reviewed_source": "https://www.sec.gov/Archives/edgar/data/40533/000004053326000032/gd-20260705.htm"
+        }
+      ]
+    },
+    "RTX": {
+      "GrossProfitCost": [
+        {
+          "axis": "srt:ProductOrServiceAxis",
+          "members": [
+            "us-gaap:ProductMember",
+            "us-gaap:ServiceMember"
+          ],
+          "cost_qname": "us-gaap:CostOfGoodsAndServicesSold",
+          "revenue_qname": "us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax",
+          "basis": "Reviewed complete products/services cost-of-sales partition; require both revenue components to reconcile to consolidated revenue, all exact accession/start/end/USD; no arbitrary segment sum",
+          "reviewed_source": "https://www.sec.gov/Archives/edgar/data/101829/000010182926000031/rtx-20260930.htm"
+        }
+      ]
+    }
+  }
 }

@@ -40,6 +40,11 @@ EVIDENCE_COLUMNS = [
     "formula",
     "source_evidence_ids",
     "source_confidence_score",
+    "source_document_url",
+    "source_document_sha256",
+    "context_id",
+    "source_qname",
+    "mapping_basis",
 ]
 
 
@@ -129,6 +134,11 @@ class PointInTimeEvidenceLedger:
         available_to_model_at: Any,
         decision_timestamp: Any,
         is_available_at_decision: bool,
+        source_document_url: str = "",
+        source_document_sha256: str = "",
+        context_id: str = "",
+        source_qname: str = "",
+        mapping_basis: str = "",
     ) -> str:
         evidence_id = _evidence_id(
             [
@@ -144,6 +154,7 @@ class PointInTimeEvidenceLedger:
                 filed_at,
                 value,
                 unit,
+                source_document_url,
             ]
         )
         duration_days = _period_duration_days(period_start, period_end)
@@ -203,6 +214,11 @@ class PointInTimeEvidenceLedger:
             "formula": "",
             "source_evidence_ids": [],
             "source_confidence_score": confidence,
+            "source_document_url": source_document_url,
+            "source_document_sha256": source_document_sha256,
+            "context_id": context_id,
+            "source_qname": source_qname,
+            "mapping_basis": mapping_basis,
         }
         with self._lock:
             existing = self._records.get(evidence_id)
@@ -285,6 +301,11 @@ class PointInTimeEvidenceLedger:
             "formula": formula,
             "source_evidence_ids": source_ids,
             "source_confidence_score": source_confidence,
+            "source_document_url": "",
+            "source_document_sha256": "",
+            "context_id": "",
+            "source_qname": "",
+            "mapping_basis": "",
         }
         with self._lock:
             self._records[evidence_id] = record

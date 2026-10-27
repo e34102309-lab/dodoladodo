@@ -10,6 +10,7 @@ on:
     paths:
       - '**.py'
       - '**.csv'
+      - 'sec_filing_review.json'
       - 'ModeC_requirements.txt'
       - '.github/workflows/alpha_hunt.yml'
   pull_request:
@@ -17,6 +18,7 @@ on:
     paths:
       - '**.py'
       - '**.csv'
+      - 'sec_filing_review.json'
       - 'ModeC_requirements.txt'
       - '.github/workflows/alpha_hunt.yml'
 
@@ -48,7 +50,7 @@ jobs:
           pip install -r ModeC_requirements.txt
 
       - name: Compile Python Sources
-        run: python -m py_compile AQR_ModeC_Agent_V12.py mode_c_watchlist.py mode_c_evidence.py mode_c_metric_contract.py mode_c_routing.py mode_c_industry_models.py mode_c_research_priority.py mode_c_decision_inputs.py total_market_hunter_v2.py run_mode_c_ai_agent.py build_mode_c_dashboard.py enhance_dashboard_ui.py validate_mode_c_outputs.py mode_c_fixture_pipeline.py
+        run: python -m py_compile AQR_ModeC_Agent_V12.py mode_c_sec_filings.py collect_sec_filing_inputs.py mode_c_watchlist.py mode_c_evidence.py mode_c_metric_contract.py mode_c_routing.py mode_c_industry_models.py mode_c_research_priority.py mode_c_decision_inputs.py total_market_hunter_v2.py run_mode_c_ai_agent.py build_mode_c_dashboard.py enhance_dashboard_ui.py validate_mode_c_outputs.py mode_c_fixture_pipeline.py
 
       - name: Validate Fixed Research Watchlist
         run: python mode_c_watchlist.py
@@ -92,11 +94,26 @@ jobs:
             exit 1
           fi
 
+      - name: Restore Original SEC Filing Cache
+        uses: actions/cache/restore@v4
+        with:
+          path: .mode_c_sec_filings
+          key: mode-c-original-sec-${{ hashFiles('mode_c_sec_filings.py', 'research_watchlist.csv') }}-${{ github.run_id }}
+          restore-keys: |
+            mode-c-original-sec-${{ hashFiles('mode_c_sec_filings.py', 'research_watchlist.csv') }}-
+
       - name: Update and Analyze Fixed 100 Watchlist
+        # Original filings are immutable by accession and parser version.
         env:
           USER_EMAIL: ${{ secrets.USER_EMAIL }}
           SEND_EMAIL: "0"
         run: python AQR_ModeC_Agent_V12.py
+
+      - name: Save Original SEC Filing Cache
+        uses: actions/cache/save@v4
+        with:
+          path: .mode_c_sec_filings
+          key: mode-c-original-sec-${{ hashFiles('mode_c_sec_filings.py', 'research_watchlist.csv') }}-${{ github.run_id }}
 
       - name: Validate Research Artifacts
         run: python validate_mode_c_outputs.py
@@ -138,6 +155,9 @@ jobs:
           name: Mode_C_Long_Term_Value_Outputs
           path: |
             research_watchlist.csv
+            sec_filing_review.json
+            mode_c_sec_filing_audit.json
+            mode_c_data_gaps.csv
             mode_c_screen.csv
             mode_c_shortlist.csv
             mode_c_shortlist_by_model.csv

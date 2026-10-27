@@ -6,6 +6,7 @@ from decimal import Decimal, InvalidOperation
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 import hashlib
+import csv
 import io
 import math
 import json
@@ -20,7 +21,7 @@ LINK = "http://www.xbrl.org/2003/linkbase"
 XLINK = "http://www.w3.org/1999/xlink"
 XSI = "http://www.w3.org/2001/XMLSchema-instance"
 MAX_XML_BYTES = 20_000_000
-PARSER_VERSION = "2026-10-original-xbrl-v2"
+PARSER_VERSION = "2026-10-original-xbrl-v3"
 _AUDIT = {}
 _AUDIT_LOCK = threading.Lock()
 
@@ -114,12 +115,14 @@ def filing_concept_rows(filings: list, ticker: str, metric: str, standard_tags: 
                 if override_mappings is None else override_mappings)
     names = {"us-gaap:" + tag: {"priority": index, "basis": "reviewed standard taxonomy"}
              for index, tag in enumerate(standard_tags)}
-    names.update({row["qname"]: {"priority": 0, "basis": row["basis"]} for row in mappings})
+    names.update({row["qname"]: {**row, "priority": 0} for row in mappings})
     rows = []
     for filing in filings:
         for fact in filing.get("facts", []):
             mapping = names.get(fact.get("qname"))
             if not mapping or fact.get("unit") not in units:
+                continue
+            if mapping.get("allowed_accessions") and filing["accessionNumber"] not in mapping["allowed_accessions"]:
                 continue
             concept = fact["qname"].split(":", 1)[-1] if fact["qname"].startswith("us-gaap:") else fact["qname"]
             rows.append({**fact, "concept": concept, "concept_priority": mapping["priority"],
@@ -142,9 +145,56 @@ def audit_snapshot() -> dict:
         return json.loads(json.dumps(_AUDIT))
 
 
+def partition_component_rows(filing, partition):
+    """A reviewed exhaustive partition is kept separate from consolidated facts."""
+    axis, members = partition["axis"], set(partition["members"])
+    names = {partition["cost_qname"], partition["revenue_qname"]}
+    selected = []
+    for fact in filing.get("dimensional_facts", []):
+        dimensions = fact.get("dimensions", {})
+        if (fact["qname"] not in names or fact["unit"] != "USD" or
+                set(dimensions) != {axis} or dimensions[axis] not in members):
+            continue
+        selected.append({**fact, "partition_member": dimensions[axis]})
+    for fact in filing.get("facts", []):
+        if fact["qname"] == partition["revenue_qname"] and fact["unit"] == "USD":
+            selected.append({**fact, "partition_member": "CONSOLIDATED"})
+    return selected
+
+
 def reset_audit():
     with _AUDIT_LOCK:
         _AUDIT.clear()
+
+
+def write_review_outputs(rows, evidence_rows, output_dir="."):
+    """One explicit receipt and current blocker for every original review target."""
+    output = Path(output_dir)
+    results = {row["Ticker"]: row for row in rows}
+    audit, gaps = audit_snapshot(), []
+    for target in review_plan()["targets"]:
+        ticker = target["ticker"]
+        result = results.get(ticker, {})
+        receipt = audit.setdefault(ticker, {"cik": target["cik"], "filings": [], "metrics": {}})
+        receipt.update(decision_state=result.get("Decision_State", "ABSTAIN"), reason=result.get("Status", "NO_RESULT"),
+                       confidence_reasons=result.get("Data_Confidence_Reasons", ""), review_note=target.get("review_note", ""))
+        sources = [r for r in evidence_rows if r.get("ticker") == ticker and r.get("record_type") == "source_fact"
+                   and str(r.get("mapping_basis", "")).startswith("SEC_ORIGINAL_XBRL:")]
+        errors = [e for filing in receipt["filings"] for e in filing.get("errors", [])]
+        gaps.append({"Ticker": ticker, "CIK": target["cik"], "Baseline_Reason": target["baseline_reason"],
+            "Decision_State": receipt["decision_state"], "Current_Reason": receipt["reason"],
+            "Data_Confidence_Reasons": receipt["confidence_reasons"],
+            "Original_Filings_Inspected": len(receipt["filings"]), "Original_Source_Facts_Used": len(sources),
+            "Original_Metrics_Used": ";".join(sorted({r["normalized_metric"] for r in sources})),
+            "Source_Errors": ";".join(sorted(set(errors))) or ("NOT_REACHED" if not receipt["filings"] else "NONE"),
+            "Review_Note": target.get("review_note", ""), "Reviewed_Source": target.get("reviewed_source", ""),
+            "Source_Documents": ";".join(f.get("instance_url", "") for f in receipt["filings"]),
+        })
+    (output / "mode_c_sec_filing_audit.json").write_text(json.dumps(audit, ensure_ascii=False, indent=2), encoding="utf-8")
+    with (output / "mode_c_data_gaps.csv").open("w", encoding="utf-8-sig", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(gaps[0]))
+        writer.writeheader()
+        writer.writerows(gaps)
 
 
 def xml_root(payload: bytes):
@@ -155,7 +205,7 @@ def xml_root(payload: bytes):
 
 
 def parse_instance(payload: bytes, cik: str) -> dict:
-    """Only entity-wide, dimensionless finite USD/shares facts; no inline scaling."""
+    """Finite USD/shares facts; dimensions stay in a separate reviewed-only pool."""
     root, namespaces = xml_root(payload)
     if root.tag != f"{{{XBRLI}}}xbrl":
         raise ValueError("Expected an XBRL instance, not HTML or a denial page")
@@ -167,9 +217,13 @@ def parse_instance(payload: bytes, cik: str) -> dict:
         if not value.isdigit() or int(value) != int(cik):
             skipped["other_entity_context"] += 1
             continue
-        if any(node.tag.rsplit("}", 1)[-1] in {"explicitMember", "typedMember", "segment", "scenario"}
-               for node in context.iter()):
-            skipped["dimensional_context"] += 1
+        if any(node.tag.rsplit("}", 1)[-1] in {"typedMember", "scenario"} for node in context.iter()):
+            skipped["unsupported_context"] += 1
+            continue
+        dimensions = {node.get("dimension"): str(node.text or "").strip()
+                      for node in context.iter() if node.tag.rsplit("}", 1)[-1] == "explicitMember"}
+        if any(node.tag.rsplit("}", 1)[-1] == "segment" for node in context.iter()) and not dimensions:
+            skipped["unsupported_context"] += 1
             continue
         period = context.find(f"{{{XBRLI}}}period")
         if period is None:
@@ -179,7 +233,7 @@ def parse_instance(payload: bytes, cik: str) -> dict:
         if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", end) or (start and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", start)):
             skipped["invalid_period"] += 1
             continue
-        contexts[context.get("id")] = {"start": start, "end": end}
+        contexts[context.get("id")] = {"start": start, "end": end, "dimensions": dimensions}
     for unit in root.findall(f"{{{XBRLI}}}unit"):
         measures = unit.findall(f"{{{XBRLI}}}measure")
         if len(measures) != 1 or unit.find(f"{{{XBRLI}}}divide") is not None:
@@ -211,7 +265,7 @@ def parse_instance(payload: bytes, cik: str) -> dict:
         namespace, local = node.tag[1:].split("}", 1)
         prefix = prefixes.get(namespace, "")
         qname = prefix + ":" + local
-        key = (qname, unit, context["start"], context["end"])
+        key = (qname, unit, context["start"], context["end"], json.dumps(context["dimensions"], sort_keys=True))
         decimals = str(node.get("decimals", "INF"))
         try:
             if decimals != "INF" and (not re.fullmatch(r"-?\d{1,3}", decimals) or abs(int(decimals)) > 100):
@@ -237,7 +291,9 @@ def parse_instance(payload: bytes, cik: str) -> dict:
         facts[key] = {"qname": qname, "namespace": namespace, "unit": unit,
                       "val": value, "decimals": decimals, "context_id": node.get("contextRef"), **context}
     selected = [fact for key, fact in facts.items() if duplicates[key] is not None]
-    return {"facts": selected, "skipped": dict(skipped), "sha256": hashlib.sha256(payload).hexdigest()}
+    return {"facts": [f for f in selected if not f["dimensions"]],
+            "dimensional_facts": [f for f in selected if f["dimensions"]],
+            "skipped": dict(skipped), "sha256": hashlib.sha256(payload).hexdigest()}
 
 
 def parse_labels(payload: bytes) -> dict:
